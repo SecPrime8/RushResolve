@@ -1,0 +1,9 @@
+{
+  "global": {
+    "cacheCredentials": false,
+    "windowWidth": 900,
+    "windowHeight": 700,
+    "lastTab": ""
+  },
+  "modules": {}
+}
