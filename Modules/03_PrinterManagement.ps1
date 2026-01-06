@@ -57,14 +57,25 @@ $script:GetInstalledPrinters = {
     return $printers
 }
 
-# Get printers from print server
+# Get printers from print server (with progress updates)
 $script:GetServerPrinters = {
     param([string]$Server)
 
     $printers = @()
     $serverName = $Server.TrimStart('\')
 
+    # Helper to update status
+    $updateStatus = {
+        param([string]$msg)
+        $script:serverListView.Items.Clear()
+        $item = New-Object System.Windows.Forms.ListViewItem($msg)
+        $script:serverListView.Items.Add($item) | Out-Null
+        $script:serverListView.Refresh()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
     # Method 1: Try Get-Printer cmdlet (requires Print Management)
+    & $updateStatus "Trying Get-Printer cmdlet..."
     try {
         $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
         foreach ($p in $serverPrinters) {
@@ -89,6 +100,7 @@ $script:GetServerPrinters = {
     }
 
     # Method 2: Try WMI (older but often works)
+    & $updateStatus "Trying WMI query..."
     try {
         $wmiPrinters = Get-WmiObject -Class Win32_Printer -ComputerName $serverName -ErrorAction Stop |
             Where-Object { $_.Shared -eq $true }
@@ -112,6 +124,7 @@ $script:GetServerPrinters = {
     }
 
     # Method 3: Enumerate shared printers via net view (most compatible)
+    & $updateStatus "Trying net view command..."
     try {
         $netOutput = net view "\\$serverName" 2>&1
         $lines = $netOutput -split "`n"
@@ -484,9 +497,27 @@ function Initialize-Module {
     # Browse server
     $browseServerBtn.Add_Click({
         $script:serverListView.Items.Clear()
-        $script:serverListView.Items.Add("Loading printers from server...") | Out-Null
+        $server = $script:serverTextBox.Text.Trim()
+
+        # Show loading status
+        $item = New-Object System.Windows.Forms.ListViewItem("Connecting to $server...")
+        $script:serverListView.Items.Add($item) | Out-Null
         $script:serverListView.Refresh()
-        & $script:RefreshServerPrinters
+        [System.Windows.Forms.Application]::DoEvents()
+
+        # Disable button during load
+        $browseServerBtn.Enabled = $false
+        $browseServerBtn.Text = "Loading..."
+        [System.Windows.Forms.Application]::DoEvents()
+
+        try {
+            & $script:RefreshServerPrinters
+        }
+        finally {
+            # Re-enable button
+            $browseServerBtn.Enabled = $true
+            $browseServerBtn.Text = "Browse"
+        }
     })
 
     # Filter text changed
