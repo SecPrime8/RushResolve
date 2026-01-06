@@ -240,10 +240,11 @@ function Initialize-Module {
     $msInfoBtn.Add_Click({ Start-Process "msinfo32.exe" })
     $buttonPanel.Controls.Add($msInfoBtn)
 
-    # Second row spacer
+    # Separator before power buttons
     $sep2 = New-Object System.Windows.Forms.Label
-    $sep2.Text = ""
-    $sep2.Width = 700
+    $sep2.Text = " | "
+    $sep2.AutoSize = $true
+    $sep2.Padding = New-Object System.Windows.Forms.Padding(5, 8, 5, 0)
     $buttonPanel.Controls.Add($sep2)
 
     # Reboot
