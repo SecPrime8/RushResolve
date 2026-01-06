@@ -1,0 +1,699 @@
+<#
+.SYNOPSIS
+    Network Tools Module for Rush Resolve
+.DESCRIPTION
+    Network diagnostics, wireless tools, and LLDP switch discovery.
+#>
+
+$script:ModuleName = "Network Tools"
+$script:ModuleDescription = "Network diagnostics, wireless tools, and switch discovery"
+
+#region Script Blocks
+
+# Get network adapters with details
+$script:GetAdapters = {
+    $adapters = @()
+    Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -or $_.Status -eq 'Disconnected' } | ForEach-Object {
+        $ip = (Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress | Select-Object -First 1
+        $gateway = (Get-NetRoute -InterfaceIndex $_.InterfaceIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).NextHop | Select-Object -First 1
+        $dns = (Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses -join ', '
+
+        $adapters += [PSCustomObject]@{
+            Name = $_.Name
+            Status = $_.Status
+            MAC = $_.MacAddress
+            IP = if ($ip) { $ip } else { "N/A" }
+            Gateway = if ($gateway) { $gateway } else { "N/A" }
+            DNS = if ($dns) { $dns } else { "N/A" }
+            Speed = $_.LinkSpeed
+            InterfaceIndex = $_.InterfaceIndex
+        }
+    }
+    return $adapters
+}
+
+# Run ping test
+$script:RunPing = {
+    param([string]$Target, [int]$Count = 4, [System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Pinging $Target...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        $results = Test-Connection -ComputerName $Target -Count $Count -ErrorAction Stop
+        foreach ($result in $results) {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$timestamp] Reply from $($result.Address): time=$($result.ResponseTime)ms TTL=$($result.TimeToLive)`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        $avg = ($results | Measure-Object -Property ResponseTime -Average).Average
+        $LogBox.AppendText("`r`n[$timestamp] Average: $([math]::Round($avg, 1))ms`r`n")
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
+# Run traceroute
+$script:RunTraceroute = {
+    param([string]$Target, [System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Tracing route to $Target...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        $result = Test-NetConnection -ComputerName $Target -TraceRoute -ErrorAction Stop
+        $hop = 1
+        foreach ($ip in $result.TraceRoute) {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$timestamp]   $hop  $ip`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+            $hop++
+        }
+        $LogBox.AppendText("`r`n[$timestamp] Trace complete.`r`n")
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
+# Flush DNS
+$script:FlushDns = {
+    param([System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Flushing DNS cache...`r`n")
+
+    try {
+        Clear-DnsClientCache
+        $LogBox.AppendText("[$timestamp] DNS cache flushed successfully.`r`n")
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
+# IP Release/Renew
+$script:ReleaseRenewIP = {
+    param([string]$AdapterName, [string]$Action, [System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] $Action IP for $AdapterName...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        if ($Action -eq 'Release') {
+            $output = ipconfig /release "$AdapterName" 2>&1
+        } else {
+            $output = ipconfig /renew "$AdapterName" 2>&1
+        }
+        $LogBox.AppendText("[$timestamp] $Action complete.`r`n")
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
+# Get LLDP info (try multiple methods)
+$script:GetLldpInfo = {
+    param([string]$AdapterName)
+
+    $info = @{
+        Available = $false
+        SwitchName = "N/A"
+        SwitchIP = "N/A"
+        Port = "N/A"
+        VLAN = "N/A"
+        Error = $null
+    }
+
+    # Method 1: Try Windows built-in LLDP agent
+    try {
+        $agent = Get-NetLldpAgent -NetAdapterName $AdapterName -ErrorAction Stop
+        if ($agent) {
+            $info.Available = $true
+            # Try to get neighbor info
+            $neighbor = Get-CimInstance -Namespace root\StandardCimv2 -ClassName MSFT_NetLldpAgent -ErrorAction SilentlyContinue |
+                Where-Object { $_.NetAdapterName -eq $AdapterName }
+            if ($neighbor) {
+                $info.SwitchName = $neighbor.SystemName
+                $info.Port = $neighbor.PortId
+            }
+        }
+    }
+    catch {
+        # LLDP agent not available or not enabled
+    }
+
+    # Method 2: Check if Data Center Bridging feature is available
+    if (-not $info.Available) {
+        try {
+            $dcb = Get-WindowsFeature -Name "Data-Center-Bridging" -ErrorAction SilentlyContinue
+            if ($dcb -and $dcb.Installed) {
+                $info.Error = "DCB installed but LLDP not returning data"
+            } else {
+                $info.Error = "LLDP requires Data Center Bridging feature or use LinkDiscovery tool"
+            }
+        }
+        catch {
+            $info.Error = "LLDP not available on this system. Use LinkDiscovery tool."
+        }
+    }
+
+    return [PSCustomObject]$info
+}
+
+# Get wireless info
+$script:GetWirelessInfo = {
+    $output = netsh wlan show interfaces 2>&1
+    $info = @{
+        Connected = $false
+        SSID = "Not connected"
+        BSSID = "N/A"
+        Signal = 0
+        Channel = 0
+        Band = "N/A"
+        Auth = "N/A"
+        Speed = "N/A"
+    }
+
+    if ($output -match "There is no wireless interface") {
+        $info.SSID = "No Wi-Fi adapter"
+        return [PSCustomObject]$info
+    }
+
+    foreach ($line in $output) {
+        if ($line -match "^\s+State\s+:\s+connected") { $info.Connected = $true }
+        if ($line -match "^\s+SSID\s+:\s+(.+)$") { $info.SSID = $matches[1].Trim() }
+        if ($line -match "^\s+BSSID\s+:\s+(.+)$") { $info.BSSID = $matches[1].Trim() }
+        if ($line -match "^\s+Signal\s+:\s+(\d+)%") { $info.Signal = [int]$matches[1] }
+        if ($line -match "^\s+Channel\s+:\s+(\d+)") { $info.Channel = [int]$matches[1] }
+        if ($line -match "^\s+Radio type\s+:\s+(.+)$") { $info.Band = $matches[1].Trim() }
+        if ($line -match "^\s+Authentication\s+:\s+(.+)$") { $info.Auth = $matches[1].Trim() }
+        if ($line -match "^\s+Receive rate.*:\s+(.+)$") { $info.Speed = $matches[1].Trim() }
+    }
+
+    # Determine band from channel
+    if ($info.Channel -gt 0) {
+        if ($info.Channel -le 14) {
+            $info.Band = "2.4 GHz"
+        } else {
+            $info.Band = "5 GHz"
+        }
+    }
+
+    return [PSCustomObject]$info
+}
+
+# Scan for networks
+$script:ScanNetworks = {
+    $output = netsh wlan show networks mode=bssid 2>&1
+    $networks = @()
+    $current = $null
+
+    foreach ($line in $output) {
+        if ($line -match "^SSID \d+ : (.*)$") {
+            if ($current) { $networks += [PSCustomObject]$current }
+            $current = @{ SSID = $matches[1].Trim(); Signal = 0; Channel = 0; Security = "Unknown" }
+        }
+        if ($current) {
+            if ($line -match "^\s+Signal\s+:\s+(\d+)%") { $current.Signal = [int]$matches[1] }
+            if ($line -match "^\s+Channel\s+:\s+(\d+)") { $current.Channel = [int]$matches[1] }
+            if ($line -match "^\s+Authentication\s+:\s+(.+)$") { $current.Security = $matches[1].Trim() }
+        }
+    }
+    if ($current) { $networks += [PSCustomObject]$current }
+
+    return $networks | Where-Object { $_.SSID -ne "" } | Sort-Object Signal -Descending
+}
+
+# Reconnect WiFi
+$script:ReconnectWifi = {
+    param([System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Reconnecting Wi-Fi...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        $interfaceOutput = netsh wlan show interfaces
+        $interface = ($interfaceOutput | Select-String "^\s+Name\s+:" | Select-Object -First 1) -replace ".*:\s+", ""
+        $profile = ($interfaceOutput | Select-String "^\s+Profile\s+:" | Select-Object -First 1) -replace ".*:\s+", ""
+
+        if ($interface -and $profile) {
+            netsh wlan disconnect interface="$interface" | Out-Null
+            $LogBox.AppendText("[$timestamp] Disconnected. Waiting 2 seconds...`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Seconds 2
+
+            netsh wlan connect name="$profile" interface="$interface" | Out-Null
+            $LogBox.AppendText("[$timestamp] Reconnect command sent to $profile`r`n")
+        } else {
+            $LogBox.AppendText("[$timestamp] No active Wi-Fi connection found.`r`n")
+        }
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
+#endregion
+
+#region Initialize Module
+
+function Initialize-Module {
+    param(
+        [Parameter(Mandatory)]
+        [System.Windows.Forms.TabPage]$tab
+    )
+
+    # Store references for script blocks
+    $getAdaptersRef = $script:GetAdapters
+    $runPingRef = $script:RunPing
+    $runTracerouteRef = $script:RunTraceroute
+    $flushDnsRef = $script:FlushDns
+    $releaseRenewRef = $script:ReleaseRenewIP
+    $getLldpRef = $script:GetLldpInfo
+    $getWirelessRef = $script:GetWirelessInfo
+    $scanNetworksRef = $script:ScanNetworks
+    $reconnectWifiRef = $script:ReconnectWifi
+
+    # Main layout - split into sections
+    $mainPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $mainPanel.RowCount = 3
+    $mainPanel.ColumnCount = 1
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 30))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 35))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 35))) | Out-Null
+
+    #region Top Section - Adapters
+    $adapterGroup = New-Object System.Windows.Forms.GroupBox
+    $adapterGroup.Text = "Network Adapters"
+    $adapterGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $adapterGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $adapterPanel = New-Object System.Windows.Forms.Panel
+    $adapterPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $script:adapterListView = New-Object System.Windows.Forms.ListView
+    $script:adapterListView.View = [System.Windows.Forms.View]::Details
+    $script:adapterListView.FullRowSelect = $true
+    $script:adapterListView.GridLines = $true
+    $script:adapterListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:adapterListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    $script:adapterListView.Columns.Add("Adapter", 120) | Out-Null
+    $script:adapterListView.Columns.Add("Status", 80) | Out-Null
+    $script:adapterListView.Columns.Add("IP Address", 120) | Out-Null
+    $script:adapterListView.Columns.Add("MAC Address", 140) | Out-Null
+    $script:adapterListView.Columns.Add("Gateway", 120) | Out-Null
+
+    # Adapter buttons
+    $adapterBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $adapterBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $adapterBtnPanel.Height = 35
+    $adapterBtnPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
+
+    $adapterListViewRef = $script:adapterListView
+
+    $refreshAdaptersBtn = New-Object System.Windows.Forms.Button
+    $refreshAdaptersBtn.Text = "Refresh"
+    $refreshAdaptersBtn.Width = 70
+    $refreshAdaptersBtn.Add_Click({
+        $adapterListViewRef.Items.Clear()
+        $adapters = & $getAdaptersRef
+        foreach ($adapter in $adapters) {
+            $item = New-Object System.Windows.Forms.ListViewItem($adapter.Name)
+            $item.SubItems.Add($adapter.Status) | Out-Null
+            $item.SubItems.Add($adapter.IP) | Out-Null
+            $item.SubItems.Add($adapter.MAC) | Out-Null
+            $item.SubItems.Add($adapter.Gateway) | Out-Null
+            $item.Tag = $adapter
+            $adapterListViewRef.Items.Add($item) | Out-Null
+        }
+    }.GetNewClosure())
+    $adapterBtnPanel.Controls.Add($refreshAdaptersBtn)
+
+    $releaseBtn = New-Object System.Windows.Forms.Button
+    $releaseBtn.Text = "IP Release"
+    $releaseBtn.Width = 75
+    $releaseBtn.Add_Click({
+        if ($adapterListViewRef.SelectedItems.Count -gt 0) {
+            $adapter = $adapterListViewRef.SelectedItems[0].Tag
+            & $releaseRenewRef -AdapterName $adapter.Name -Action "Release" -LogBox $script:diagLogBox
+        }
+    }.GetNewClosure())
+    $adapterBtnPanel.Controls.Add($releaseBtn)
+
+    $renewBtn = New-Object System.Windows.Forms.Button
+    $renewBtn.Text = "IP Renew"
+    $renewBtn.Width = 75
+    $renewBtn.Add_Click({
+        if ($adapterListViewRef.SelectedItems.Count -gt 0) {
+            $adapter = $adapterListViewRef.SelectedItems[0].Tag
+            & $releaseRenewRef -AdapterName $adapter.Name -Action "Renew" -LogBox $script:diagLogBox
+        }
+    }.GetNewClosure())
+    $adapterBtnPanel.Controls.Add($renewBtn)
+
+    $dnsFlushBtn = New-Object System.Windows.Forms.Button
+    $dnsFlushBtn.Text = "DNS Flush"
+    $dnsFlushBtn.Width = 75
+    $dnsFlushBtn.Add_Click({
+        & $flushDnsRef -LogBox $script:diagLogBox
+    }.GetNewClosure())
+    $adapterBtnPanel.Controls.Add($dnsFlushBtn)
+
+    $copyAdaptersBtn = New-Object System.Windows.Forms.Button
+    $copyAdaptersBtn.Text = "Copy All"
+    $copyAdaptersBtn.Width = 70
+    $copyAdaptersBtn.Add_Click({
+        $text = [System.Text.StringBuilder]::new()
+        [void]$text.AppendLine("Network Adapters - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        [void]$text.AppendLine("=" * 60)
+        foreach ($item in $adapterListViewRef.Items) {
+            $adapter = $item.Tag
+            [void]$text.AppendLine("")
+            [void]$text.AppendLine("Adapter: $($adapter.Name)")
+            [void]$text.AppendLine("  Status:  $($adapter.Status)")
+            [void]$text.AppendLine("  IP:      $($adapter.IP)")
+            [void]$text.AppendLine("  MAC:     $($adapter.MAC)")
+            [void]$text.AppendLine("  Gateway: $($adapter.Gateway)")
+            [void]$text.AppendLine("  DNS:     $($adapter.DNS)")
+        }
+        [System.Windows.Forms.Clipboard]::SetText($text.ToString())
+        [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+    }.GetNewClosure())
+    $adapterBtnPanel.Controls.Add($copyAdaptersBtn)
+
+    $adapterPanel.Controls.Add($script:adapterListView)
+    $adapterPanel.Controls.Add($adapterBtnPanel)
+    $adapterGroup.Controls.Add($adapterPanel)
+    #endregion
+
+    #region Middle Section - Diagnostics + Link Discovery
+    $middlePanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $middlePanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $middlePanel.ColumnCount = 2
+    $middlePanel.RowCount = 1
+    $middlePanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
+    $middlePanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
+
+    # Diagnostics group
+    $diagGroup = New-Object System.Windows.Forms.GroupBox
+    $diagGroup.Text = "Diagnostics"
+    $diagGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $diagPanel = New-Object System.Windows.Forms.Panel
+    $diagPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $diagPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    # Target input row
+    $targetPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $targetPanel.Dock = [System.Windows.Forms.DockStyle]::Top
+    $targetPanel.Height = 35
+
+    $targetLabel = New-Object System.Windows.Forms.Label
+    $targetLabel.Text = "Target:"
+    $targetLabel.AutoSize = $true
+    $targetLabel.Padding = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
+    $targetPanel.Controls.Add($targetLabel)
+
+    $script:targetTextBox = New-Object System.Windows.Forms.TextBox
+    $script:targetTextBox.Width = 150
+    $script:targetTextBox.Text = "8.8.8.8"
+    $targetPanel.Controls.Add($script:targetTextBox)
+
+    $targetTextBoxRef = $script:targetTextBox
+
+    $pingBtn = New-Object System.Windows.Forms.Button
+    $pingBtn.Text = "Ping"
+    $pingBtn.Width = 50
+    $pingBtn.Add_Click({
+        $target = $targetTextBoxRef.Text.Trim()
+        if ($target) {
+            & $runPingRef -Target $target -Count 4 -LogBox $script:diagLogBox
+        }
+    }.GetNewClosure())
+    $targetPanel.Controls.Add($pingBtn)
+
+    $traceBtn = New-Object System.Windows.Forms.Button
+    $traceBtn.Text = "Trace"
+    $traceBtn.Width = 50
+    $traceBtn.Add_Click({
+        $target = $targetTextBoxRef.Text.Trim()
+        if ($target) {
+            & $runTracerouteRef -Target $target -LogBox $script:diagLogBox
+        }
+    }.GetNewClosure())
+    $targetPanel.Controls.Add($traceBtn)
+
+    # Diag log
+    $script:diagLogBox = New-Object System.Windows.Forms.TextBox
+    $script:diagLogBox.Multiline = $true
+    $script:diagLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:diagLogBox.ReadOnly = $true
+    $script:diagLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:diagLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $diagLogBoxRef = $script:diagLogBox
+
+    # Copy results button
+    $diagBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $diagBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $diagBtnPanel.Height = 35
+
+    $copyResultsBtn = New-Object System.Windows.Forms.Button
+    $copyResultsBtn.Text = "Copy Results"
+    $copyResultsBtn.Width = 90
+    $copyResultsBtn.Add_Click({
+        if ($diagLogBoxRef.Text) {
+            [System.Windows.Forms.Clipboard]::SetText($diagLogBoxRef.Text)
+            [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+        }
+    }.GetNewClosure())
+    $diagBtnPanel.Controls.Add($copyResultsBtn)
+
+    $clearLogBtn = New-Object System.Windows.Forms.Button
+    $clearLogBtn.Text = "Clear"
+    $clearLogBtn.Width = 50
+    $clearLogBtn.Add_Click({
+        $diagLogBoxRef.Clear()
+    }.GetNewClosure())
+    $diagBtnPanel.Controls.Add($clearLogBtn)
+
+    $diagPanel.Controls.Add($script:diagLogBox)
+    $diagPanel.Controls.Add($targetPanel)
+    $diagPanel.Controls.Add($diagBtnPanel)
+    $diagGroup.Controls.Add($diagPanel)
+
+    # Link Discovery group
+    $lldpGroup = New-Object System.Windows.Forms.GroupBox
+    $lldpGroup.Text = "Link Discovery (LLDP)"
+    $lldpGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $lldpPanel = New-Object System.Windows.Forms.Panel
+    $lldpPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $lldpPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
+    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
+    $script:lldpInfoLabel.AutoSize = $true
+    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
+    $script:lldpInfoLabel.Location = New-Object System.Drawing.Point(10, 50)
+
+    $lldpInfoLabelRef = $script:lldpInfoLabel
+
+    $getLldpBtn = New-Object System.Windows.Forms.Button
+    $getLldpBtn.Text = "Get Switch Info"
+    $getLldpBtn.Width = 120
+    $getLldpBtn.Location = New-Object System.Drawing.Point(10, 15)
+    $getLldpBtn.Add_Click({
+        if ($adapterListViewRef.SelectedItems.Count -gt 0) {
+            $adapter = $adapterListViewRef.SelectedItems[0].Tag
+            $lldpInfoLabelRef.Text = "Querying LLDP..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $info = & $getLldpRef -AdapterName $adapter.Name
+
+            if ($info.Available) {
+                $lldpInfoLabelRef.Text = "Switch Port: $($info.Port)`nVLAN: $($info.VLAN)`nSwitch IP: $($info.SwitchIP)`nSwitch Name: $($info.SwitchName)"
+            } else {
+                $lldpInfoLabelRef.Text = "LLDP not available`n`n$($info.Error)"
+            }
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Select an adapter first", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+        }
+    }.GetNewClosure())
+    $lldpPanel.Controls.Add($getLldpBtn)
+
+    $copyLldpBtn = New-Object System.Windows.Forms.Button
+    $copyLldpBtn.Text = "Copy"
+    $copyLldpBtn.Width = 50
+    $copyLldpBtn.Location = New-Object System.Drawing.Point(135, 15)
+    $copyLldpBtn.Add_Click({
+        [System.Windows.Forms.Clipboard]::SetText($lldpInfoLabelRef.Text)
+        [System.Windows.Forms.MessageBox]::Show("Copied!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+    }.GetNewClosure())
+    $lldpPanel.Controls.Add($copyLldpBtn)
+
+    $lldpPanel.Controls.Add($script:lldpInfoLabel)
+    $lldpGroup.Controls.Add($lldpPanel)
+
+    $middlePanel.Controls.Add($diagGroup, 0, 0)
+    $middlePanel.Controls.Add($lldpGroup, 1, 0)
+    #endregion
+
+    #region Bottom Section - Wireless
+    $wirelessGroup = New-Object System.Windows.Forms.GroupBox
+    $wirelessGroup.Text = "Wireless"
+    $wirelessGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $wirelessPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $wirelessPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $wirelessPanel.ColumnCount = 2
+    $wirelessPanel.RowCount = 1
+    $wirelessPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
+    $wirelessPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
+
+    # Left - Current connection info
+    $wifiInfoPanel = New-Object System.Windows.Forms.Panel
+    $wifiInfoPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $wifiInfoPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+
+    $script:wifiInfoLabel = New-Object System.Windows.Forms.Label
+    $script:wifiInfoLabel.Text = "Loading..."
+    $script:wifiInfoLabel.AutoSize = $true
+    $script:wifiInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:wifiInfoLabel.Location = New-Object System.Drawing.Point(10, 10)
+    $wifiInfoPanel.Controls.Add($script:wifiInfoLabel)
+
+    $wifiInfoLabelRef = $script:wifiInfoLabel
+
+    # Signal bar
+    $script:signalBar = New-Object System.Windows.Forms.ProgressBar
+    $script:signalBar.Location = New-Object System.Drawing.Point(10, 100)
+    $script:signalBar.Size = New-Object System.Drawing.Size(150, 20)
+    $script:signalBar.Minimum = 0
+    $script:signalBar.Maximum = 100
+    $wifiInfoPanel.Controls.Add($script:signalBar)
+
+    $signalBarRef = $script:signalBar
+
+    # WiFi buttons
+    $wifiBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $wifiBtnPanel.Location = New-Object System.Drawing.Point(10, 130)
+    $wifiBtnPanel.Size = New-Object System.Drawing.Size(200, 70)
+    $wifiBtnPanel.WrapContents = $true
+
+    $refreshWifiBtn = New-Object System.Windows.Forms.Button
+    $refreshWifiBtn.Text = "Refresh"
+    $refreshWifiBtn.Width = 65
+    $refreshWifiBtn.Add_Click({
+        $info = & $getWirelessRef
+        $signalBarRef.Value = $info.Signal
+
+        $text = "SSID: $($info.SSID)`n"
+        $text += "Signal: $($info.Signal)%`n"
+        $text += "Channel: $($info.Channel) ($($info.Band))`n"
+        $text += "BSSID: $($info.BSSID)`n"
+        $text += "Auth: $($info.Auth)"
+        $wifiInfoLabelRef.Text = $text
+    }.GetNewClosure())
+    $wifiBtnPanel.Controls.Add($refreshWifiBtn)
+
+    $reconnectBtn = New-Object System.Windows.Forms.Button
+    $reconnectBtn.Text = "Reconnect"
+    $reconnectBtn.Width = 75
+    $reconnectBtn.Add_Click({
+        & $reconnectWifiRef -LogBox $diagLogBoxRef
+    }.GetNewClosure())
+    $wifiBtnPanel.Controls.Add($reconnectBtn)
+
+    $copyWifiBtn = New-Object System.Windows.Forms.Button
+    $copyWifiBtn.Text = "Copy"
+    $copyWifiBtn.Width = 50
+    $copyWifiBtn.Add_Click({
+        [System.Windows.Forms.Clipboard]::SetText($wifiInfoLabelRef.Text)
+        [System.Windows.Forms.MessageBox]::Show("Copied!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+    }.GetNewClosure())
+    $wifiBtnPanel.Controls.Add($copyWifiBtn)
+
+    $wifiInfoPanel.Controls.Add($wifiBtnPanel)
+
+    # Right - Available networks
+    $networksPanel = New-Object System.Windows.Forms.Panel
+    $networksPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $networksPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:networksListView = New-Object System.Windows.Forms.ListView
+    $script:networksListView.View = [System.Windows.Forms.View]::Details
+    $script:networksListView.FullRowSelect = $true
+    $script:networksListView.GridLines = $true
+    $script:networksListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:networksListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    $script:networksListView.Columns.Add("SSID", 150) | Out-Null
+    $script:networksListView.Columns.Add("Signal", 60) | Out-Null
+    $script:networksListView.Columns.Add("Ch", 40) | Out-Null
+    $script:networksListView.Columns.Add("Security", 100) | Out-Null
+
+    $networksListViewRef = $script:networksListView
+
+    $networksBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $networksBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $networksBtnPanel.Height = 35
+
+    $scanBtn = New-Object System.Windows.Forms.Button
+    $scanBtn.Text = "Scan Networks"
+    $scanBtn.Width = 100
+    $scanBtn.Add_Click({
+        $networksListViewRef.Items.Clear()
+        $networks = & $scanNetworksRef
+        foreach ($net in $networks) {
+            $item = New-Object System.Windows.Forms.ListViewItem($net.SSID)
+            $item.SubItems.Add("$($net.Signal)%") | Out-Null
+            $item.SubItems.Add($net.Channel.ToString()) | Out-Null
+            $item.SubItems.Add($net.Security) | Out-Null
+            $networksListViewRef.Items.Add($item) | Out-Null
+        }
+    }.GetNewClosure())
+    $networksBtnPanel.Controls.Add($scanBtn)
+
+    $networksPanel.Controls.Add($script:networksListView)
+    $networksPanel.Controls.Add($networksBtnPanel)
+
+    $wirelessPanel.Controls.Add($wifiInfoPanel, 0, 0)
+    $wirelessPanel.Controls.Add($networksPanel, 1, 0)
+    $wirelessGroup.Controls.Add($wirelessPanel)
+    #endregion
+
+    # Add sections to main panel
+    $mainPanel.Controls.Add($adapterGroup, 0, 0)
+    $mainPanel.Controls.Add($middlePanel, 0, 1)
+    $mainPanel.Controls.Add($wirelessGroup, 0, 2)
+
+    $tab.Controls.Add($mainPanel)
+
+    # Initial load
+    $refreshAdaptersBtn.PerformClick()
+    $refreshWifiBtn.PerformClick()
+}
+
+#endregion
