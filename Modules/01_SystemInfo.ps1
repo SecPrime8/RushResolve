@@ -269,14 +269,14 @@ function Get-SystemInfo {
         $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
         $cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
 
-        [void]$info.AppendLine("═══════════════════════════════════════════════════════")
+        [void]$info.AppendLine("=========================================================")
         [void]$info.AppendLine("  SYSTEM INFORMATION")
-        [void]$info.AppendLine("═══════════════════════════════════════════════════════")
+        [void]$info.AppendLine("=========================================================")
         [void]$info.AppendLine("")
 
         # Computer
         [void]$info.AppendLine("  COMPUTER")
-        [void]$info.AppendLine("  ────────────────────────────────────────────────────")
+        [void]$info.AppendLine("  ---------------------------------------------------------")
         [void]$info.AppendLine("  Computer Name:    $env:COMPUTERNAME")
         if ($cs) {
             [void]$info.AppendLine("  Manufacturer:     $($cs.Manufacturer)")
@@ -289,7 +289,7 @@ function Get-SystemInfo {
 
         # Operating System
         [void]$info.AppendLine("  OPERATING SYSTEM")
-        [void]$info.AppendLine("  ────────────────────────────────────────────────────")
+        [void]$info.AppendLine("  ---------------------------------------------------------")
         if ($os) {
             [void]$info.AppendLine("  OS Name:          $($os.Caption)")
             [void]$info.AppendLine("  Version:          $($os.Version)")
@@ -306,7 +306,7 @@ function Get-SystemInfo {
 
         # Domain/Workgroup
         [void]$info.AppendLine("  NETWORK IDENTITY")
-        [void]$info.AppendLine("  ────────────────────────────────────────────────────")
+        [void]$info.AppendLine("  ---------------------------------------------------------")
         if ($cs) {
             if ($cs.PartOfDomain) {
                 [void]$info.AppendLine("  Domain:           $($cs.Domain)")
@@ -330,7 +330,7 @@ function Get-SystemInfo {
 
         # Hardware
         [void]$info.AppendLine("  HARDWARE")
-        [void]$info.AppendLine("  ────────────────────────────────────────────────────")
+        [void]$info.AppendLine("  ---------------------------------------------------------")
         if ($cpu) {
             [void]$info.AppendLine("  CPU:              $($cpu.Name.Trim())")
             [void]$info.AppendLine("  Cores:            $($cpu.NumberOfCores) cores, $($cpu.NumberOfLogicalProcessors) threads")
@@ -343,7 +343,7 @@ function Get-SystemInfo {
 
         # Disk Space
         [void]$info.AppendLine("  STORAGE")
-        [void]$info.AppendLine("  ────────────────────────────────────────────────────")
+        [void]$info.AppendLine("  ---------------------------------------------------------")
         $disks = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
         foreach ($disk in $disks) {
             $freeGB = [math]::Round($disk.FreeSpace / 1GB, 1)
@@ -355,7 +355,7 @@ function Get-SystemInfo {
 
         # Network
         [void]$info.AppendLine("  NETWORK")
-        [void]$info.AppendLine("  ────────────────────────────────────────────────────")
+        [void]$info.AppendLine("  ---------------------------------------------------------")
         $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" }
         foreach ($adapter in $adapters) {
@@ -366,9 +366,9 @@ function Get-SystemInfo {
         }
 
         [void]$info.AppendLine("")
-        [void]$info.AppendLine("═══════════════════════════════════════════════════════")
+        [void]$info.AppendLine("=========================================================")
         [void]$info.AppendLine("  Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-        [void]$info.AppendLine("═══════════════════════════════════════════════════════")
+        [void]$info.AppendLine("=========================================================")
     }
     catch {
         [void]$info.AppendLine("Error gathering system information: $_")
