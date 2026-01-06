@@ -1,9 +1,14 @@
 {
-  "global": {
-    "cacheCredentials": false,
-    "windowWidth": 900,
-    "windowHeight": 700,
-    "lastTab": ""
-  },
-  "modules": {}
+    "global":  {
+                   "cacheCredentials":  true,
+                   "windowWidth":  900,
+                   "windowHeight":  700,
+                   "lastTab":  "Software Info"
+               },
+    "modules":  {
+                    "SoftwareInstaller":  {
+                                              "localPath":  "D:\\RushResolveApp\\Repo",
+                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software"
+                                          }
+                }
 }
