@@ -11,7 +11,92 @@ $script:ModuleDescription = "Install applications from network share or local di
 
 #region Script Blocks (defined first to avoid scope issues)
 
-# Scan directory for installable applications
+# Helper: Process a single folder for installer
+$script:ProcessFolder = {
+    param([System.IO.DirectoryInfo]$Folder)
+
+    $configPath = Join-Path $Folder.FullName "install.json"
+    $hasConfig = Test-Path $configPath
+
+    if ($hasConfig) {
+        # Load config file
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+
+            # Find the installer file
+            $installerFile = $null
+            if ($config.installer) {
+                $installerFile = Join-Path $Folder.FullName $config.installer
+            } else {
+                # Auto-detect installer
+                $found = Get-ChildItem -Path $Folder.FullName -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in '.msi', '.exe' } |
+                    Select-Object -First 1
+                if ($found) { $installerFile = $found.FullName }
+            }
+
+            if ($installerFile -and (Test-Path $installerFile)) {
+                $ext = [System.IO.Path]::GetExtension($installerFile)
+                $isMsi = ($ext -eq '.msi')
+
+                # Build values with proper conditionals
+                $appName = if ($config.name) { $config.name } else { $Folder.Name }
+                $appVersion = if ($config.version) { $config.version } else { "" }
+                $appDesc = if ($config.description) { $config.description } else { "" }
+                $defaultSilent = if ($isMsi) { "/qn /norestart" } else { "/S" }
+                $defaultInteractive = if ($isMsi) { "/qb" } else { "" }
+                $silentArgs = if ($config.silentArgs) { $config.silentArgs } else { $defaultSilent }
+                $interactiveArgs = if ($config.interactiveArgs) { $config.interactiveArgs } else { $defaultInteractive }
+                $requiresElev = if ($null -ne $config.requiresElevation) { $config.requiresElevation } else { $true }
+
+                return @{
+                    Name = $appName
+                    Version = $appVersion
+                    Description = $appDesc
+                    InstallerPath = $installerFile
+                    InstallerType = $ext
+                    SilentArgs = $silentArgs
+                    InteractiveArgs = $interactiveArgs
+                    RequiresElevation = $requiresElev
+                    HasConfig = $true
+                    FolderPath = $Folder.FullName
+                }
+            }
+        }
+        catch {
+            # Config parse failed, skip this folder
+        }
+    }
+    else {
+        # No config, look for installer file
+        $installer = Get-ChildItem -Path $Folder.FullName -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.msi', '.exe' } |
+            Select-Object -First 1
+
+        if ($installer) {
+            $isMsi = ($installer.Extension -eq '.msi')
+            $silentArgs = if ($isMsi) { "/qn /norestart" } else { "/S" }
+            $interactiveArgs = if ($isMsi) { "/qb" } else { "" }
+
+            return @{
+                Name = $Folder.Name
+                Version = ""
+                Description = ""
+                InstallerPath = $installer.FullName
+                InstallerType = $installer.Extension
+                SilentArgs = $silentArgs
+                InteractiveArgs = $interactiveArgs
+                RequiresElevation = $true
+                HasConfig = $false
+                FolderPath = $Folder.FullName
+            }
+        }
+    }
+
+    return $null
+}
+
+# Scan directory for installable applications (2 levels deep)
 $script:ScanForApps = {
     param([string]$Path)
 
@@ -45,84 +130,23 @@ $script:ScanForApps = {
         }
     }
 
-    # Scan subfolders for apps with optional config
-    $subfolders = Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue
+    # Scan subfolders (level 1) for apps
+    $level1Folders = Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue
 
-    foreach ($folder in $subfolders) {
-        $configPath = Join-Path $folder.FullName "install.json"
-        $hasConfig = Test-Path $configPath
-
-        if ($hasConfig) {
-            # Load config file
-            try {
-                $config = Get-Content $configPath -Raw | ConvertFrom-Json
-
-                # Find the installer file
-                $installerFile = $null
-                if ($config.installer) {
-                    $installerFile = Join-Path $folder.FullName $config.installer
-                } else {
-                    # Auto-detect installer
-                    $found = Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
-                        Where-Object { $_.Extension -in '.msi', '.exe' } |
-                        Select-Object -First 1
-                    if ($found) { $installerFile = $found.FullName }
-                }
-
-                if ($installerFile -and (Test-Path $installerFile)) {
-                    $ext = [System.IO.Path]::GetExtension($installerFile)
-                    $isMsi = ($ext -eq '.msi')
-
-                    # Build values with proper conditionals
-                    $appName = if ($config.name) { $config.name } else { $folder.Name }
-                    $appVersion = if ($config.version) { $config.version } else { "" }
-                    $appDesc = if ($config.description) { $config.description } else { "" }
-                    $defaultSilent = if ($isMsi) { "/qn /norestart" } else { "/S" }
-                    $defaultInteractive = if ($isMsi) { "/qb" } else { "" }
-                    $silentArgs = if ($config.silentArgs) { $config.silentArgs } else { $defaultSilent }
-                    $interactiveArgs = if ($config.interactiveArgs) { $config.interactiveArgs } else { $defaultInteractive }
-                    $requiresElev = if ($null -ne $config.requiresElevation) { $config.requiresElevation } else { $true }
-
-                    $apps += @{
-                        Name = $appName
-                        Version = $appVersion
-                        Description = $appDesc
-                        InstallerPath = $installerFile
-                        InstallerType = $ext
-                        SilentArgs = $silentArgs
-                        InteractiveArgs = $interactiveArgs
-                        RequiresElevation = $requiresElev
-                        HasConfig = $true
-                        FolderPath = $folder.FullName
-                    }
-                }
-            }
-            catch {
-                # Config parse failed, skip this folder
-            }
+    foreach ($folder in $level1Folders) {
+        $result = & $script:ProcessFolder -Folder $folder
+        if ($result) {
+            $apps += $result
         }
         else {
-            # No config, look for installer file
-            $installer = Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -in '.msi', '.exe' } |
-                Select-Object -First 1
-
-            if ($installer) {
-                $isMsi = ($installer.Extension -eq '.msi')
-                $silentArgs = if ($isMsi) { "/qn /norestart" } else { "/S" }
-                $interactiveArgs = if ($isMsi) { "/qb" } else { "" }
-
-                $apps += @{
-                    Name = $folder.Name
-                    Version = ""
-                    Description = ""
-                    InstallerPath = $installer.FullName
-                    InstallerType = $installer.Extension
-                    SilentArgs = $silentArgs
-                    InteractiveArgs = $interactiveArgs
-                    RequiresElevation = $true
-                    HasConfig = $false
-                    FolderPath = $folder.FullName
+            # No installer at level 1, check level 2 subfolders
+            $level2Folders = Get-ChildItem -Path $folder.FullName -Directory -ErrorAction SilentlyContinue
+            foreach ($subfolder in $level2Folders) {
+                $subResult = & $script:ProcessFolder -Folder $subfolder
+                if ($subResult) {
+                    # Prefix name with parent folder for clarity
+                    $subResult.Name = "$($folder.Name) / $($subResult.Name)"
+                    $apps += $subResult
                 }
             }
         }
