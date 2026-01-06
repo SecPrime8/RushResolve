@@ -719,6 +719,10 @@ function Initialize-Module {
         foreach ($printer in $checkedItems) {
             if ($allUsers) {
                 $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
+                # Also add for current user so it shows immediately
+                if ($result.Success) {
+                    & $script:AddNetworkPrinter -PrinterPath $printer.FullPath | Out-Null
+                }
             }
             else {
                 $result = & $script:AddNetworkPrinter -PrinterPath $printer.FullPath
@@ -800,6 +804,10 @@ function Initialize-Module {
 
                 if ($allUsers) {
                     $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
+                    # Also add for current user so it shows immediately
+                    if ($result.Success) {
+                        & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
+                    }
                 }
                 else {
                     $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
@@ -835,6 +843,11 @@ function Initialize-Module {
     # Set splitter position after adding (avoids size conflicts)
     $script:splitContainer.SplitterDistance = 400
 
-    # Initial load
+    # Initial load - installed printers
     & $script:RefreshInstalledPrinters
+
+    # Auto-load server printers if default server is configured
+    if ($script:PrintServer) {
+        & $script:RefreshServerPrinters
+    }
 }

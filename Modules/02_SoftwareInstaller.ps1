@@ -593,6 +593,13 @@ Requires Elevation: $elevText
 
     # Initial log message
     $timestamp = Get-Date -Format "HH:mm:ss"
-    $script:logBox.AppendText("[$timestamp] Software Installer ready. Enter a path or Browse, then click Refresh.`r`n")
-    $script:logBox.AppendText("[$timestamp] Supports: Local paths (C:\...), Network shares (\\server\share), Mapped drives (Z:\...)`r`n")
+    $script:logBox.AppendText("[$timestamp] Software Installer ready.`r`n")
+
+    # Auto-load if path exists
+    if ($script:currentPath -and (Test-Path $script:currentPath -ErrorAction SilentlyContinue)) {
+        & $script:RefreshAppList
+    }
+    else {
+        $script:logBox.AppendText("[$timestamp] Enter a path or Browse, then click Refresh.`r`n")
+    }
 }
