@@ -147,13 +147,36 @@ $script:GetServerPrinters = {
     return $printers | Sort-Object { $_.Name }
 }
 
-# Add network printer
+# Add network printer (current user only)
 $script:AddNetworkPrinter = {
     param([string]$PrinterPath)
 
     try {
         Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
         return @{ Success = $true; Error = $null }
+    }
+    catch {
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+# Add network printer for ALL users (requires elevation)
+$script:AddNetworkPrinterAllUsers = {
+    param([string]$PrinterPath)
+
+    try {
+        # Use printui.dll with /ga flag (add per-machine printer connection)
+        $result = Start-ElevatedProcess -FilePath "rundll32.exe" `
+            -ArgumentList "printui.dll,PrintUIEntry /ga /n`"$PrinterPath`"" `
+            -Wait -Hidden `
+            -OperationName "install printer for all users"
+
+        if ($result.Success) {
+            return @{ Success = $true; Error = $null }
+        }
+        else {
+            return @{ Success = $false; Error = $result.Error }
+        }
     }
     catch {
         return @{ Success = $false; Error = $_.Exception.Message }
@@ -393,6 +416,14 @@ function Initialize-Module {
     $manualAddBtn.Width = 95
     $manualAddBtn.Height = 28
     $serverBtnPanel.Controls.Add($manualAddBtn)
+
+    # All users checkbox
+    $script:allUsersCheckbox = New-Object System.Windows.Forms.CheckBox
+    $script:allUsersCheckbox.Text = "All Users"
+    $script:allUsersCheckbox.AutoSize = $true
+    $script:allUsersCheckbox.Padding = New-Object System.Windows.Forms.Padding(10, 5, 0, 0)
+    $script:allUsersCheckbox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $serverBtnPanel.Controls.Add($script:allUsersCheckbox)
 
     $rightPanel.Controls.Add($serverBtnPanel, 0, 3)
     $script:splitContainer.Panel2.Controls.Add($rightPanel)
@@ -682,9 +713,17 @@ function Initialize-Module {
 
         $successCount = 0
         $failedPrinters = @()
+        $allUsers = $script:allUsersCheckbox.Checked
+        $modeText = if ($allUsers) { "all users" } else { "current user" }
 
         foreach ($printer in $checkedItems) {
-            $result = & $script:AddNetworkPrinter -PrinterPath $printer.FullPath
+            if ($allUsers) {
+                $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
+            }
+            else {
+                $result = & $script:AddNetworkPrinter -PrinterPath $printer.FullPath
+            }
+
             if ($result.Success) {
                 $successCount++
             }
@@ -695,14 +734,14 @@ function Initialize-Module {
 
         if ($failedPrinters.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
-                "Successfully added $successCount printer(s).",
+                "Successfully added $successCount printer(s) for $modeText.",
                 "Success",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Information
             )
         }
         else {
-            $message = "Added $successCount printer(s).`n`nFailed:`n" + ($failedPrinters -join "`n")
+            $message = "Added $successCount printer(s) for $modeText.`n`nFailed:`n" + ($failedPrinters -join "`n")
             [System.Windows.Forms.MessageBox]::Show(
                 $message,
                 "Partial Success",
@@ -756,10 +795,19 @@ function Initialize-Module {
         if ($inputForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $printerPath = $pathTextBox.Text.Trim()
             if ($printerPath) {
-                $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
+                $allUsers = $script:allUsersCheckbox.Checked
+                $modeText = if ($allUsers) { "all users" } else { "current user" }
+
+                if ($allUsers) {
+                    $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
+                }
+                else {
+                    $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
+                }
+
                 if ($result.Success) {
                     [System.Windows.Forms.MessageBox]::Show(
-                        "Printer added successfully.",
+                        "Printer added successfully for $modeText.",
                         "Success",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Information
