@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    System Information Module for Windows Tech Toolkit
+    System Information Module for Rush Resolve
 .DESCRIPTION
     Displays system information and provides quick access to common admin tools.
 #>
@@ -256,7 +256,7 @@ function Initialize-Module {
     $rebootBtn.Add_Click({
         $confirm = [System.Windows.Forms.MessageBox]::Show("Reboot this computer?", "Confirm", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            shutdown /r /t 30 /c "Reboot initiated by Tech Toolkit"
+            shutdown /r /t 30 /c "Reboot initiated by Rush Resolve"
         }
     })
     $buttonPanel.Controls.Add($rebootBtn)
@@ -270,7 +270,7 @@ function Initialize-Module {
     $shutdownBtn.Add_Click({
         $confirm = [System.Windows.Forms.MessageBox]::Show("Shut down this computer?", "Confirm", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            shutdown /s /t 30 /c "Shutdown initiated by Tech Toolkit"
+            shutdown /s /t 30 /c "Shutdown initiated by Rush Resolve"
         }
     })
     $buttonPanel.Controls.Add($shutdownBtn)

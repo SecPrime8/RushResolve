@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Printer Management Module for Windows Tech Toolkit
+    Printer Management Module for Rush Resolve
 .DESCRIPTION
     Add, remove, and manage network printers.
     Integrates with Rush print server and printer backup/restore.

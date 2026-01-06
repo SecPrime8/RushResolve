@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Software Installer Module for Windows Tech Toolkit
+    Software Installer Module for Rush Resolve
 .DESCRIPTION
     Install specialty applications from network share or local/USB directory.
     Supports optional install.json config files for silent install parameters.
@@ -181,7 +181,7 @@ $script:InstallApp = {
             $LogBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
 
-            $tempDir = Join-Path $env:TEMP "TechToolkit_Install"
+            $tempDir = Join-Path $env:TEMP "RushResolve_Install"
             if (-not (Test-Path $tempDir)) {
                 New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
             }

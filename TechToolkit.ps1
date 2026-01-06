@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Windows Tech Toolkit - Portable IT Technician Toolbox
+    Rush Resolve - Portable IT Technician Toolbox
 .DESCRIPTION
     Modular PowerShell GUI application for IT technicians.
     Runs as standard user with on-demand credential elevation.
@@ -17,7 +17,7 @@ Add-Type -AssemblyName System.Drawing
 #endregion
 
 #region Script Variables
-$script:AppName = "Windows Tech Toolkit"
+$script:AppName = "Rush Resolve"
 $script:AppVersion = "2.0"
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
