@@ -768,16 +768,18 @@ function Start-ElevatedProcess {
     }
 
     try {
-        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $processInfo.FileName = $FilePath
-        $processInfo.Arguments = $ArgumentList
+        # Build Start-Process parameters
+        $startParams = @{
+            FilePath = $FilePath
+            PassThru = $true
+        }
+
+        if ($ArgumentList) {
+            $startParams.ArgumentList = $ArgumentList
+        }
 
         # If already running as admin, run directly without credentials
-        if ($script:IsElevated) {
-            $processInfo.UseShellExecute = $true
-            # No credential needed
-        }
-        else {
+        if (-not $script:IsElevated) {
             # Get credentials if not provided
             if (-not $Credential) {
                 $Credential = Get-ElevatedCredential -Message "Enter administrator credentials to $OperationName"
@@ -786,41 +788,30 @@ function Start-ElevatedProcess {
                     return $result
                 }
             }
-
-            $processInfo.UseShellExecute = $false
-            $processInfo.UserName = $Credential.UserName
-            $processInfo.Password = $Credential.Password
-
-            # Handle domain
-            if ($Credential.UserName -match '\\') {
-                $processInfo.Domain = ($Credential.UserName -split '\\')[0]
-                $processInfo.UserName = ($Credential.UserName -split '\\')[1]
-            }
-            elseif ($Credential.UserName -match '@') {
-                $processInfo.Domain = ($Credential.UserName -split '@')[1]
-                $processInfo.UserName = ($Credential.UserName -split '@')[0]
-            }
-            else {
-                $processInfo.Domain = $env:USERDOMAIN
-            }
+            $startParams.Credential = $Credential
         }
 
         if ($Hidden) {
-            $processInfo.CreateNoWindow = $true
-            $processInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+            $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
         }
 
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $processInfo
-        $process.Start() | Out-Null
-
         if ($Wait) {
-            $process.WaitForExit()
+            $startParams.Wait = $true
+        }
+
+        $process = Start-Process @startParams
+
+        if ($Wait -and $process) {
             $result.ExitCode = $process.ExitCode
             $result.Success = ($process.ExitCode -eq 0)
             if (-not $result.Success) {
                 $result.Error = "Process exited with code $($process.ExitCode)"
             }
+        }
+        elseif ($Wait) {
+            # Wait was specified but no process returned (process completed inline)
+            $result.Success = $true
+            $result.ExitCode = 0
         }
         else {
             $result.Success = $true
