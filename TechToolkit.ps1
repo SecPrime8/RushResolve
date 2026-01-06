@@ -99,6 +99,17 @@ function Set-ModuleSetting {
 #endregion
 
 #region Credential Elevation Helpers
+
+# Check if currently running as administrator
+function Test-IsElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Cache the elevation status at startup
+$script:IsElevated = Test-IsElevated
+
 function Get-ElevatedCredential {
     <#
     .SYNOPSIS
@@ -293,34 +304,42 @@ function Start-ElevatedProcess {
         ExitCode = -1
     }
 
-    # Get credentials if not provided
-    if (-not $Credential) {
-        $Credential = Get-ElevatedCredential -Message "Enter administrator credentials to $OperationName"
-        if (-not $Credential) {
-            $result.Error = "Operation cancelled by user"
-            return $result
-        }
-    }
-
     try {
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $FilePath
         $processInfo.Arguments = $ArgumentList
-        $processInfo.UseShellExecute = $false
-        $processInfo.UserName = $Credential.UserName
-        $processInfo.Password = $Credential.Password
 
-        # Handle domain
-        if ($Credential.UserName -match '\\') {
-            $processInfo.Domain = ($Credential.UserName -split '\\')[0]
-            $processInfo.UserName = ($Credential.UserName -split '\\')[1]
-        }
-        elseif ($Credential.UserName -match '@') {
-            $processInfo.Domain = ($Credential.UserName -split '@')[1]
-            $processInfo.UserName = ($Credential.UserName -split '@')[0]
+        # If already running as admin, run directly without credentials
+        if ($script:IsElevated) {
+            $processInfo.UseShellExecute = $true
+            # No credential needed
         }
         else {
-            $processInfo.Domain = $env:USERDOMAIN
+            # Get credentials if not provided
+            if (-not $Credential) {
+                $Credential = Get-ElevatedCredential -Message "Enter administrator credentials to $OperationName"
+                if (-not $Credential) {
+                    $result.Error = "Operation cancelled by user"
+                    return $result
+                }
+            }
+
+            $processInfo.UseShellExecute = $false
+            $processInfo.UserName = $Credential.UserName
+            $processInfo.Password = $Credential.Password
+
+            # Handle domain
+            if ($Credential.UserName -match '\\') {
+                $processInfo.Domain = ($Credential.UserName -split '\\')[0]
+                $processInfo.UserName = ($Credential.UserName -split '\\')[1]
+            }
+            elseif ($Credential.UserName -match '@') {
+                $processInfo.Domain = ($Credential.UserName -split '@')[1]
+                $processInfo.UserName = ($Credential.UserName -split '@')[0]
+            }
+            else {
+                $processInfo.Domain = $env:USERDOMAIN
+            }
         }
 
         if ($Hidden) {
