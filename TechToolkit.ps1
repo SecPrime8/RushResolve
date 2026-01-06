@@ -767,59 +767,97 @@ function Start-ElevatedProcess {
         ExitCode = -1
     }
 
+    # If already running as admin, run directly
+    if ($script:IsElevated) {
+        try {
+            $startParams = @{
+                FilePath = $FilePath
+                PassThru = $true
+            }
+            if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
+            if ($Hidden) { $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
+            if ($Wait) { $startParams.Wait = $true }
+
+            $process = Start-Process @startParams
+            if ($Wait -and $process) {
+                $result.ExitCode = $process.ExitCode
+                $result.Success = ($process.ExitCode -eq 0)
+                if (-not $result.Success) { $result.Error = "Process exited with code $($process.ExitCode)" }
+            }
+            else {
+                $result.Success = $true
+                $result.ExitCode = 0
+            }
+        }
+        catch {
+            $result.Error = $_.Exception.Message
+        }
+        return $result
+    }
+
+    # Get credentials if not provided
+    if (-not $Credential) {
+        $Credential = Get-ElevatedCredential -Message "Enter administrator credentials to $OperationName"
+        if (-not $Credential) {
+            $result.Error = "Operation cancelled by user"
+            return $result
+        }
+    }
+
+    # Method 1: Try Start-Process -Credential (works in many environments)
     try {
-        # Build Start-Process parameters
         $startParams = @{
             FilePath = $FilePath
+            Credential = $Credential
             PassThru = $true
+            ErrorAction = 'Stop'
         }
-
-        if ($ArgumentList) {
-            $startParams.ArgumentList = $ArgumentList
-        }
-
-        # If already running as admin, run directly without credentials
-        if (-not $script:IsElevated) {
-            # Get credentials if not provided
-            if (-not $Credential) {
-                $Credential = Get-ElevatedCredential -Message "Enter administrator credentials to $OperationName"
-                if (-not $Credential) {
-                    $result.Error = "Operation cancelled by user"
-                    return $result
-                }
-            }
-            $startParams.Credential = $Credential
-        }
-
-        if ($Hidden) {
-            $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-        }
-
-        if ($Wait) {
-            $startParams.Wait = $true
-        }
+        if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
+        if ($Hidden) { $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
+        if ($Wait) { $startParams.Wait = $true }
 
         $process = Start-Process @startParams
 
         if ($Wait -and $process) {
             $result.ExitCode = $process.ExitCode
             $result.Success = ($process.ExitCode -eq 0)
-            if (-not $result.Success) {
-                $result.Error = "Process exited with code $($process.ExitCode)"
-            }
-        }
-        elseif ($Wait) {
-            # Wait was specified but no process returned (process completed inline)
-            $result.Success = $true
-            $result.ExitCode = 0
+            if (-not $result.Success) { $result.Error = "Process exited with code $($process.ExitCode)" }
         }
         else {
             $result.Success = $true
             $result.ExitCode = 0
         }
+        return $result
     }
     catch {
-        $result.Error = $_.Exception.Message
+        # Method 1 failed, try Method 2
+    }
+
+    # Method 2: Use PowerShell job with credentials (better special char handling)
+    try {
+        $scriptBlock = {
+            param($FilePath, $ArgumentList, $Hidden, $Wait)
+            $startParams = @{ FilePath = $FilePath; PassThru = $true }
+            if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
+            if ($Hidden) { $startParams.WindowStyle = 'Hidden' }
+            if ($Wait) { $startParams.Wait = $true }
+            $proc = Start-Process @startParams
+            if ($Wait -and $proc) { return $proc.ExitCode }
+            return 0
+        }
+
+        $job = Start-Job -ScriptBlock $scriptBlock -Credential $Credential -ArgumentList $FilePath, $ArgumentList, $Hidden, $Wait
+        $jobResult = $job | Wait-Job | Receive-Job
+        Remove-Job $job -Force
+
+        if ($null -eq $jobResult) { $jobResult = 0 }
+        $result.ExitCode = $jobResult
+        $result.Success = ($jobResult -eq 0)
+        if (-not $result.Success) { $result.Error = "Process exited with code $jobResult" }
+        return $result
+    }
+    catch {
+        $result.Error = "Elevation failed: $($_.Exception.Message). Try running the toolkit as administrator."
     }
 
     return $result
