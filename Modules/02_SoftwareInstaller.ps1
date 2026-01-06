@@ -337,14 +337,6 @@ function Initialize-Module {
 
     #region Event Handlers
 
-    # Capture references for closures
-    $listViewRef = $script:appListView
-    $logBoxRef = $script:logBox
-    $sourceComboRef = $script:sourceCombo
-    $silentRadioRef = $script:silentRadio
-    $scanBlockRef = $script:ScanForApps
-    $installBlockRef = $script:InstallApp
-
     # Current path tracker
     $script:currentPath = ""
     $script:networkPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
@@ -385,10 +377,7 @@ function Initialize-Module {
         $script:logBox.ScrollToCaret()
     }
 
-    # Capture refresh block for closures
-    $refreshBlockRef = $script:RefreshAppList
-
-    # Browse button
+    # Browse button - no closure, use $script: vars directly
     $browseBtn.Add_Click({
         $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
         $folderBrowser.Description = "Select installer directory"
@@ -397,7 +386,7 @@ function Initialize-Module {
         if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $script:currentPath = $folderBrowser.SelectedPath
 
-            if ($sourceComboRef.SelectedIndex -eq 0) {
+            if ($script:sourceCombo.SelectedIndex -eq 0) {
                 $script:networkPath = $script:currentPath
                 Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Value $script:currentPath
             }
@@ -406,30 +395,30 @@ function Initialize-Module {
                 Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Value $script:currentPath
             }
 
-            & $refreshBlockRef
+            & $script:RefreshAppList
         }
-    }.GetNewClosure())
+    })
 
     # Refresh button
     $refreshBtn.Add_Click({
-        & $refreshBlockRef
-    }.GetNewClosure())
+        & $script:RefreshAppList
+    })
 
     # Source combo change
-    $sourceComboRef.Add_SelectedIndexChanged({
-        if ($sourceComboRef.SelectedIndex -eq 0) {
+    $script:sourceCombo.Add_SelectedIndexChanged({
+        if ($script:sourceCombo.SelectedIndex -eq 0) {
             $script:currentPath = $script:networkPath
         }
         else {
             $script:currentPath = $script:localPath
         }
-        & $refreshBlockRef
-    }.GetNewClosure())
+        & $script:RefreshAppList
+    })
 
     # Install button
     $installBtn.Add_Click({
         $selectedItems = @()
-        foreach ($item in $listViewRef.CheckedItems) {
+        foreach ($item in $script:appListView.CheckedItems) {
             $selectedItems += $item.Tag
         }
 
@@ -443,7 +432,7 @@ function Initialize-Module {
             return
         }
 
-        $silent = $silentRadioRef.Checked
+        $silent = $script:silentRadio.Checked
         $modeText = if ($silent) { "silent" } else { "interactive" }
 
         $confirm = [System.Windows.Forms.MessageBox]::Show(
@@ -455,32 +444,32 @@ function Initialize-Module {
 
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
             foreach ($app in $selectedItems) {
-                & $installBlockRef -App $app -Silent $silent -LogBox $logBoxRef
+                & $script:InstallApp -App $app -Silent $silent -LogBox $script:logBox
             }
 
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $logBoxRef.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
-            $logBoxRef.ScrollToCaret()
+            $script:logBox.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
+            $script:logBox.ScrollToCaret()
         }
-    }.GetNewClosure())
+    })
 
     # Select All button
     $selectAllBtn.Add_Click({
-        foreach ($item in $listViewRef.Items) {
+        foreach ($item in $script:appListView.Items) {
             $item.Checked = $true
         }
-    }.GetNewClosure())
+    })
 
     # Clear Selection button
     $clearSelBtn.Add_Click({
-        foreach ($item in $listViewRef.Items) {
+        foreach ($item in $script:appListView.Items) {
             $item.Checked = $false
         }
-    }.GetNewClosure())
+    })
 
     # View Details button
     $detailsBtn.Add_Click({
-        if ($listViewRef.SelectedItems.Count -eq 0) {
+        if ($script:appListView.SelectedItems.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
                 "Please select an application to view details.",
                 "No Selection",
@@ -490,7 +479,7 @@ function Initialize-Module {
             return
         }
 
-        $app = $listViewRef.SelectedItems[0].Tag
+        $app = $script:appListView.SelectedItems[0].Tag
 
         $versionText = if ($app.Version) { $app.Version } else { "(not specified)" }
         $descText = if ($app.Description) { $app.Description } else { "(none)" }
@@ -523,7 +512,7 @@ Requires Elevation: $elevText
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
-    }.GetNewClosure())
+    })
 
     #endregion
 
