@@ -309,7 +309,7 @@ function Initialize-Module {
     $rightPanel.RowCount = 4
     $rightPanel.ColumnCount = 1
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
-    $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 65))) | Out-Null
+    $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 85))) | Out-Null
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
 
@@ -442,12 +442,16 @@ function Initialize-Module {
 
         Clear-AppStatus
 
+        $script:serverListView.BeginUpdate()
         foreach ($p in $script:ServerPrintersList) {
-            # Apply filter
-            if ($filter -and ($p.Name.ToLower() -notlike "*$filter*") -and
-                ($p.Location -and $p.Location.ToLower() -notlike "*$filter*") -and
-                ($p.Comment -and $p.Comment.ToLower() -notlike "*$filter*")) {
-                continue
+            # Apply filter - check if ANY field matches
+            if ($filter) {
+                $nameMatch = $p.Name -and $p.Name.ToLower() -like "*$filter*"
+                $locMatch = $p.Location -and $p.Location.ToLower() -like "*$filter*"
+                $commentMatch = $p.Comment -and $p.Comment.ToLower() -like "*$filter*"
+                if (-not ($nameMatch -or $locMatch -or $commentMatch)) {
+                    continue
+                }
             }
 
             $item = New-Object System.Windows.Forms.ListViewItem($p.Name)
@@ -458,18 +462,23 @@ function Initialize-Module {
             $item.Tag = $p
             $script:serverListView.Items.Add($item) | Out-Null
         }
+        $script:serverListView.EndUpdate()
     }
 
     $script:ApplyFilter = {
+        $script:serverListView.BeginUpdate()
         $script:serverListView.Items.Clear()
         $filter = $script:filterTextBox.Text.Trim().ToLower()
 
         foreach ($p in $script:ServerPrintersList) {
-            # Apply filter
-            if ($filter -and ($p.Name.ToLower() -notlike "*$filter*") -and
-                ($p.Location -and $p.Location.ToLower() -notlike "*$filter*") -and
-                ($p.Comment -and $p.Comment.ToLower() -notlike "*$filter*")) {
-                continue
+            # Apply filter - check if ANY field matches
+            if ($filter) {
+                $nameMatch = $p.Name -and $p.Name.ToLower() -like "*$filter*"
+                $locMatch = $p.Location -and $p.Location.ToLower() -like "*$filter*"
+                $commentMatch = $p.Comment -and $p.Comment.ToLower() -like "*$filter*"
+                if (-not ($nameMatch -or $locMatch -or $commentMatch)) {
+                    continue
+                }
             }
 
             $item = New-Object System.Windows.Forms.ListViewItem($p.Name)
@@ -480,6 +489,7 @@ function Initialize-Module {
             $item.Tag = $p
             $script:serverListView.Items.Add($item) | Out-Null
         }
+        $script:serverListView.EndUpdate()
     }
     #endregion
 
