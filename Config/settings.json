@@ -1,6 +1,7 @@
 {
     "global":  {
                    "cacheCredentials":  true,
+                   "defaultDomain":  "RUSH",
                    "windowWidth":  900,
                    "windowHeight":  700,
                    "lastTab":  "Software Info"

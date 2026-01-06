@@ -16,6 +16,77 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 #endregion
 
+#region Splash Screen
+$script:SplashForm = $null
+$script:SplashLabel = $null
+$script:SplashProgress = $null
+
+function Show-SplashScreen {
+    $script:SplashForm = New-Object System.Windows.Forms.Form
+    $script:SplashForm.Text = ""
+    $script:SplashForm.Size = New-Object System.Drawing.Size(400, 200)
+    $script:SplashForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $script:SplashForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $script:SplashForm.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+    $script:SplashForm.TopMost = $true
+
+    # App name
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Text = "Rush Resolve"
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.ForeColor = [System.Drawing.Color]::White
+    $titleLabel.AutoSize = $true
+    $titleLabel.Location = New-Object System.Drawing.Point(100, 40)
+    $script:SplashForm.Controls.Add($titleLabel)
+
+    # Subtitle
+    $subLabel = New-Object System.Windows.Forms.Label
+    $subLabel.Text = "IT Technician Toolkit"
+    $subLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $subLabel.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+    $subLabel.AutoSize = $true
+    $subLabel.Location = New-Object System.Drawing.Point(130, 85)
+    $script:SplashForm.Controls.Add($subLabel)
+
+    # Status label
+    $script:SplashLabel = New-Object System.Windows.Forms.Label
+    $script:SplashLabel.Text = "Starting..."
+    $script:SplashLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:SplashLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
+    $script:SplashLabel.AutoSize = $true
+    $script:SplashLabel.Location = New-Object System.Drawing.Point(20, 130)
+    $script:SplashForm.Controls.Add($script:SplashLabel)
+
+    # Progress bar
+    $script:SplashProgress = New-Object System.Windows.Forms.ProgressBar
+    $script:SplashProgress.Location = New-Object System.Drawing.Point(20, 155)
+    $script:SplashProgress.Size = New-Object System.Drawing.Size(360, 20)
+    $script:SplashProgress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    $script:SplashProgress.MarqueeAnimationSpeed = 30
+    $script:SplashForm.Controls.Add($script:SplashProgress)
+
+    $script:SplashForm.Show()
+    $script:SplashForm.Refresh()
+}
+
+function Update-SplashStatus {
+    param([string]$Status)
+    if ($script:SplashLabel) {
+        $script:SplashLabel.Text = $Status
+        $script:SplashForm.Refresh()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+
+function Close-SplashScreen {
+    if ($script:SplashForm) {
+        $script:SplashForm.Close()
+        $script:SplashForm.Dispose()
+        $script:SplashForm = $null
+    }
+}
+#endregion
+
 #region Script Variables
 $script:AppName = "Rush Resolve"
 $script:AppVersion = "2.0"
@@ -50,19 +121,34 @@ function Get-DefaultSettings {
 }
 
 function Load-Settings {
+    $defaults = Get-DefaultSettings
+
     if (Test-Path $script:SettingsFile) {
         try {
             $content = Get-Content $script:SettingsFile -Raw
             $script:Settings = $content | ConvertFrom-Json
+
+            # Merge missing global settings with defaults
+            foreach ($key in $defaults.global.Keys) {
+                if (-not $script:Settings.global.PSObject.Properties[$key]) {
+                    $script:Settings.global | Add-Member -NotePropertyName $key -NotePropertyValue $defaults.global[$key]
+                }
+            }
+
+            # Ensure modules object exists
+            if (-not $script:Settings.modules) {
+                $script:Settings | Add-Member -NotePropertyName "modules" -NotePropertyValue @{}
+            }
+
             $script:CacheCredentials = $script:Settings.global.cacheCredentials
         }
         catch {
             Write-Warning "Failed to load settings, using defaults: $_"
-            $script:Settings = Get-DefaultSettings
+            $script:Settings = $defaults
         }
     }
     else {
-        $script:Settings = Get-DefaultSettings
+        $script:Settings = $defaults
         Save-Settings
     }
 }
@@ -1328,8 +1414,13 @@ function Show-SettingsDialog {
 
 #region Main Window
 function Show-MainWindow {
+    # Show splash screen immediately
+    Show-SplashScreen
+    Update-SplashStatus "Loading settings..."
+
     # Load settings first
     Load-Settings
+    Update-SplashStatus "Building interface..."
 
     # Create main form
     $form = New-Object System.Windows.Forms.Form
@@ -1499,10 +1590,15 @@ function Show-MainWindow {
     Update-CredentialStatusIndicator
 
     # Load modules
+    Update-SplashStatus "Loading modules..."
     $modules = Get-Modules
     $loadedCount = 0
+    $moduleIndex = 0
+    $totalModules = $modules.Count
 
     foreach ($module in $modules) {
+        $moduleIndex++
+        Update-SplashStatus "Loading module $moduleIndex of $totalModules`: $($module.BaseName)..."
         if (Load-Module -ModuleFile $module -TabControl $tabControl) {
             $loadedCount++
         }
@@ -1563,7 +1659,9 @@ function Initialize-Module {
         }
     }
 
-    # Show form
+    # Close splash and show main form
+    Update-SplashStatus "Ready!"
+    Close-SplashScreen
     [void]$form.ShowDialog()
 }
 #endregion
