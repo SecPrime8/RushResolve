@@ -173,9 +173,26 @@ $script:InstallApp = {
     try {
         $installerPath = $App.InstallerPath
 
-        # If installer is on a network share, copy to local temp first
-        # (elevated sessions may not have access to network shares)
+        # Check if path is on a network drive (mapped drive letter or UNC path)
+        # Elevated sessions with alternate credentials don't have access to:
+        # - UNC paths (\\server\share)
+        # - Mapped drives (K:\ etc) - these are per-user session
+        $needsCopy = $false
         if ($installerPath -like "\\*") {
+            # UNC path - always needs copy
+            $needsCopy = $true
+        }
+        elseif ($installerPath -match "^[A-Za-z]:") {
+            # Drive letter - check if it's a network/mapped drive
+            $driveLetter = $installerPath.Substring(0, 2)
+            $logicalDisk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveLetter'" -ErrorAction SilentlyContinue
+            if ($logicalDisk -and $logicalDisk.DriveType -eq 4) {
+                # DriveType 4 = Network Drive
+                $needsCopy = $true
+            }
+        }
+
+        if ($needsCopy) {
             $timestamp = Get-Date -Format "HH:mm:ss"
             $LogBox.AppendText("[$timestamp] Source: $installerPath`r`n")
             $LogBox.AppendText("[$timestamp] Copying from network to local temp...`r`n")
