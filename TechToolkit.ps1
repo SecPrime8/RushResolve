@@ -590,8 +590,10 @@ function Show-MainWindow {
     # Tab control
     $tabControl = New-Object System.Windows.Forms.TabControl
     $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $tabControl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $tabControl.Font = New-Object System.Drawing.Font("Segoe UI", 11)
     $tabControl.ShowToolTips = $true
+    $tabControl.ItemSize = New-Object System.Drawing.Size(120, 30)
+    $tabControl.SizeMode = [System.Windows.Forms.TabSizeMode]::Fixed
 
     # Status strip (bottom bar)
     $statusStrip = New-Object System.Windows.Forms.StatusStrip
@@ -610,7 +612,7 @@ function Show-MainWindow {
     # Panel to hold tab control (between menu and status bar)
     $mainPanel = New-Object System.Windows.Forms.Panel
     $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $mainPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+    $mainPanel.Padding = New-Object System.Windows.Forms.Padding(5, 10, 5, 5)
     $mainPanel.Controls.Add($tabControl)
 
     # Add controls in correct order (top to bottom)
