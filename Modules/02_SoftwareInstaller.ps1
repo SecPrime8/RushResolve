@@ -350,22 +350,22 @@ function Initialize-Module {
     $script:networkPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
     $script:localPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Default ""
 
-    # Function to refresh app list (defined as script block)
+    # Function to refresh app list (uses $script: scoped variables)
     $script:RefreshAppList = {
-        $listViewRef.Items.Clear()
+        $script:appListView.Items.Clear()
         $script:AppsList = @()
 
         $path = $script:currentPath
         if (-not $path -or -not (Test-Path $path)) {
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $logBoxRef.AppendText("[$timestamp] No valid path selected. Use Browse to select a directory.`r`n")
+            $script:logBox.AppendText("[$timestamp] No valid path selected. Use Browse to select a directory.`r`n")
             return
         }
 
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $logBoxRef.AppendText("[$timestamp] Scanning: $path`r`n")
+        $script:logBox.AppendText("[$timestamp] Scanning: $path`r`n")
 
-        $apps = & $scanBlockRef -Path $path
+        $apps = & $script:ScanForApps -Path $path
         $script:AppsList = $apps
 
         foreach ($app in $apps) {
@@ -377,12 +377,12 @@ function Initialize-Module {
             $configText = if ($app.HasConfig) { "Yes" } else { "No" }
             $item.SubItems.Add($configText) | Out-Null
             $item.Tag = $app
-            $listViewRef.Items.Add($item) | Out-Null
+            $script:appListView.Items.Add($item) | Out-Null
         }
 
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $logBoxRef.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
-        $logBoxRef.ScrollToCaret()
+        $script:logBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
+        $script:logBox.ScrollToCaret()
     }
 
     # Capture refresh block for closures
