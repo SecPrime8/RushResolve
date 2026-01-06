@@ -62,39 +62,84 @@ $script:GetServerPrinters = {
     param([string]$Server)
 
     $printers = @()
+    $serverName = $Server.TrimStart('\')
+
+    # Method 1: Try Get-Printer cmdlet (requires Print Management)
     try {
-        $serverPrinters = Get-Printer -ComputerName ($Server.TrimStart('\')) -ErrorAction Stop
+        $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
         foreach ($p in $serverPrinters) {
-            $printers += @{
-                Name = $p.Name
-                ShareName = $p.ShareName
-                FullPath = "$Server\$($p.ShareName)"
-                Location = $p.Location
-                Comment = $p.Comment
-                DriverName = $p.DriverName
-            }
-        }
-    }
-    catch {
-        # Try WMI approach if Get-Printer fails
-        try {
-            $wmiPrinters = Get-WmiObject -Class Win32_Printer -ComputerName ($Server.TrimStart('\').Split('\')[0]) -ErrorAction Stop |
-                Where-Object { $_.Shared -eq $true }
-            foreach ($p in $wmiPrinters) {
+            if ($p.Shared) {
+                $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
                 $printers += @{
                     Name = $p.Name
-                    ShareName = $p.ShareName
-                    FullPath = "$Server\$($p.ShareName)"
+                    ShareName = $shareName
+                    FullPath = "\\$serverName\$shareName"
                     Location = $p.Location
                     Comment = $p.Comment
                     DriverName = $p.DriverName
                 }
             }
         }
-        catch {
-            # Return empty
+        if ($printers.Count -gt 0) {
+            return $printers | Sort-Object { $_.Name }
         }
     }
+    catch {
+        # Method 1 failed, try next
+    }
+
+    # Method 2: Try WMI (older but often works)
+    try {
+        $wmiPrinters = Get-WmiObject -Class Win32_Printer -ComputerName $serverName -ErrorAction Stop |
+            Where-Object { $_.Shared -eq $true }
+        foreach ($p in $wmiPrinters) {
+            $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
+            $printers += @{
+                Name = $p.Name
+                ShareName = $shareName
+                FullPath = "\\$serverName\$shareName"
+                Location = $p.Location
+                Comment = $p.Comment
+                DriverName = $p.DriverName
+            }
+        }
+        if ($printers.Count -gt 0) {
+            return $printers | Sort-Object { $_.Name }
+        }
+    }
+    catch {
+        # Method 2 failed, try next
+    }
+
+    # Method 3: Enumerate shared printers via net view (most compatible)
+    try {
+        $netOutput = net view "\\$serverName" 2>&1
+        $lines = $netOutput -split "`n"
+        foreach ($line in $lines) {
+            if ($line -match "Print") {
+                # Format: "ShareName    Print    Comment"
+                $parts = $line -split '\s{2,}'
+                if ($parts.Count -ge 1) {
+                    $shareName = $parts[0].Trim()
+                    $comment = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "" }
+                    if ($shareName -and $shareName -ne "") {
+                        $printers += @{
+                            Name = $shareName
+                            ShareName = $shareName
+                            FullPath = "\\$serverName\$shareName"
+                            Location = ""
+                            Comment = $comment
+                            DriverName = ""
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        # Method 3 failed
+    }
+
     return $printers | Sort-Object { $_.Name }
 }
 
@@ -372,11 +417,21 @@ function Initialize-Module {
         $server = $script:serverTextBox.Text.Trim()
 
         if (-not $server) {
+            $item = New-Object System.Windows.Forms.ListViewItem("Enter a server name and click Browse")
+            $script:serverListView.Items.Add($item) | Out-Null
             return
         }
 
         $script:ServerPrintersList = & $script:GetServerPrinters -Server $server
         $filter = $script:filterTextBox.Text.Trim().ToLower()
+
+        if ($script:ServerPrintersList.Count -eq 0) {
+            $item = New-Object System.Windows.Forms.ListViewItem("No printers found on $server")
+            $script:serverListView.Items.Add($item) | Out-Null
+            $item2 = New-Object System.Windows.Forms.ListViewItem("Try: Add by Path button to enter printer path manually")
+            $script:serverListView.Items.Add($item2) | Out-Null
+            return
+        }
 
         foreach ($p in $script:ServerPrintersList) {
             # Apply filter
