@@ -57,25 +57,15 @@ $script:GetInstalledPrinters = {
     return $printers
 }
 
-# Get printers from print server (with progress updates)
+# Get printers from print server (with progress updates via app-wide status bar)
 $script:GetServerPrinters = {
     param([string]$Server)
 
     $printers = @()
     $serverName = $Server.TrimStart('\')
 
-    # Helper to update status
-    $updateStatus = {
-        param([string]$msg)
-        $script:serverListView.Items.Clear()
-        $item = New-Object System.Windows.Forms.ListViewItem($msg)
-        $script:serverListView.Items.Add($item) | Out-Null
-        $script:serverListView.Refresh()
-        [System.Windows.Forms.Application]::DoEvents()
-    }
-
     # Method 1: Try Get-Printer cmdlet (requires Print Management)
-    & $updateStatus "Trying Get-Printer cmdlet..."
+    Start-AppActivity "Trying Get-Printer cmdlet..."
     try {
         $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
         foreach ($p in $serverPrinters) {
@@ -100,7 +90,7 @@ $script:GetServerPrinters = {
     }
 
     # Method 2: Try WMI (older but often works)
-    & $updateStatus "Trying WMI query..."
+    Start-AppActivity "Trying WMI query..."
     try {
         $wmiPrinters = Get-WmiObject -Class Win32_Printer -ComputerName $serverName -ErrorAction Stop |
             Where-Object { $_.Shared -eq $true }
@@ -124,7 +114,7 @@ $script:GetServerPrinters = {
     }
 
     # Method 3: Enumerate shared printers via net view (most compatible)
-    & $updateStatus "Trying net view command..."
+    Start-AppActivity "Trying net view command..."
     try {
         $netOutput = net view "\\$serverName" 2>&1
         $lines = $netOutput -split "`n"
@@ -437,21 +427,20 @@ function Initialize-Module {
         $server = $script:serverTextBox.Text.Trim()
 
         if (-not $server) {
-            $item = New-Object System.Windows.Forms.ListViewItem("Enter a server name and click Browse")
-            $script:serverListView.Items.Add($item) | Out-Null
+            Set-AppError "Enter a server name and click Browse"
             return
         }
 
+        Start-AppActivity "Connecting to $server..."
         $script:ServerPrintersList = & $script:GetServerPrinters -Server $server
         $filter = $script:filterTextBox.Text.Trim().ToLower()
 
         if ($script:ServerPrintersList.Count -eq 0) {
-            $item = New-Object System.Windows.Forms.ListViewItem("No printers found on $server")
-            $script:serverListView.Items.Add($item) | Out-Null
-            $item2 = New-Object System.Windows.Forms.ListViewItem("Try: Add by Path button to enter printer path manually")
-            $script:serverListView.Items.Add($item2) | Out-Null
+            Set-AppError "No printers found on $server - try Add by Path"
             return
         }
+
+        Clear-AppStatus
 
         foreach ($p in $script:ServerPrintersList) {
             # Apply filter
@@ -504,13 +493,6 @@ function Initialize-Module {
     # Browse server
     $script:browseServerBtn.Add_Click({
         $script:serverListView.Items.Clear()
-        $server = $script:serverTextBox.Text.Trim()
-
-        # Show loading status
-        $item = New-Object System.Windows.Forms.ListViewItem("Connecting to $server...")
-        $script:serverListView.Items.Add($item) | Out-Null
-        $script:serverListView.Refresh()
-        [System.Windows.Forms.Application]::DoEvents()
 
         # Disable button during load
         $script:browseServerBtn.Enabled = $false

@@ -515,6 +515,76 @@ function New-Button {
 
     return $button
 }
+
+#region Status Bar Helper Functions
+function Start-AppActivity {
+    <#
+    .SYNOPSIS
+        Shows pulsing activity indicator for operations with unknown duration.
+    .PARAMETER Message
+        Status message to display.
+    #>
+    param([string]$Message)
+    $script:statusLabel.Text = $Message
+    $script:statusLabel.ForeColor = [System.Drawing.Color]::Black
+    $script:activityBar.Visible = $true
+    $script:progressBar.Visible = $false
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Set-AppProgress {
+    <#
+    .SYNOPSIS
+        Shows progress bar for operations with known number of steps.
+    .PARAMETER Value
+        Current step number.
+    .PARAMETER Maximum
+        Total number of steps.
+    .PARAMETER Message
+        Optional status message to display.
+    #>
+    param(
+        [int]$Value,
+        [int]$Maximum = 100,
+        [string]$Message = ""
+    )
+    if ($Message) { $script:statusLabel.Text = $Message }
+    $script:statusLabel.ForeColor = [System.Drawing.Color]::Black
+    $script:activityBar.Visible = $false
+    $script:progressBar.Maximum = $Maximum
+    $script:progressBar.Value = $Value
+    $script:progressBar.Visible = $true
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Set-AppError {
+    <#
+    .SYNOPSIS
+        Shows error message in status bar (red text).
+    .PARAMETER Message
+        Error message to display.
+    #>
+    param([string]$Message)
+    $script:statusLabel.Text = $Message
+    $script:statusLabel.ForeColor = [System.Drawing.Color]::Red
+    $script:activityBar.Visible = $false
+    $script:progressBar.Visible = $false
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Clear-AppStatus {
+    <#
+    .SYNOPSIS
+        Clears status bar - hides indicators and clears message.
+    #>
+    $script:statusLabel.Text = ""
+    $script:statusLabel.ForeColor = [System.Drawing.Color]::Black
+    $script:activityBar.Visible = $false
+    $script:progressBar.Visible = $false
+    [System.Windows.Forms.Application]::DoEvents()
+}
+#endregion
+
 #endregion
 
 #region Main Window
@@ -617,10 +687,35 @@ function Show-MainWindow {
     # Status strip (bottom bar)
     $statusStrip = New-Object System.Windows.Forms.StatusStrip
 
+    # Activity indicator (pulsing/marquee for indeterminate progress)
+    $script:activityBar = New-Object System.Windows.Forms.ToolStripProgressBar
+    $script:activityBar.Width = 80
+    $script:activityBar.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    $script:activityBar.MarqueeAnimationSpeed = 30
+    $script:activityBar.Visible = $false
+    $statusStrip.Items.Add($script:activityBar) | Out-Null
+
+    # Status message label
+    $script:statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
+    $script:statusLabel.Text = ""
+    $script:statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $statusStrip.Items.Add($script:statusLabel) | Out-Null
+
+    # Progress bar (for determinate progress like "2 of 5")
+    $script:progressBar = New-Object System.Windows.Forms.ToolStripProgressBar
+    $script:progressBar.Width = 120
+    $script:progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    $script:progressBar.Visible = $false
+    $statusStrip.Items.Add($script:progressBar) | Out-Null
+
+    # Separator before user info
+    $separator = New-Object System.Windows.Forms.ToolStripStatusLabel
+    $separator.Spring = $true
+    $statusStrip.Items.Add($separator) | Out-Null
+
     $userLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
     $userLabel.Text = "Running as: $env:USERDOMAIN\$env:USERNAME"
-    $userLabel.Spring = $true
-    $userLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $userLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
     $statusStrip.Items.Add($userLabel) | Out-Null
 
     $versionLabel = New-Object System.Windows.Forms.ToolStripStatusLabel

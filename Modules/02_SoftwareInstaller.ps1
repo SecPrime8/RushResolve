@@ -398,14 +398,17 @@ function Initialize-Module {
             $timestamp = Get-Date -Format "HH:mm:ss"
             $script:logBox.AppendText("[$timestamp] Invalid path: $path`r`n")
             $script:logBox.AppendText("[$timestamp] Enter a valid local or network path (e.g., C:\Installers or \\server\share)`r`n")
+            Set-AppError "Invalid path: $path"
             return
         }
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:logBox.AppendText("[$timestamp] Scanning: $path`r`n")
+        Start-AppActivity "Scanning for installers..."
 
         $apps = & $script:ScanForApps -Path $path
         $script:AppsList = $apps
+        Clear-AppStatus
 
         foreach ($app in $apps) {
             $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
@@ -503,10 +506,16 @@ function Initialize-Module {
         )
 
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $total = $selectedItems.Count
+            $current = 0
+
             foreach ($app in $selectedItems) {
+                $current++
+                Set-AppProgress -Value $current -Maximum $total -Message "Installing $current of $total`: $($app.Name)"
                 & $script:InstallApp -App $app -Silent $silent -LogBox $script:logBox
             }
 
+            Clear-AppStatus
             $timestamp = Get-Date -Format "HH:mm:ss"
             $script:logBox.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
             $script:logBox.ScrollToCaret()
