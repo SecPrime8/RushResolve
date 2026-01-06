@@ -24,9 +24,15 @@ $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
 $script:SettingsFile = Join-Path $script:ConfigPath "settings.json"
 
-# Credential caching (in-memory only, never persisted)
-$script:CachedCredential = $null
-$script:CacheCredentials = $false
+# Credential caching with PIN protection
+$script:CachedCredential = $null          # Encrypted credential blob (or decrypted PSCredential when unlocked)
+$script:CacheCredentials = $false         # Whether caching is enabled
+$script:CredentialPINHash = $null         # SHA256 hash of PIN
+$script:PINLastVerified = $null           # DateTime of last successful PIN entry
+$script:PINTimeout = 15                   # Minutes before PIN re-required
+$script:PINFailCount = 0                  # Track failed PIN attempts
+$script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
+$script:PINFile = Join-Path $script:ConfigPath "credential.pin"
 #endregion
 
 #region Settings Management
@@ -98,6 +104,319 @@ function Set-ModuleSetting {
 }
 #endregion
 
+#region PIN-Protected Credential Cache
+
+# Add required assembly for DPAPI
+Add-Type -AssemblyName System.Security
+
+function Get-PINHash {
+    <#
+    .SYNOPSIS
+        Generates SHA256 hash of PIN for secure storage/comparison.
+    #>
+    param([string]$PIN)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($PIN)
+    $hash = $sha256.ComputeHash($bytes)
+    return [Convert]::ToBase64String($hash)
+}
+
+function Protect-Credential {
+    <#
+    .SYNOPSIS
+        Encrypts a PSCredential using DPAPI with PIN as additional entropy.
+    #>
+    param(
+        [PSCredential]$Credential,
+        [string]$PIN
+    )
+
+    try {
+        # Convert credential to storable format
+        $username = $Credential.UserName
+        $password = $Credential.GetNetworkCredential().Password
+        $data = "$username|$password"
+        $dataBytes = [System.Text.Encoding]::UTF8.GetBytes($data)
+
+        # Use PIN as additional entropy
+        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes($PIN)
+
+        # Encrypt with DPAPI (CurrentUser scope + entropy)
+        $encryptedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
+            $dataBytes,
+            $entropyBytes,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+
+        return $encryptedBytes
+    }
+    catch {
+        Write-Warning "Failed to encrypt credential: $_"
+        return $null
+    }
+}
+
+function Unprotect-Credential {
+    <#
+    .SYNOPSIS
+        Decrypts credential blob using DPAPI with PIN as entropy.
+    #>
+    param(
+        [byte[]]$EncryptedData,
+        [string]$PIN
+    )
+
+    try {
+        # Use PIN as entropy
+        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes($PIN)
+
+        # Decrypt with DPAPI
+        $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $EncryptedData,
+            $entropyBytes,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+
+        $data = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
+        $parts = $data -split '\|', 2
+
+        if ($parts.Count -eq 2) {
+            $securePassword = ConvertTo-SecureString $parts[1] -AsPlainText -Force
+            return New-Object System.Management.Automation.PSCredential($parts[0], $securePassword)
+        }
+        return $null
+    }
+    catch {
+        # Decryption failed (wrong PIN or corrupted data)
+        return $null
+    }
+}
+
+function Save-EncryptedCredential {
+    <#
+    .SYNOPSIS
+        Saves encrypted credential and PIN hash to disk.
+    #>
+    param(
+        [byte[]]$EncryptedData,
+        [string]$PINHash
+    )
+
+    try {
+        if (-not (Test-Path $script:ConfigPath)) {
+            New-Item -Path $script:ConfigPath -ItemType Directory -Force | Out-Null
+        }
+
+        # Save encrypted credential
+        [System.IO.File]::WriteAllBytes($script:CredentialFile, $EncryptedData)
+
+        # Save PIN hash
+        Set-Content -Path $script:PINFile -Value $PINHash -Force
+
+        return $true
+    }
+    catch {
+        Write-Warning "Failed to save credential: $_"
+        return $false
+    }
+}
+
+function Load-EncryptedCredential {
+    <#
+    .SYNOPSIS
+        Loads encrypted credential and PIN hash from disk.
+    .OUTPUTS
+        Hashtable with EncryptedData and PINHash, or $null if not found.
+    #>
+
+    if ((Test-Path $script:CredentialFile) -and (Test-Path $script:PINFile)) {
+        try {
+            $encryptedData = [System.IO.File]::ReadAllBytes($script:CredentialFile)
+            $pinHash = Get-Content -Path $script:PINFile -Raw
+            return @{
+                EncryptedData = $encryptedData
+                PINHash = $pinHash.Trim()
+            }
+        }
+        catch {
+            Write-Warning "Failed to load credential: $_"
+        }
+    }
+    return $null
+}
+
+function Remove-EncryptedCredential {
+    <#
+    .SYNOPSIS
+        Removes saved credential files from disk.
+    #>
+    if (Test-Path $script:CredentialFile) { Remove-Item $script:CredentialFile -Force }
+    if (Test-Path $script:PINFile) { Remove-Item $script:PINFile -Force }
+    $script:CachedCredential = $null
+    $script:CredentialPINHash = $null
+    $script:PINLastVerified = $null
+    $script:PINFailCount = 0
+}
+
+function Test-PINTimeout {
+    <#
+    .SYNOPSIS
+        Checks if PIN needs to be re-entered (timeout expired).
+    #>
+    if (-not $script:PINLastVerified) { return $true }
+    $elapsed = (Get-Date) - $script:PINLastVerified
+    return $elapsed.TotalMinutes -ge $script:PINTimeout
+}
+
+function Show-PINEntryDialog {
+    <#
+    .SYNOPSIS
+        Shows dialog to enter PIN. Returns PIN if valid, $null if cancelled.
+    .PARAMETER IsNewPIN
+        If true, shows "Set PIN" dialog with confirmation. If false, shows "Enter PIN" dialog.
+    #>
+    param(
+        [bool]$IsNewPIN = $false,
+        [string]$Title = ""
+    )
+
+    $dialogTitle = if ($IsNewPIN) { "Set PIN" } else { if ($Title) { $Title } else { "Enter PIN" } }
+    $dialogHeight = if ($IsNewPIN) { 200 } else { 150 }
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $dialogTitle
+    $form.Size = New-Object System.Drawing.Size(350, $dialogHeight)
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+
+    $yPos = 15
+
+    $label = New-Object System.Windows.Forms.Label
+    $labelText = if ($IsNewPIN) { "Create a 6+ digit PIN to protect your credentials:" } else { "Enter your PIN:" }
+    $label.Text = $labelText
+    $label.Location = New-Object System.Drawing.Point(15, $yPos)
+    $label.AutoSize = $true
+    $form.Controls.Add($label)
+    $yPos += 25
+
+    $pinBox = New-Object System.Windows.Forms.TextBox
+    $pinBox.Location = New-Object System.Drawing.Point(15, $yPos)
+    $pinBox.Width = 300
+    $pinBox.UseSystemPasswordChar = $true
+    $pinBox.MaxLength = 20
+    $form.Controls.Add($pinBox)
+    $yPos += 30
+
+    $confirmBox = $null
+    if ($IsNewPIN) {
+        $confirmLabel = New-Object System.Windows.Forms.Label
+        $confirmLabel.Text = "Confirm PIN:"
+        $confirmLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+        $confirmLabel.AutoSize = $true
+        $form.Controls.Add($confirmLabel)
+        $yPos += 22
+
+        $confirmBox = New-Object System.Windows.Forms.TextBox
+        $confirmBox.Location = New-Object System.Drawing.Point(15, $yPos)
+        $confirmBox.Width = 300
+        $confirmBox.UseSystemPasswordChar = $true
+        $confirmBox.MaxLength = 20
+        $form.Controls.Add($confirmBox)
+        $yPos += 35
+    }
+    else {
+        $yPos += 15
+    }
+
+    $resultPIN = $null
+
+    $okBtn = New-Object System.Windows.Forms.Button
+    $okBtn.Text = "OK"
+    $okBtn.Location = New-Object System.Drawing.Point(150, $yPos)
+    $okBtn.Width = 75
+    $okBtn.Add_Click({
+        $pin = $pinBox.Text
+
+        # Validate PIN length
+        if ($pin.Length -lt 6) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "PIN must be at least 6 digits.",
+                "Invalid PIN",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+
+        # Validate digits only
+        if ($pin -notmatch '^\d+$') {
+            [System.Windows.Forms.MessageBox]::Show(
+                "PIN must contain only digits.",
+                "Invalid PIN",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+
+        # If new PIN, check confirmation
+        if ($IsNewPIN -and $confirmBox) {
+            if ($pin -ne $confirmBox.Text) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "PINs do not match.",
+                    "Mismatch",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                return
+            }
+        }
+
+        $script:DialogResultPIN = $pin
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $form.Close()
+    })
+    $form.Controls.Add($okBtn)
+
+    $cancelBtn = New-Object System.Windows.Forms.Button
+    $cancelBtn.Text = "Cancel"
+    $cancelBtn.Location = New-Object System.Drawing.Point(235, $yPos)
+    $cancelBtn.Width = 75
+    $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.Controls.Add($cancelBtn)
+
+    $form.AcceptButton = $okBtn
+    $form.CancelButton = $cancelBtn
+
+    $script:DialogResultPIN = $null
+
+    if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $result = $script:DialogResultPIN
+        $form.Dispose()
+        return $result
+    }
+
+    $form.Dispose()
+    return $null
+}
+
+function Lock-CachedCredentials {
+    <#
+    .SYNOPSIS
+        Forces PIN re-entry on next credential use.
+    #>
+    $script:PINLastVerified = $null
+    [System.Windows.Forms.MessageBox]::Show(
+        "Credentials locked. PIN required for next elevated operation.",
+        "Locked",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+}
+#endregion
+
 #region Credential Elevation Helpers
 
 # Check if currently running as administrator
@@ -113,7 +432,7 @@ $script:IsElevated = Test-IsElevated
 function Get-ElevatedCredential {
     <#
     .SYNOPSIS
-        Prompts for administrator credentials using Windows credential dialog.
+        Prompts for administrator credentials with PIN protection.
     .PARAMETER Message
         Custom message to display in the credential dialog.
     .PARAMETER Force
@@ -126,16 +445,128 @@ function Get-ElevatedCredential {
         [switch]$Force
     )
 
-    # Return cached credential if available and not forced
-    if (-not $Force -and $script:CacheCredentials -and $script:CachedCredential) {
+    # If caching disabled, just prompt directly
+    if (-not $script:CacheCredentials) {
+        try {
+            return Get-Credential -Message $Message
+        }
+        catch {
+            return $null
+        }
+    }
+
+    # Check if we have an in-memory unlocked credential and PIN hasn't timed out
+    if (-not $Force -and $script:CachedCredential -is [PSCredential] -and -not (Test-PINTimeout)) {
         return $script:CachedCredential
     }
 
+    # Try to load from disk if not in memory
+    $savedCred = Load-EncryptedCredential
+    if ($savedCred) {
+        # We have saved credentials - need PIN to unlock
+        $attemptsLeft = 3 - $script:PINFailCount
+
+        while ($attemptsLeft -gt 0) {
+            $pin = Show-PINEntryDialog -Title "Unlock Credentials ($attemptsLeft attempts left)"
+            if (-not $pin) {
+                # User cancelled - offer to reset
+                $reset = [System.Windows.Forms.MessageBox]::Show(
+                    "Would you like to clear saved credentials and enter new ones?",
+                    "Reset Credentials",
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Question
+                )
+                if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    Remove-EncryptedCredential
+                    break
+                }
+                return $null
+            }
+
+            # Verify PIN hash
+            $enteredHash = Get-PINHash -PIN $pin
+            if ($enteredHash -eq $savedCred.PINHash) {
+                # PIN correct - decrypt credential
+                $decrypted = Unprotect-Credential -EncryptedData $savedCred.EncryptedData -PIN $pin
+                if ($decrypted) {
+                    $script:CachedCredential = $decrypted
+                    $script:CredentialPINHash = $savedCred.PINHash
+                    $script:PINLastVerified = Get-Date
+                    $script:PINFailCount = 0
+                    return $decrypted
+                }
+                else {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Failed to decrypt credentials. File may be corrupted.",
+                        "Error",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Error
+                    )
+                    Remove-EncryptedCredential
+                    break
+                }
+            }
+            else {
+                # Wrong PIN
+                $script:PINFailCount++
+                $attemptsLeft = 3 - $script:PINFailCount
+
+                if ($attemptsLeft -gt 0) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Incorrect PIN. $attemptsLeft attempts remaining.",
+                        "Wrong PIN",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                }
+                else {
+                    # Max attempts reached
+                    $reset = [System.Windows.Forms.MessageBox]::Show(
+                        "Maximum PIN attempts reached. Clear saved credentials and start over?",
+                        "Locked Out",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                    if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
+                        Remove-EncryptedCredential
+                    }
+                    else {
+                        return $null
+                    }
+                }
+            }
+        }
+    }
+
+    # No saved credential (or was cleared) - prompt for new one
     try {
         $cred = Get-Credential -Message $Message
+        if (-not $cred) { return $null }
 
-        if ($cred -and $script:CacheCredentials) {
-            $script:CachedCredential = $cred
+        # Prompt for new PIN
+        $pin = Show-PINEntryDialog -IsNewPIN $true
+        if (-not $pin) {
+            # User cancelled PIN setup - still return credential but don't cache
+            return $cred
+        }
+
+        # Encrypt and save
+        $encrypted = Protect-Credential -Credential $cred -PIN $pin
+        if ($encrypted) {
+            $pinHash = Get-PINHash -PIN $pin
+            if (Save-EncryptedCredential -EncryptedData $encrypted -PINHash $pinHash) {
+                $script:CachedCredential = $cred
+                $script:CredentialPINHash = $pinHash
+                $script:PINLastVerified = Get-Date
+                $script:PINFailCount = 0
+
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Credentials saved and encrypted with your PIN.",
+                    "Success",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+            }
         }
 
         return $cred
@@ -372,9 +803,17 @@ function Start-ElevatedProcess {
 }
 
 function Clear-CachedCredentials {
+    # Clear in-memory credential
     $script:CachedCredential = $null
+    $script:CredentialPINHash = $null
+    $script:PINLastVerified = $null
+    $script:PINFailCount = 0
+
+    # Delete encrypted files from disk
+    Remove-EncryptedCredential
+
     [System.Windows.Forms.MessageBox]::Show(
-        "Cached credentials have been cleared.",
+        "Cached credentials have been cleared from memory and disk.",
         "Credentials Cleared",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
@@ -760,7 +1199,7 @@ function Show-MainWindow {
 
     # Cache credentials checkbox
     $cacheMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $cacheMenuItem.Text = "Cache Credentials (Session Only)"
+    $cacheMenuItem.Text = "Enable Credential Caching (PIN Protected)"
     $cacheMenuItem.CheckOnClick = $true
     $cacheMenuItem.Checked = $script:CacheCredentials
     $cacheMenuItem.Add_Click({
@@ -768,10 +1207,19 @@ function Show-MainWindow {
         $script:Settings.global.cacheCredentials = $script:CacheCredentials
         Save-Settings
         if (-not $script:CacheCredentials) {
-            $script:CachedCredential = $null
+            Clear-CachedCredentials
         }
     })
     $credentialMenu.DropDownItems.Add($cacheMenuItem) | Out-Null
+
+    # Lock Now (force PIN re-entry)
+    $lockMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $lockMenuItem.Text = "Lock Now (Require PIN)"
+    $lockMenuItem.Add_Click({ Lock-CachedCredentials })
+    $credentialMenu.DropDownItems.Add($lockMenuItem) | Out-Null
+
+    # Separator
+    $credentialMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     # Clear cached credentials
     $clearCredMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
