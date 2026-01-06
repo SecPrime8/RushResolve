@@ -167,20 +167,46 @@ $script:InstallApp = {
     $LogBox.AppendText("[$timestamp] Installing $($App.Name)...`r`n")
     $LogBox.ScrollToCaret()
 
+    $localInstallerPath = $null
+    $tempCopied = $false
+
     try {
+        $installerPath = $App.InstallerPath
+
+        # If installer is on a network share, copy to local temp first
+        # (elevated sessions may not have access to network shares)
+        if ($installerPath -like "\\*") {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$timestamp] Copying from network to local temp...`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $tempDir = Join-Path $env:TEMP "TechToolkit_Install"
+            if (-not (Test-Path $tempDir)) {
+                New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+            }
+
+            $fileName = Split-Path $installerPath -Leaf
+            $localInstallerPath = Join-Path $tempDir $fileName
+
+            Copy-Item -Path $installerPath -Destination $localInstallerPath -Force
+            $installerPath = $localInstallerPath
+            $tempCopied = $true
+        }
+
         $installArgs = if ($Silent) { $App.SilentArgs } else { $App.InteractiveArgs }
         $hideWindow = $Silent
 
         if ($App.InstallerType -eq '.msi') {
             # MSI installer - use msiexec
             $result = Start-ElevatedProcess -FilePath "msiexec.exe" `
-                -ArgumentList "/i `"$($App.InstallerPath)`" $installArgs" `
+                -ArgumentList "/i `"$installerPath`" $installArgs" `
                 -Wait -Hidden:$hideWindow `
                 -OperationName "install $($App.Name)"
         }
         else {
             # EXE installer - run directly
-            $result = Start-ElevatedProcess -FilePath $App.InstallerPath `
+            $result = Start-ElevatedProcess -FilePath $installerPath `
                 -ArgumentList $installArgs `
                 -Wait -Hidden:$hideWindow `
                 -OperationName "install $($App.Name)"
@@ -197,6 +223,15 @@ $script:InstallApp = {
     catch {
         $timestamp = Get-Date -Format "HH:mm:ss"
         $LogBox.AppendText("[$timestamp] ERROR: $($App.Name) - $_`r`n")
+    }
+    finally {
+        # Clean up temp file if we copied it
+        if ($tempCopied -and $localInstallerPath -and (Test-Path $localInstallerPath)) {
+            try {
+                Remove-Item -Path $localInstallerPath -Force -ErrorAction SilentlyContinue
+            }
+            catch { }
+        }
     }
 
     $LogBox.ScrollToCaret()
