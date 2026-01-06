@@ -189,7 +189,49 @@ $script:InstallApp = {
             $fileName = Split-Path $installerPath -Leaf
             $localInstallerPath = Join-Path $tempDir $fileName
 
-            Copy-Item -Path $installerPath -Destination $localInstallerPath -Force
+            # Get file size for progress reporting
+            $sourceFile = Get-Item $installerPath
+            $fileSizeMB = [math]::Round($sourceFile.Length / 1MB, 1)
+            $LogBox.AppendText("[$timestamp] File size: $fileSizeMB MB`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+
+            # Copy with progress using streams
+            $sourceStream = $null
+            $destStream = $null
+            try {
+                $sourceStream = [System.IO.File]::OpenRead($installerPath)
+                $destStream = [System.IO.File]::Create($localInstallerPath)
+                $buffer = New-Object byte[] (1MB)
+                $totalRead = 0
+                $lastPercent = 0
+
+                Start-AppActivity "Copying $fileName..."
+                Set-AppProgress -Value 0 -Maximum 100
+
+                while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $destStream.Write($buffer, 0, $bytesRead)
+                    $totalRead += $bytesRead
+                    $percent = [math]::Floor(($totalRead / $sourceFile.Length) * 100)
+
+                    if ($percent -ne $lastPercent) {
+                        Set-AppProgress -Value $percent -Maximum 100
+                        $copiedMB = [math]::Round($totalRead / 1MB, 1)
+                        $LogBox.Lines = $LogBox.Lines[0..($LogBox.Lines.Count - 2)] + @("[$timestamp] Copying: $copiedMB / $fileSizeMB MB ($percent%)")
+                        $LogBox.SelectionStart = $LogBox.Text.Length
+                        $LogBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                        $lastPercent = $percent
+                    }
+                }
+                $LogBox.AppendText("`r`n[$timestamp] Copy complete.`r`n")
+                Clear-AppStatus
+            }
+            finally {
+                if ($sourceStream) { $sourceStream.Close() }
+                if ($destStream) { $destStream.Close() }
+            }
+
             $installerPath = $localInstallerPath
             $tempCopied = $true
         }
