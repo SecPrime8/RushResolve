@@ -829,9 +829,16 @@ function Start-ElevatedProcess {
 
     # Method 1: Try Start-Process -Credential (works in many environments)
     try {
+        # Set working directory to the file's folder (alternate credentials may not access current dir)
+        $workDir = Split-Path $FilePath -Parent
+        if (-not $workDir -or -not (Test-Path $workDir)) {
+            $workDir = "C:\Windows\System32"
+        }
+
         $startParams = @{
             FilePath = $FilePath
             Credential = $Credential
+            WorkingDirectory = $workDir
             PassThru = $true
             ErrorAction = 'Stop'
         }
@@ -859,8 +866,10 @@ function Start-ElevatedProcess {
     # Method 2: Use PowerShell job with credentials (better special char handling)
     try {
         $scriptBlock = {
-            param($FilePath, $ArgumentList, $Hidden, $Wait)
-            $startParams = @{ FilePath = $FilePath; PassThru = $true }
+            param($FilePath, $ArgumentList, $Hidden, $Wait, $WorkDir)
+            # Change to a directory the user can access
+            Set-Location $WorkDir
+            $startParams = @{ FilePath = $FilePath; PassThru = $true; WorkingDirectory = $WorkDir }
             if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
             if ($Hidden) { $startParams.WindowStyle = 'Hidden' }
             if ($Wait) { $startParams.Wait = $true }
@@ -869,7 +878,13 @@ function Start-ElevatedProcess {
             return 0
         }
 
-        $job = Start-Job -ScriptBlock $scriptBlock -Credential $Credential -ArgumentList $FilePath, $ArgumentList, $Hidden, $Wait
+        # Determine safe working directory
+        $workDir = Split-Path $FilePath -Parent
+        if (-not $workDir -or $workDir -like "\\*") {
+            $workDir = "C:\Windows\System32"
+        }
+
+        $job = Start-Job -ScriptBlock $scriptBlock -Credential $Credential -ArgumentList $FilePath, $ArgumentList, $Hidden, $Wait, $workDir
         $jobResult = $job | Wait-Job | Receive-Job
         Remove-Job $job -Force
 
