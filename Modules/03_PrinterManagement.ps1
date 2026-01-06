@@ -6,7 +6,7 @@
     Integrates with Rush print server and printer backup/restore.
 #>
 
-$script:ModuleName = "Printer Management"
+$script:ModuleName = "Printers"
 $script:ModuleDescription = "Add, remove, and manage network printers"
 
 #region Configuration
@@ -228,20 +228,20 @@ function Initialize-Module {
 
     $setDefaultBtn = New-Object System.Windows.Forms.Button
     $setDefaultBtn.Text = "Set Default"
-    $setDefaultBtn.Width = 80
+    $setDefaultBtn.Width = 90
     $setDefaultBtn.Height = 28
     $installedBtnPanel.Controls.Add($setDefaultBtn)
 
     $removeBtn = New-Object System.Windows.Forms.Button
     $removeBtn.Text = "Remove"
-    $removeBtn.Width = 65
+    $removeBtn.Width = 75
     $removeBtn.Height = 28
     $removeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $installedBtnPanel.Controls.Add($removeBtn)
 
     $clearQueueBtn = New-Object System.Windows.Forms.Button
     $clearQueueBtn.Text = "Clear Queue"
-    $clearQueueBtn.Width = 85
+    $clearQueueBtn.Width = 95
     $clearQueueBtn.Height = 28
     $installedBtnPanel.Controls.Add($clearQueueBtn)
 
@@ -327,7 +327,7 @@ function Initialize-Module {
 
     $addSelectedBtn = New-Object System.Windows.Forms.Button
     $addSelectedBtn.Text = "Add Selected"
-    $addSelectedBtn.Width = 95
+    $addSelectedBtn.Width = 110
     $addSelectedBtn.Height = 28
     $addSelectedBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
     $serverBtnPanel.Controls.Add($addSelectedBtn)

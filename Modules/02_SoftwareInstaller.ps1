@@ -314,7 +314,7 @@ function Initialize-Module {
 
     $installBtn = New-Object System.Windows.Forms.Button
     $installBtn.Text = "Install Selected"
-    $installBtn.Width = 110
+    $installBtn.Width = 120
     $installBtn.Height = 30
     $installBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
     $buttonPanel.Controls.Add($installBtn)
