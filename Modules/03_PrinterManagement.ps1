@@ -10,7 +10,8 @@ $script:ModuleName = "Printers"
 $script:ModuleDescription = "Add, remove, and manage network printers"
 
 #region Configuration
-$script:PrintServer = "\\RUDWV-PS401"
+# Load default server from settings (falls back to hardcoded default if not set)
+$script:PrintServer = Get-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Default "\\RUDWV-PS401"
 $script:PrinterBackupShare = "\\rush.edu\vdi\apphub\tools\NetworkPrinters"
 #endregion
 

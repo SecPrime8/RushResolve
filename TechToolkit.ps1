@@ -585,6 +585,150 @@ function Clear-AppStatus {
 }
 #endregion
 
+#region Settings Dialog
+function Show-SettingsDialog {
+    <#
+    .SYNOPSIS
+        Shows settings dialog for configuring default paths.
+    #>
+    $settingsForm = New-Object System.Windows.Forms.Form
+    $settingsForm.Text = "Settings"
+    $settingsForm.Size = New-Object System.Drawing.Size(500, 320)
+    $settingsForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $settingsForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $settingsForm.MaximizeBox = $false
+    $settingsForm.MinimizeBox = $false
+
+    $yPos = 15
+
+    # Software Installer Section
+    $swLabel = New-Object System.Windows.Forms.Label
+    $swLabel.Text = "Software Installer"
+    $swLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $swLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $swLabel.AutoSize = $true
+    $settingsForm.Controls.Add($swLabel)
+    $yPos += 25
+
+    # Network Path
+    $netPathLabel = New-Object System.Windows.Forms.Label
+    $netPathLabel.Text = "Default Network Path:"
+    $netPathLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $netPathLabel.AutoSize = $true
+    $settingsForm.Controls.Add($netPathLabel)
+    $yPos += 22
+
+    $netPathTextBox = New-Object System.Windows.Forms.TextBox
+    $netPathTextBox.Location = New-Object System.Drawing.Point(15, $yPos)
+    $netPathTextBox.Width = 380
+    $netPathTextBox.Text = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
+    $settingsForm.Controls.Add($netPathTextBox)
+
+    $netBrowseBtn = New-Object System.Windows.Forms.Button
+    $netBrowseBtn.Text = "..."
+    $netBrowseBtn.Location = New-Object System.Drawing.Point(400, ($yPos - 2))
+    $netBrowseBtn.Width = 40
+    $netBrowseBtn.Height = 25
+    $netBrowseBtn.Add_Click({
+        $folder = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folder.Description = "Select network installer directory"
+        if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $netPathTextBox.Text = $folder.SelectedPath
+        }
+    })
+    $settingsForm.Controls.Add($netBrowseBtn)
+    $yPos += 35
+
+    # Local Path
+    $localPathLabel = New-Object System.Windows.Forms.Label
+    $localPathLabel.Text = "Default Local/USB Path:"
+    $localPathLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $localPathLabel.AutoSize = $true
+    $settingsForm.Controls.Add($localPathLabel)
+    $yPos += 22
+
+    $localPathTextBox = New-Object System.Windows.Forms.TextBox
+    $localPathTextBox.Location = New-Object System.Drawing.Point(15, $yPos)
+    $localPathTextBox.Width = 380
+    $localPathTextBox.Text = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Default ""
+    $settingsForm.Controls.Add($localPathTextBox)
+
+    $localBrowseBtn = New-Object System.Windows.Forms.Button
+    $localBrowseBtn.Text = "..."
+    $localBrowseBtn.Location = New-Object System.Drawing.Point(400, ($yPos - 2))
+    $localBrowseBtn.Width = 40
+    $localBrowseBtn.Height = 25
+    $localBrowseBtn.Add_Click({
+        $folder = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folder.Description = "Select local installer directory"
+        if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $localPathTextBox.Text = $folder.SelectedPath
+        }
+    })
+    $settingsForm.Controls.Add($localBrowseBtn)
+    $yPos += 40
+
+    # Printer Management Section
+    $printerLabel = New-Object System.Windows.Forms.Label
+    $printerLabel.Text = "Printer Management"
+    $printerLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $printerLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $printerLabel.AutoSize = $true
+    $settingsForm.Controls.Add($printerLabel)
+    $yPos += 25
+
+    # Print Server
+    $serverLabel = New-Object System.Windows.Forms.Label
+    $serverLabel.Text = "Default Print Server:"
+    $serverLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $serverLabel.AutoSize = $true
+    $settingsForm.Controls.Add($serverLabel)
+    $yPos += 22
+
+    $serverTextBox = New-Object System.Windows.Forms.TextBox
+    $serverTextBox.Location = New-Object System.Drawing.Point(15, $yPos)
+    $serverTextBox.Width = 380
+    $serverTextBox.Text = Get-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Default "\\RUDWV-PS401"
+    $settingsForm.Controls.Add($serverTextBox)
+    $yPos += 45
+
+    # Buttons
+    $saveBtn = New-Object System.Windows.Forms.Button
+    $saveBtn.Text = "Save"
+    $saveBtn.Location = New-Object System.Drawing.Point(290, $yPos)
+    $saveBtn.Width = 80
+    $saveBtn.Height = 30
+    $saveBtn.Add_Click({
+        Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Value $netPathTextBox.Text.Trim()
+        Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Value $localPathTextBox.Text.Trim()
+        Set-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Value $serverTextBox.Text.Trim()
+        [System.Windows.Forms.MessageBox]::Show(
+            "Settings saved. Changes will apply when modules are refreshed or restarted.",
+            "Settings Saved",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        $settingsForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $settingsForm.Close()
+    })
+    $settingsForm.Controls.Add($saveBtn)
+
+    $cancelBtn = New-Object System.Windows.Forms.Button
+    $cancelBtn.Text = "Cancel"
+    $cancelBtn.Location = New-Object System.Drawing.Point(380, $yPos)
+    $cancelBtn.Width = 80
+    $cancelBtn.Height = 30
+    $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $settingsForm.Controls.Add($cancelBtn)
+
+    $settingsForm.AcceptButton = $saveBtn
+    $settingsForm.CancelButton = $cancelBtn
+
+    $settingsForm.ShowDialog() | Out-Null
+    $settingsForm.Dispose()
+}
+#endregion
+
 #endregion
 
 #region Main Window
@@ -636,6 +780,12 @@ function Show-MainWindow {
     $credentialMenu.DropDownItems.Add($clearCredMenuItem) | Out-Null
 
     $toolsMenu.DropDownItems.Add($credentialMenu) | Out-Null
+
+    # Settings
+    $settingsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $settingsMenuItem.Text = "Settings..."
+    $settingsMenuItem.Add_Click({ Show-SettingsDialog })
+    $toolsMenu.DropDownItems.Add($settingsMenuItem) | Out-Null
 
     # Separator
     $toolsMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
