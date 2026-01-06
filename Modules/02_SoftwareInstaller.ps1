@@ -350,7 +350,7 @@ function Initialize-Module {
     $script:networkPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
     $script:localPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Default ""
 
-    # Function to refresh app list
+    # Function to refresh app list (defined as script block)
     $script:RefreshAppList = {
         $listViewRef.Items.Clear()
         $script:AppsList = @()
@@ -385,6 +385,9 @@ function Initialize-Module {
         $logBoxRef.ScrollToCaret()
     }
 
+    # Capture refresh block for closures
+    $refreshBlockRef = $script:RefreshAppList
+
     # Browse button
     $browseBtn.Add_Click({
         $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -403,13 +406,13 @@ function Initialize-Module {
                 Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Value $script:currentPath
             }
 
-            & $script:RefreshAppList
+            & $refreshBlockRef
         }
     }.GetNewClosure())
 
     # Refresh button
     $refreshBtn.Add_Click({
-        & $script:RefreshAppList
+        & $refreshBlockRef
     }.GetNewClosure())
 
     # Source combo change
@@ -420,7 +423,7 @@ function Initialize-Module {
         else {
             $script:currentPath = $script:localPath
         }
-        & $script:RefreshAppList
+        & $refreshBlockRef
     }.GetNewClosure())
 
     # Install button
