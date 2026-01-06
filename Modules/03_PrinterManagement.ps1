@@ -319,7 +319,7 @@ function Initialize-Module {
     $rightPanel.RowCount = 4
     $rightPanel.ColumnCount = 1
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
-    $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 35))) | Out-Null
+    $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 65))) | Out-Null
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
 
@@ -353,14 +353,21 @@ function Initialize-Module {
     $browseServerBtn.Height = 25
     $serverInputPanel.Controls.Add($browseServerBtn)
 
+    # Line break spacer (forces filter to second line)
+    $filterRowSpacer = New-Object System.Windows.Forms.Label
+    $filterRowSpacer.Text = ""
+    $filterRowSpacer.Width = 2000
+    $filterRowSpacer.Height = 1
+    $serverInputPanel.Controls.Add($filterRowSpacer)
+
     $filterLabel = New-Object System.Windows.Forms.Label
     $filterLabel.Text = "Filter:"
     $filterLabel.AutoSize = $true
-    $filterLabel.Padding = New-Object System.Windows.Forms.Padding(10, 5, 5, 0)
+    $filterLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
     $serverInputPanel.Controls.Add($filterLabel)
 
     $script:filterTextBox = New-Object System.Windows.Forms.TextBox
-    $script:filterTextBox.Width = 120
+    $script:filterTextBox.Width = 200
     $serverInputPanel.Controls.Add($script:filterTextBox)
 
     $rightPanel.Controls.Add($serverInputPanel, 0, 1)
