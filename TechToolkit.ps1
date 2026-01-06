@@ -39,7 +39,7 @@ $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
 function Get-DefaultSettings {
     return @{
         global = @{
-            cacheCredentials = $false
+            cacheCredentials = $true
             windowWidth = 900
             windowHeight = 700
             lastTab = "System Info"
@@ -256,6 +256,7 @@ function Remove-EncryptedCredential {
     $script:CredentialPINHash = $null
     $script:PINLastVerified = $null
     $script:PINFailCount = 0
+    Update-CredentialStatusIndicator
 }
 
 function Test-PINTimeout {
@@ -402,13 +403,42 @@ function Show-PINEntryDialog {
     return $null
 }
 
+function Update-CredentialStatusIndicator {
+    <#
+    .SYNOPSIS
+        Updates the status bar credential indicator.
+    #>
+    if (-not $script:credStatusLabel) { return }
+
+    $hasCredential = (Test-Path $script:CredentialFile) -or ($script:CachedCredential -is [PSCredential])
+
+    if (-not $hasCredential) {
+        $script:credStatusLabel.Text = "No Creds"
+        $script:credStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+        $script:credStatusLabel.ToolTipText = "No credentials cached"
+    }
+    elseif (Test-PINTimeout) {
+        # Locked (PIN timeout expired)
+        $script:credStatusLabel.Text = "Locked"
+        $script:credStatusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+        $script:credStatusLabel.ToolTipText = "Credentials cached - PIN required"
+    }
+    else {
+        # Unlocked
+        $script:credStatusLabel.Text = "Creds OK"
+        $script:credStatusLabel.ForeColor = [System.Drawing.Color]::Green
+        $script:credStatusLabel.ToolTipText = "Credentials cached - PIN verified"
+    }
+}
+
 function Lock-CachedCredentials {
     <#
     .SYNOPSIS
         Forces PIN re-entry on next credential use.
     #>
     $script:PINLastVerified = $null
-    [System.Windows.Forms.MessageBox]::Show(
+    Update-CredentialStatusIndicator
+    [void][System.Windows.Forms.MessageBox]::Show(
         "Credentials locked. PIN required for next elevated operation.",
         "Locked",
         [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -493,6 +523,7 @@ function Get-ElevatedCredential {
                     $script:CredentialPINHash = $savedCred.PINHash
                     $script:PINLastVerified = Get-Date
                     $script:PINFailCount = 0
+                    Update-CredentialStatusIndicator
                     return $decrypted
                 }
                 else {
@@ -566,6 +597,7 @@ function Get-ElevatedCredential {
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
+                Update-CredentialStatusIndicator
             }
         }
 
@@ -1311,6 +1343,14 @@ function Show-MainWindow {
     $separator.Spring = $true
     $statusStrip.Items.Add($separator) | Out-Null
 
+    # Credential status indicator
+    $script:credStatusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
+    $script:credStatusLabel.Text = "No Creds"
+    $script:credStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+    $script:credStatusLabel.ToolTipText = "No credentials cached"
+    $script:credStatusLabel.Padding = New-Object System.Windows.Forms.Padding(5, 0, 10, 0)
+    $statusStrip.Items.Add($script:credStatusLabel) | Out-Null
+
     $userLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
     $userLabel.Text = "Running as: $env:USERDOMAIN\$env:USERNAME"
     $userLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
@@ -1330,6 +1370,9 @@ function Show-MainWindow {
     # Add controls in correct order (top to bottom)
     $form.Controls.Add($mainPanel)
     $form.Controls.Add($statusStrip)
+
+    # Update credential status indicator on startup
+    Update-CredentialStatusIndicator
 
     # Load modules
     $modules = Get-Modules
