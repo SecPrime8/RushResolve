@@ -26,14 +26,19 @@ $script:ScanForApps = {
         Where-Object { $_.Extension -in '.msi', '.exe' }
 
     foreach ($installer in $rootInstallers) {
+        # Determine args based on installer type
+        $isMsi = ($installer.Extension -eq '.msi')
+        $silentArgs = if ($isMsi) { "/qn /norestart" } else { "/S" }
+        $interactiveArgs = if ($isMsi) { "/qb" } else { "" }
+
         $apps += @{
             Name = $installer.BaseName
             Version = ""
             Description = "(standalone installer)"
             InstallerPath = $installer.FullName
             InstallerType = $installer.Extension
-            SilentArgs = if ($installer.Extension -eq '.msi') { "/qn /norestart" } else { "/S" }
-            InteractiveArgs = if ($installer.Extension -eq '.msi') { "/qb" } else { "" }
+            SilentArgs = $silentArgs
+            InteractiveArgs = $interactiveArgs
             RequiresElevation = $true
             HasConfig = $false
             FolderPath = $null
@@ -53,27 +58,40 @@ $script:ScanForApps = {
                 $config = Get-Content $configPath -Raw | ConvertFrom-Json
 
                 # Find the installer file
-                $installerFile = if ($config.installer) {
-                    Join-Path $folder.FullName $config.installer
+                $installerFile = $null
+                if ($config.installer) {
+                    $installerFile = Join-Path $folder.FullName $config.installer
                 } else {
                     # Auto-detect installer
                     $found = Get-ChildItem -Path $folder.FullName -File -ErrorAction SilentlyContinue |
                         Where-Object { $_.Extension -in '.msi', '.exe' } |
                         Select-Object -First 1
-                    if ($found) { $found.FullName } else { $null }
+                    if ($found) { $installerFile = $found.FullName }
                 }
 
                 if ($installerFile -and (Test-Path $installerFile)) {
                     $ext = [System.IO.Path]::GetExtension($installerFile)
+                    $isMsi = ($ext -eq '.msi')
+
+                    # Build values with proper conditionals
+                    $appName = if ($config.name) { $config.name } else { $folder.Name }
+                    $appVersion = if ($config.version) { $config.version } else { "" }
+                    $appDesc = if ($config.description) { $config.description } else { "" }
+                    $defaultSilent = if ($isMsi) { "/qn /norestart" } else { "/S" }
+                    $defaultInteractive = if ($isMsi) { "/qb" } else { "" }
+                    $silentArgs = if ($config.silentArgs) { $config.silentArgs } else { $defaultSilent }
+                    $interactiveArgs = if ($config.interactiveArgs) { $config.interactiveArgs } else { $defaultInteractive }
+                    $requiresElev = if ($null -ne $config.requiresElevation) { $config.requiresElevation } else { $true }
+
                     $apps += @{
-                        Name = if ($config.name) { $config.name } else { $folder.Name }
-                        Version = if ($config.version) { $config.version } else { "" }
-                        Description = if ($config.description) { $config.description } else { "" }
+                        Name = $appName
+                        Version = $appVersion
+                        Description = $appDesc
                         InstallerPath = $installerFile
                         InstallerType = $ext
-                        SilentArgs = if ($config.silentArgs) { $config.silentArgs } else { if ($ext -eq '.msi') { "/qn /norestart" } else { "/S" } }
-                        InteractiveArgs = if ($config.interactiveArgs) { $config.interactiveArgs } else { if ($ext -eq '.msi') { "/qb" } else { "" } }
-                        RequiresElevation = if ($null -ne $config.requiresElevation) { $config.requiresElevation } else { $true }
+                        SilentArgs = $silentArgs
+                        InteractiveArgs = $interactiveArgs
+                        RequiresElevation = $requiresElev
                         HasConfig = $true
                         FolderPath = $folder.FullName
                     }
@@ -90,14 +108,18 @@ $script:ScanForApps = {
                 Select-Object -First 1
 
             if ($installer) {
+                $isMsi = ($installer.Extension -eq '.msi')
+                $silentArgs = if ($isMsi) { "/qn /norestart" } else { "/S" }
+                $interactiveArgs = if ($isMsi) { "/qb" } else { "" }
+
                 $apps += @{
                     Name = $folder.Name
                     Version = ""
                     Description = ""
                     InstallerPath = $installer.FullName
                     InstallerType = $installer.Extension
-                    SilentArgs = if ($installer.Extension -eq '.msi') { "/qn /norestart" } else { "/S" }
-                    InteractiveArgs = if ($installer.Extension -eq '.msi') { "/qb" } else { "" }
+                    SilentArgs = $silentArgs
+                    InteractiveArgs = $interactiveArgs
                     RequiresElevation = $true
                     HasConfig = $false
                     FolderPath = $folder.FullName
@@ -122,20 +144,21 @@ $script:InstallApp = {
     $LogBox.ScrollToCaret()
 
     try {
-        $args = if ($Silent) { $App.SilentArgs } else { $App.InteractiveArgs }
+        $installArgs = if ($Silent) { $App.SilentArgs } else { $App.InteractiveArgs }
+        $hideWindow = $Silent
 
         if ($App.InstallerType -eq '.msi') {
             # MSI installer - use msiexec
             $result = Start-ElevatedProcess -FilePath "msiexec.exe" `
-                -ArgumentList "/i `"$($App.InstallerPath)`" $args" `
-                -Wait -Hidden:$Silent `
+                -ArgumentList "/i `"$($App.InstallerPath)`" $installArgs" `
+                -Wait -Hidden:$hideWindow `
                 -OperationName "install $($App.Name)"
         }
         else {
             # EXE installer - run directly
             $result = Start-ElevatedProcess -FilePath $App.InstallerPath `
-                -ArgumentList $args `
-                -Wait -Hidden:$Silent `
+                -ArgumentList $installArgs `
+                -Wait -Hidden:$hideWindow `
                 -OperationName "install $($App.Name)"
         }
 
@@ -171,10 +194,10 @@ function Initialize-Module {
     $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $mainPanel.RowCount = 4
     $mainPanel.ColumnCount = 1
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null  # Source bar
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null   # App list
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null  # Buttons
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null   # Log
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
 
     #region Row 0: Source Selection Bar
     $sourcePanel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -192,7 +215,8 @@ function Initialize-Module {
     $script:sourceCombo.Width = 400
     $script:sourceCombo.Items.Add("Network Share (configure path)") | Out-Null
     $script:sourceCombo.Items.Add("Local/USB Directory") | Out-Null
-    $script:sourceCombo.SelectedIndex = 1  # Default to local
+    $script:sourceCombo.SelectedIndex = 1
+
     $sourcePanel.Controls.Add($script:sourceCombo)
 
     $browseBtn = New-Object System.Windows.Forms.Button
@@ -224,7 +248,6 @@ function Initialize-Module {
     $script:appListView.GridLines = $true
     $script:appListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-    # Columns
     $script:appListView.Columns.Add("Name", 200) | Out-Null
     $script:appListView.Columns.Add("Version", 80) | Out-Null
     $script:appListView.Columns.Add("Description", 250) | Out-Null
@@ -240,7 +263,6 @@ function Initialize-Module {
     $buttonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $buttonPanel.Padding = New-Object System.Windows.Forms.Padding(5)
 
-    # Install mode radio buttons
     $modeLabel = New-Object System.Windows.Forms.Label
     $modeLabel.Text = "Install Mode:"
     $modeLabel.AutoSize = $true
@@ -260,14 +282,12 @@ function Initialize-Module {
     $script:interactiveRadio.Padding = New-Object System.Windows.Forms.Padding(0, 5, 20, 0)
     $buttonPanel.Controls.Add($script:interactiveRadio)
 
-    # Separator
     $sep = New-Object System.Windows.Forms.Label
     $sep.Text = "|"
     $sep.AutoSize = $true
     $sep.Padding = New-Object System.Windows.Forms.Padding(0, 8, 10, 0)
     $buttonPanel.Controls.Add($sep)
 
-    # Install button
     $installBtn = New-Object System.Windows.Forms.Button
     $installBtn.Text = "Install Selected"
     $installBtn.Width = 110
@@ -275,21 +295,18 @@ function Initialize-Module {
     $installBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
     $buttonPanel.Controls.Add($installBtn)
 
-    # Select All button
     $selectAllBtn = New-Object System.Windows.Forms.Button
     $selectAllBtn.Text = "Select All"
     $selectAllBtn.Width = 80
     $selectAllBtn.Height = 30
     $buttonPanel.Controls.Add($selectAllBtn)
 
-    # Clear Selection button
     $clearSelBtn = New-Object System.Windows.Forms.Button
     $clearSelBtn.Text = "Clear"
     $clearSelBtn.Width = 60
     $clearSelBtn.Height = 30
     $buttonPanel.Controls.Add($clearSelBtn)
 
-    # View Details button
     $detailsBtn = New-Object System.Windows.Forms.Button
     $detailsBtn.Text = "View Details"
     $detailsBtn.Width = 90
@@ -355,8 +372,10 @@ function Initialize-Module {
             $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
             $item.SubItems.Add($app.Version) | Out-Null
             $item.SubItems.Add($app.Description) | Out-Null
-            $item.SubItems.Add($app.InstallerType.TrimStart('.').ToUpper()) | Out-Null
-            $item.SubItems.Add($(if ($app.HasConfig) { "Yes" } else { "No" })) | Out-Null
+            $typeText = $app.InstallerType.TrimStart('.').ToUpper()
+            $item.SubItems.Add($typeText) | Out-Null
+            $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+            $item.SubItems.Add($configText) | Out-Null
             $item.Tag = $app
             $listViewRef.Items.Add($item) | Out-Null
         }
@@ -375,7 +394,6 @@ function Initialize-Module {
         if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $script:currentPath = $folderBrowser.SelectedPath
 
-            # Save to settings based on current source type
             if ($sourceComboRef.SelectedIndex -eq 0) {
                 $script:networkPath = $script:currentPath
                 Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Value $script:currentPath
@@ -471,22 +489,29 @@ function Initialize-Module {
 
         $app = $listViewRef.SelectedItems[0].Tag
 
+        $versionText = if ($app.Version) { $app.Version } else { "(not specified)" }
+        $descText = if ($app.Description) { $app.Description } else { "(none)" }
+        $interactiveText = if ($app.InteractiveArgs) { $app.InteractiveArgs } else { "(none)" }
+        $hasConfigText = if ($app.HasConfig) { "Yes" } else { "No" }
+        $elevText = if ($app.RequiresElevation) { "Yes" } else { "No" }
+        $typeText = $app.InstallerType.TrimStart('.').ToUpper()
+
         $details = @"
 Application Details
 ====================
 
 Name:           $($app.Name)
-Version:        $(if ($app.Version) { $app.Version } else { "(not specified)" })
-Description:    $(if ($app.Description) { $app.Description } else { "(none)" })
+Version:        $versionText
+Description:    $descText
 
 Installer:      $($app.InstallerPath)
-Type:           $($app.InstallerType.TrimStart('.').ToUpper())
-Has Config:     $(if ($app.HasConfig) { "Yes" } else { "No" })
+Type:           $typeText
+Has Config:     $hasConfigText
 
 Silent Args:    $($app.SilentArgs)
-Interactive:    $(if ($app.InteractiveArgs) { $app.InteractiveArgs } else { "(none)" })
+Interactive:    $interactiveText
 
-Requires Elevation: $(if ($app.RequiresElevation) { "Yes" } else { "No" })
+Requires Elevation: $elevText
 "@
 
         [System.Windows.Forms.MessageBox]::Show(
