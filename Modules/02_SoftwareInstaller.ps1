@@ -177,60 +177,105 @@ $script:InstallApp = {
         # (elevated sessions may not have access to network shares)
         if ($installerPath -like "\\*") {
             $timestamp = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$timestamp] Source: $installerPath`r`n")
             $LogBox.AppendText("[$timestamp] Copying from network to local temp...`r`n")
             $LogBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
 
             $tempDir = Join-Path $env:TEMP "RushResolve_Install"
+            $LogBox.AppendText("[$timestamp] Temp dir: $tempDir`r`n")
+
             if (-not (Test-Path $tempDir)) {
                 New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+                $LogBox.AppendText("[$timestamp] Created temp directory`r`n")
             }
 
             $fileName = Split-Path $installerPath -Leaf
             $localInstallerPath = Join-Path $tempDir $fileName
+            $LogBox.AppendText("[$timestamp] Destination: $localInstallerPath`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
 
             # Get file size for progress reporting
-            $sourceFile = Get-Item $installerPath
-            $fileSizeMB = [math]::Round($sourceFile.Length / 1MB, 1)
-            $LogBox.AppendText("[$timestamp] File size: $fileSizeMB MB`r`n")
+            try {
+                $sourceFile = Get-Item $installerPath -ErrorAction Stop
+                $fileSizeMB = [math]::Round($sourceFile.Length / 1MB, 1)
+                $LogBox.AppendText("[$timestamp] File size: $fileSizeMB MB`r`n")
+            }
+            catch {
+                $LogBox.AppendText("[$timestamp] ERROR: Cannot access source file: $_`r`n")
+                $LogBox.ScrollToCaret()
+                return
+            }
             $LogBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
 
             # Copy with progress using streams
             $sourceStream = $null
             $destStream = $null
+            $copySuccess = $false
             try {
+                $LogBox.AppendText("[$timestamp] Opening source stream...`r`n")
+                [System.Windows.Forms.Application]::DoEvents()
                 $sourceStream = [System.IO.File]::OpenRead($installerPath)
+
+                $LogBox.AppendText("[$timestamp] Creating destination file...`r`n")
+                [System.Windows.Forms.Application]::DoEvents()
                 $destStream = [System.IO.File]::Create($localInstallerPath)
+
                 $buffer = New-Object byte[] (1MB)
                 $totalRead = 0
-                $lastPercent = 0
+                $lastPercent = -1
 
                 Start-AppActivity "Copying $fileName..."
                 Set-AppProgress -Value 0 -Maximum 100
+                $LogBox.AppendText("[$timestamp] Copying: 0 / $fileSizeMB MB (0%)`r`n")
 
                 while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                     $destStream.Write($buffer, 0, $bytesRead)
                     $totalRead += $bytesRead
                     $percent = [math]::Floor(($totalRead / $sourceFile.Length) * 100)
 
-                    if ($percent -ne $lastPercent) {
+                    if ($percent -ne $lastPercent -and ($percent % 5 -eq 0 -or $percent -eq 100)) {
                         Set-AppProgress -Value $percent -Maximum 100
                         $copiedMB = [math]::Round($totalRead / 1MB, 1)
-                        $LogBox.Lines = $LogBox.Lines[0..($LogBox.Lines.Count - 2)] + @("[$timestamp] Copying: $copiedMB / $fileSizeMB MB ($percent%)")
+                        $LogBox.AppendText("[$timestamp] Copying: $copiedMB / $fileSizeMB MB ($percent%)`r`n")
                         $LogBox.SelectionStart = $LogBox.Text.Length
                         $LogBox.ScrollToCaret()
                         [System.Windows.Forms.Application]::DoEvents()
                         $lastPercent = $percent
                     }
                 }
-                $LogBox.AppendText("`r`n[$timestamp] Copy complete.`r`n")
+                $copySuccess = $true
+                $LogBox.AppendText("[$timestamp] Copy complete.`r`n")
+                Clear-AppStatus
+            }
+            catch {
+                $LogBox.AppendText("[$timestamp] ERROR during copy: $_`r`n")
                 Clear-AppStatus
             }
             finally {
-                if ($sourceStream) { $sourceStream.Close() }
-                if ($destStream) { $destStream.Close() }
+                if ($sourceStream) { $sourceStream.Close(); $sourceStream.Dispose() }
+                if ($destStream) { $destStream.Close(); $destStream.Dispose() }
             }
+
+            # Verify copy succeeded
+            if (-not $copySuccess) {
+                $LogBox.AppendText("[$timestamp] FAILED: Copy did not complete`r`n")
+                $LogBox.ScrollToCaret()
+                return
+            }
+
+            if (-not (Test-Path $localInstallerPath)) {
+                $LogBox.AppendText("[$timestamp] FAILED: Copied file not found at $localInstallerPath`r`n")
+                $LogBox.ScrollToCaret()
+                return
+            }
+
+            $copiedFile = Get-Item $localInstallerPath
+            $LogBox.AppendText("[$timestamp] Verified: Local file exists ($([math]::Round($copiedFile.Length / 1MB, 1)) MB)`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
 
             $installerPath = $localInstallerPath
             $tempCopied = $true
