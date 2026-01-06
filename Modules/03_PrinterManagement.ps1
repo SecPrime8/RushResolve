@@ -347,11 +347,11 @@ function Initialize-Module {
     $script:serverTextBox.Width = 200
     $serverInputPanel.Controls.Add($script:serverTextBox)
 
-    $browseServerBtn = New-Object System.Windows.Forms.Button
-    $browseServerBtn.Text = "Browse"
-    $browseServerBtn.Width = 65
-    $browseServerBtn.Height = 25
-    $serverInputPanel.Controls.Add($browseServerBtn)
+    $script:browseServerBtn = New-Object System.Windows.Forms.Button
+    $script:browseServerBtn.Text = "Browse"
+    $script:browseServerBtn.Width = 65
+    $script:browseServerBtn.Height = 25
+    $serverInputPanel.Controls.Add($script:browseServerBtn)
 
     # Line break spacer (forces filter to second line)
     $filterRowSpacer = New-Object System.Windows.Forms.Label
@@ -502,7 +502,7 @@ function Initialize-Module {
     })
 
     # Browse server
-    $browseServerBtn.Add_Click({
+    $script:browseServerBtn.Add_Click({
         $script:serverListView.Items.Clear()
         $server = $script:serverTextBox.Text.Trim()
 
@@ -513,8 +513,8 @@ function Initialize-Module {
         [System.Windows.Forms.Application]::DoEvents()
 
         # Disable button during load
-        $browseServerBtn.Enabled = $false
-        $browseServerBtn.Text = "Loading..."
+        $script:browseServerBtn.Enabled = $false
+        $script:browseServerBtn.Text = "Loading..."
         [System.Windows.Forms.Application]::DoEvents()
 
         try {
@@ -522,8 +522,8 @@ function Initialize-Module {
         }
         finally {
             # Re-enable button
-            $browseServerBtn.Enabled = $true
-            $browseServerBtn.Text = "Browse"
+            $script:browseServerBtn.Enabled = $true
+            $script:browseServerBtn.Text = "Browse"
         }
     })
 
