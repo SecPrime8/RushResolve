@@ -1116,7 +1116,7 @@ function Show-SettingsDialog {
     #>
     $settingsForm = New-Object System.Windows.Forms.Form
     $settingsForm.Text = "Settings"
-    $settingsForm.Size = New-Object System.Drawing.Size(500, 420)
+    $settingsForm.Size = New-Object System.Drawing.Size(500, 510)
     $settingsForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $settingsForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $settingsForm.MaximizeBox = $false
@@ -1240,6 +1240,34 @@ function Show-SettingsDialog {
     $settingsForm.Controls.Add($domainTextBox)
     $yPos += 40
 
+    # General Section
+    $generalLabel = New-Object System.Windows.Forms.Label
+    $generalLabel.Text = "General"
+    $generalLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $generalLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $generalLabel.AutoSize = $true
+    $settingsForm.Controls.Add($generalLabel)
+    $yPos += 25
+
+    # Default Tab
+    $tabLabel = New-Object System.Windows.Forms.Label
+    $tabLabel.Text = "Default Tab on Startup:"
+    $tabLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $tabLabel.AutoSize = $true
+    $settingsForm.Controls.Add($tabLabel)
+    $yPos += 22
+
+    $tabCombo = New-Object System.Windows.Forms.ComboBox
+    $tabCombo.Location = New-Object System.Drawing.Point(15, $yPos)
+    $tabCombo.Width = 200
+    $tabCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $tabCombo.Items.AddRange(@("System Info", "Software", "Printers"))
+    $currentTab = if ($script:Settings.global.lastTab) { $script:Settings.global.lastTab } else { "System Info" }
+    $tabCombo.SelectedItem = $currentTab
+    if ($tabCombo.SelectedIndex -lt 0) { $tabCombo.SelectedIndex = 0 }
+    $settingsForm.Controls.Add($tabCombo)
+    $yPos += 40
+
     # Buttons
     $saveBtn = New-Object System.Windows.Forms.Button
     $saveBtn.Text = "Save"
@@ -1250,8 +1278,9 @@ function Show-SettingsDialog {
         Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Value $netPathTextBox.Text.Trim()
         Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Value $localPathTextBox.Text.Trim()
         Set-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Value $serverTextBox.Text.Trim()
-        # Save default domain to global settings
+        # Save global settings
         $script:Settings.global.defaultDomain = $domainTextBox.Text.Trim()
+        $script:Settings.global.lastTab = $tabCombo.SelectedItem.ToString()
         Save-Settings
         [System.Windows.Forms.MessageBox]::Show(
             "Settings saved. Changes will apply when modules are refreshed or restarted.",
