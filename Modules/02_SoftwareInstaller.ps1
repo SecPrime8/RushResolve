@@ -184,10 +184,27 @@ $script:InstallApp = {
 
             $tempDir = "C:\Temp\RushResolve_Install"
             $LogBox.AppendText("[$timestamp] Temp dir: $tempDir`r`n")
+            [System.Windows.Forms.Application]::DoEvents()
+
+            # Ensure C:\Temp exists first
+            if (-not (Test-Path "C:\Temp")) {
+                $LogBox.AppendText("[$timestamp] Creating C:\Temp...`r`n")
+                New-Item -Path "C:\Temp" -ItemType Directory -Force | Out-Null
+            }
 
             if (-not (Test-Path $tempDir)) {
+                $LogBox.AppendText("[$timestamp] Creating $tempDir...`r`n")
                 New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
-                $LogBox.AppendText("[$timestamp] Created temp directory`r`n")
+            }
+
+            # Verify folder exists
+            if (Test-Path $tempDir) {
+                $LogBox.AppendText("[$timestamp] Temp directory ready: $tempDir`r`n")
+            }
+            else {
+                $LogBox.AppendText("[$timestamp] ERROR: Failed to create temp directory!`r`n")
+                $LogBox.ScrollToCaret()
+                return
             }
 
             $fileName = Split-Path $installerPath -Leaf
