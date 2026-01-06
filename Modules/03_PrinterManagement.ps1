@@ -182,9 +182,9 @@ function Initialize-Module {
     $script:splitContainer = New-Object System.Windows.Forms.SplitContainer
     $script:splitContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
     $script:splitContainer.Orientation = [System.Windows.Forms.Orientation]::Vertical
-    $script:splitContainer.SplitterDistance = 350
-    $script:splitContainer.Panel1MinSize = 250
-    $script:splitContainer.Panel2MinSize = 250
+    # Note: SplitterDistance set after adding to tab to avoid size conflicts
+    $script:splitContainer.Panel1MinSize = 100
+    $script:splitContainer.Panel2MinSize = 100
 
     #region Left Panel - Installed Printers
     $leftPanel = New-Object System.Windows.Forms.TableLayoutPanel
@@ -697,6 +697,9 @@ function Initialize-Module {
 
     # Add to tab
     $tab.Controls.Add($script:splitContainer)
+
+    # Set splitter position after adding (avoids size conflicts)
+    $script:splitContainer.SplitterDistance = 400
 
     # Initial load
     & $script:RefreshInstalledPrinters
