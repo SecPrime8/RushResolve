@@ -612,7 +612,7 @@ function Show-MainWindow {
     # Panel to hold tab control (between menu and status bar)
     $mainPanel = New-Object System.Windows.Forms.Panel
     $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $mainPanel.Padding = New-Object System.Windows.Forms.Padding(5, 10, 5, 5)
+    $mainPanel.Padding = New-Object System.Windows.Forms.Padding(10, 35, 10, 5)
     $mainPanel.Controls.Add($tabControl)
 
     # Add controls in correct order (top to bottom)
