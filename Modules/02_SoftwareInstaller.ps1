@@ -182,7 +182,7 @@ $script:InstallApp = {
             $LogBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
 
-            $tempDir = Join-Path $env:TEMP "RushResolve_Install"
+            $tempDir = "C:\Temp\RushResolve_Install"
             $LogBox.AppendText("[$timestamp] Temp dir: $tempDir`r`n")
 
             if (-not (Test-Path $tempDir)) {
