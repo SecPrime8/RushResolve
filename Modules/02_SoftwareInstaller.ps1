@@ -229,17 +229,24 @@ $script:InstallApp = {
 
                 Start-AppActivity "Copying $fileName..."
                 Set-AppProgress -Value 0 -Maximum 100
-                $LogBox.AppendText("[$timestamp] Copying: 0 / $fileSizeMB MB (0%)`r`n")
+
+                # Add initial progress line that we'll update in place
+                $LogBox.AppendText("[$timestamp] Copying: 0 / $fileSizeMB MB (0%)")
+                $progressLineStart = $LogBox.Text.LastIndexOf("[$timestamp] Copying:")
 
                 while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                     $destStream.Write($buffer, 0, $bytesRead)
                     $totalRead += $bytesRead
                     $percent = [math]::Floor(($totalRead / $sourceFile.Length) * 100)
 
-                    if ($percent -ne $lastPercent -and ($percent % 5 -eq 0 -or $percent -eq 100)) {
+                    if ($percent -ne $lastPercent) {
                         Set-AppProgress -Value $percent -Maximum 100
                         $copiedMB = [math]::Round($totalRead / 1MB, 1)
-                        $LogBox.AppendText("[$timestamp] Copying: $copiedMB / $fileSizeMB MB ($percent%)`r`n")
+
+                        # Update the progress line in place
+                        $newProgressText = "[$timestamp] Copying: $copiedMB / $fileSizeMB MB ($percent%)"
+                        $LogBox.Select($progressLineStart, $LogBox.Text.Length - $progressLineStart)
+                        $LogBox.SelectedText = $newProgressText
                         $LogBox.SelectionStart = $LogBox.Text.Length
                         $LogBox.ScrollToCaret()
                         [System.Windows.Forms.Application]::DoEvents()
@@ -247,7 +254,7 @@ $script:InstallApp = {
                     }
                 }
                 $copySuccess = $true
-                $LogBox.AppendText("[$timestamp] Copy complete.`r`n")
+                $LogBox.AppendText("`r`n[$timestamp] Copy complete.`r`n")
                 Clear-AppStatus
             }
             catch {
