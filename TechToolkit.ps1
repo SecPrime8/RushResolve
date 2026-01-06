@@ -496,7 +496,7 @@ function Get-ElevatedCredential {
                     return $decrypted
                 }
                 else {
-                    [System.Windows.Forms.MessageBox]::Show(
+                    [void][System.Windows.Forms.MessageBox]::Show(
                         "Failed to decrypt credentials. File may be corrupted.",
                         "Error",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -512,7 +512,7 @@ function Get-ElevatedCredential {
                 $attemptsLeft = 3 - $script:PINFailCount
 
                 if ($attemptsLeft -gt 0) {
-                    [System.Windows.Forms.MessageBox]::Show(
+                    [void][System.Windows.Forms.MessageBox]::Show(
                         "Incorrect PIN. $attemptsLeft attempts remaining.",
                         "Wrong PIN",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -560,7 +560,7 @@ function Get-ElevatedCredential {
                 $script:PINLastVerified = Get-Date
                 $script:PINFailCount = 0
 
-                [System.Windows.Forms.MessageBox]::Show(
+                [void][System.Windows.Forms.MessageBox]::Show(
                     "Credentials saved and encrypted with your PIN.",
                     "Success",
                     [System.Windows.Forms.MessageBoxButtons]::OK,
