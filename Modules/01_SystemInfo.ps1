@@ -8,8 +8,8 @@
 $script:ModuleName = "System Info"
 $script:ModuleDescription = "View system information and launch admin tools"
 
-# Define helper function FIRST (before Initialize-Module uses it)
-function Get-SysInfoData {
+# Use script block instead of function to avoid scope issues
+$script:GetSysInfoData = {
     $info = [System.Text.StringBuilder]::new()
 
     try {
@@ -147,12 +147,14 @@ function Initialize-Module {
     $script:infoTextBox.Font = New-Object System.Drawing.Font("Consolas", 9)
     $script:infoTextBox.Dock = [System.Windows.Forms.DockStyle]::Fill
     $script:infoTextBox.BackColor = [System.Drawing.Color]::White
-    $script:infoTextBox.Text = Get-SysInfoData
+
+    # Invoke script block with &
+    $script:infoTextBox.Text = (& $script:GetSysInfoData)
 
     $infoGroup.Controls.Add($script:infoTextBox)
     $topPanel.Controls.Add($infoGroup)
 
-    # Bottom Panel - Buttons and Log
+    # Bottom Panel - Buttons
     $bottomPanel = New-Object System.Windows.Forms.Panel
     $bottomPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
 
@@ -162,13 +164,18 @@ function Initialize-Module {
     $buttonPanel.Padding = New-Object System.Windows.Forms.Padding(5)
     $buttonPanel.WrapContents = $true
 
+    # Capture references for closures
+    $textBoxRef = $script:infoTextBox
+    $scriptBlockRef = $script:GetSysInfoData
+
     # Refresh button
     $refreshBtn = New-Object System.Windows.Forms.Button
     $refreshBtn.Text = "Refresh"
     $refreshBtn.Width = 80
     $refreshBtn.Height = 30
     $refreshBtn.Add_Click({
-        $script:infoTextBox.Text = Get-SysInfoData
+        param($sender, $e)
+        $textBoxRef.Text = (& $scriptBlockRef)
     }.GetNewClosure())
     $buttonPanel.Controls.Add($refreshBtn)
 
@@ -178,8 +185,11 @@ function Initialize-Module {
     $copyBtn.Width = 60
     $copyBtn.Height = 30
     $copyBtn.Add_Click({
-        [System.Windows.Forms.Clipboard]::SetText($script:infoTextBox.Text)
-        [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+        param($sender, $e)
+        if ($textBoxRef.Text) {
+            [System.Windows.Forms.Clipboard]::SetText($textBoxRef.Text)
+            [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
+        }
     }.GetNewClosure())
     $buttonPanel.Controls.Add($copyBtn)
 
@@ -230,7 +240,7 @@ function Initialize-Module {
     $msInfoBtn.Add_Click({ Start-Process "msinfo32.exe" })
     $buttonPanel.Controls.Add($msInfoBtn)
 
-    # Second row
+    # Second row spacer
     $sep2 = New-Object System.Windows.Forms.Label
     $sep2.Text = ""
     $sep2.Width = 700
@@ -264,7 +274,7 @@ function Initialize-Module {
     })
     $buttonPanel.Controls.Add($shutdownBtn)
 
-    # Note
+    # Note label
     $noteLabel = New-Object System.Windows.Forms.Label
     $noteLabel.Text = "Battery Report moved to dedicated module"
     $noteLabel.AutoSize = $true
