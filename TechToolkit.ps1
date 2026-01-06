@@ -42,7 +42,7 @@ function Get-DefaultSettings {
             cacheCredentials = $false
             windowWidth = 900
             windowHeight = 700
-            lastTab = ""
+            lastTab = "System Info"
         }
         modules = @{}
     }
