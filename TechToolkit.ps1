@@ -40,6 +40,7 @@ function Get-DefaultSettings {
     return @{
         global = @{
             cacheCredentials = $true
+            defaultDomain = "RUSH"
             windowWidth = 900
             windowHeight = 700
             lastTab = "System Info"
@@ -478,7 +479,19 @@ function Get-ElevatedCredential {
     # If caching disabled, just prompt directly
     if (-not $script:CacheCredentials) {
         try {
-            return Get-Credential -Message $Message
+            $cred = Get-Credential -Message $Message
+            if (-not $cred) { return $null }
+
+            # Auto-prepend default domain if username doesn't include domain
+            $username = $cred.UserName
+            if ($username -notmatch '\\' -and $username -notmatch '@') {
+                $defaultDomain = if ($script:Settings.global.defaultDomain) { $script:Settings.global.defaultDomain } else { "" }
+                if ($defaultDomain) {
+                    $newUsername = "$defaultDomain\$username"
+                    $cred = New-Object System.Management.Automation.PSCredential($newUsername, $cred.Password)
+                }
+            }
+            return $cred
         }
         catch {
             return $null
@@ -573,6 +586,16 @@ function Get-ElevatedCredential {
     try {
         $cred = Get-Credential -Message $Message
         if (-not $cred) { return $null }
+
+        # Auto-prepend default domain if username doesn't include domain
+        $username = $cred.UserName
+        if ($username -notmatch '\\' -and $username -notmatch '@') {
+            $defaultDomain = if ($script:Settings.global.defaultDomain) { $script:Settings.global.defaultDomain } else { "" }
+            if ($defaultDomain) {
+                $newUsername = "$defaultDomain\$username"
+                $cred = New-Object System.Management.Automation.PSCredential($newUsername, $cred.Password)
+            }
+        }
 
         # Prompt for new PIN
         $pin = Show-PINEntryDialog -IsNewPIN $true
@@ -1093,7 +1116,7 @@ function Show-SettingsDialog {
     #>
     $settingsForm = New-Object System.Windows.Forms.Form
     $settingsForm.Text = "Settings"
-    $settingsForm.Size = New-Object System.Drawing.Size(500, 320)
+    $settingsForm.Size = New-Object System.Drawing.Size(500, 420)
     $settingsForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $settingsForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $settingsForm.MaximizeBox = $false
@@ -1190,7 +1213,32 @@ function Show-SettingsDialog {
     $serverTextBox.Width = 380
     $serverTextBox.Text = Get-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Default "\\RUDWV-PS401"
     $settingsForm.Controls.Add($serverTextBox)
-    $yPos += 45
+    $yPos += 40
+
+    # Credentials Section
+    $credLabel = New-Object System.Windows.Forms.Label
+    $credLabel.Text = "Credentials"
+    $credLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $credLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $credLabel.AutoSize = $true
+    $settingsForm.Controls.Add($credLabel)
+    $yPos += 25
+
+    # Default Domain
+    $domainLabel = New-Object System.Windows.Forms.Label
+    $domainLabel.Text = "Default Domain (auto-prepended if not specified):"
+    $domainLabel.Location = New-Object System.Drawing.Point(15, $yPos)
+    $domainLabel.AutoSize = $true
+    $settingsForm.Controls.Add($domainLabel)
+    $yPos += 22
+
+    $domainTextBox = New-Object System.Windows.Forms.TextBox
+    $domainTextBox.Location = New-Object System.Drawing.Point(15, $yPos)
+    $domainTextBox.Width = 200
+    $defaultDomain = if ($script:Settings.global.defaultDomain) { $script:Settings.global.defaultDomain } else { "RUSH" }
+    $domainTextBox.Text = $defaultDomain
+    $settingsForm.Controls.Add($domainTextBox)
+    $yPos += 40
 
     # Buttons
     $saveBtn = New-Object System.Windows.Forms.Button
@@ -1202,6 +1250,9 @@ function Show-SettingsDialog {
         Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Value $netPathTextBox.Text.Trim()
         Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Value $localPathTextBox.Text.Trim()
         Set-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Value $serverTextBox.Text.Trim()
+        # Save default domain to global settings
+        $script:Settings.global.defaultDomain = $domainTextBox.Text.Trim()
+        Save-Settings
         [System.Windows.Forms.MessageBox]::Show(
             "Settings saved. Changes will apply when modules are refreshed or restarted.",
             "Settings Saved",
