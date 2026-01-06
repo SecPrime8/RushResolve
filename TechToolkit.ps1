@@ -611,7 +611,7 @@ function Show-MainWindow {
     $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
     $tabControl.Font = New-Object System.Drawing.Font("Segoe UI", 11)
     $tabControl.ShowToolTips = $true
-    $tabControl.ItemSize = New-Object System.Drawing.Size(120, 30)
+    $tabControl.ItemSize = New-Object System.Drawing.Size(130, 30)
     $tabControl.SizeMode = [System.Windows.Forms.TabSizeMode]::Fixed
 
     # Status strip (bottom bar)

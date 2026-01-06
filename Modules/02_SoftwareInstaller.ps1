@@ -218,7 +218,7 @@ function Initialize-Module {
     $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $mainPanel.RowCount = 4
     $mainPanel.ColumnCount = 1
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 70))) | Out-Null
     $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
     $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
     $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
@@ -242,6 +242,25 @@ function Initialize-Module {
     $script:sourceCombo.SelectedIndex = 1
 
     $sourcePanel.Controls.Add($script:sourceCombo)
+
+    # Second row spacer (forces new line in FlowLayoutPanel)
+    $pathRowSpacer = New-Object System.Windows.Forms.Label
+    $pathRowSpacer.Text = ""
+    $pathRowSpacer.Width = 2000
+    $pathRowSpacer.Height = 1
+    $sourcePanel.Controls.Add($pathRowSpacer)
+
+    # Path input row
+    $pathLabel = New-Object System.Windows.Forms.Label
+    $pathLabel.Text = "Path:"
+    $pathLabel.AutoSize = $true
+    $pathLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
+    $sourcePanel.Controls.Add($pathLabel)
+
+    $script:pathTextBox = New-Object System.Windows.Forms.TextBox
+    $script:pathTextBox.Width = 500
+    $script:pathTextBox.Height = 25
+    $sourcePanel.Controls.Add($script:pathTextBox)
 
     $browseBtn = New-Object System.Windows.Forms.Button
     $browseBtn.Text = "Browse..."
@@ -371,10 +390,14 @@ function Initialize-Module {
         $script:appListView.Items.Clear()
         $script:AppsList = @()
 
-        $path = $script:currentPath
+        # Read path from textbox
+        $path = $script:pathTextBox.Text.Trim()
+        $script:currentPath = $path
+
         if (-not $path -or -not (Test-Path $path)) {
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:logBox.AppendText("[$timestamp] No valid path selected. Use Browse to select a directory.`r`n")
+            $script:logBox.AppendText("[$timestamp] Invalid path: $path`r`n")
+            $script:logBox.AppendText("[$timestamp] Enter a valid local or network path (e.g., C:\Installers or \\server\share)`r`n")
             return
         }
 
@@ -408,8 +431,10 @@ function Initialize-Module {
         $folderBrowser.ShowNewFolderButton = $false
 
         if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $script:pathTextBox.Text = $folderBrowser.SelectedPath
             $script:currentPath = $folderBrowser.SelectedPath
 
+            # Save to settings based on current source type
             if ($script:sourceCombo.SelectedIndex -eq 0) {
                 $script:networkPath = $script:currentPath
                 Set-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Value $script:currentPath
@@ -428,15 +453,26 @@ function Initialize-Module {
         & $script:RefreshAppList
     })
 
-    # Source combo change
+    # Source combo change - update textbox with saved path
     $script:sourceCombo.Add_SelectedIndexChanged({
         if ($script:sourceCombo.SelectedIndex -eq 0) {
+            $script:pathTextBox.Text = $script:networkPath
             $script:currentPath = $script:networkPath
         }
         else {
+            $script:pathTextBox.Text = $script:localPath
             $script:currentPath = $script:localPath
         }
         & $script:RefreshAppList
+    })
+
+    # Enter key in path textbox triggers refresh
+    $script:pathTextBox.Add_KeyDown({
+        param($sender, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+            $e.SuppressKeyPress = $true
+            & $script:RefreshAppList
+        }
     })
 
     # Install button
@@ -542,7 +578,12 @@ Requires Elevation: $elevText
 
     $tab.Controls.Add($mainPanel)
 
+    # Initialize textbox with saved path (Local/USB is default, index 1)
+    $script:pathTextBox.Text = $script:localPath
+    $script:currentPath = $script:localPath
+
     # Initial log message
     $timestamp = Get-Date -Format "HH:mm:ss"
-    $script:logBox.AppendText("[$timestamp] Software Installer ready. Select a source and click Browse or Refresh.`r`n")
+    $script:logBox.AppendText("[$timestamp] Software Installer ready. Enter a path or Browse, then click Refresh.`r`n")
+    $script:logBox.AppendText("[$timestamp] Supports: Local paths (C:\...), Network shares (\\server\share), Mapped drives (Z:\...)`r`n")
 }
