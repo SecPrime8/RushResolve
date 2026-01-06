@@ -264,7 +264,7 @@ function Initialize-Module {
     # Shutdown
     $shutdownBtn = New-Object System.Windows.Forms.Button
     $shutdownBtn.Text = "Shutdown"
-    $shutdownBtn.Width = 80
+    $shutdownBtn.Width = 90
     $shutdownBtn.Height = 30
     $shutdownBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220)
     $shutdownBtn.Add_Click({
