@@ -126,7 +126,82 @@ $script:ReleaseRenewIP = {
     $LogBox.ScrollToCaret()
 }
 
-# Get LLDP info (try multiple methods)
+# Setup LLDP (one-time on tech laptop)
+$script:SetupLldp = {
+    param([System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Checking LLDP prerequisites...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    # Check if DCB is installed
+    $dcb = Get-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -ErrorAction SilentlyContinue
+
+    if (-not $dcb -or $dcb.State -ne "Enabled") {
+        $LogBox.AppendText("[$timestamp] Data Center Bridging not installed.`r`n")
+        $result = [System.Windows.Forms.MessageBox]::Show(
+            "LLDP requires the Data Center Bridging feature.`n`nInstall now? (Requires admin rights + reboot after)`n`nNote: This only needs to be done once on your tech laptop.",
+            "Install DCB Feature",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $LogBox.AppendText("[$timestamp] Installing Data Center Bridging (this may take a minute)...`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+
+            try {
+                Enable-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -All -NoRestart -ErrorAction Stop
+                $LogBox.AppendText("[$timestamp] DCB installed successfully.`r`n")
+                $LogBox.AppendText("[$timestamp] REBOOT REQUIRED - After reboot, click 'Setup LLDP' again.`r`n")
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Data Center Bridging installed.`n`nPlease REBOOT your computer, then click 'Setup LLDP' again to complete setup.",
+                    "Reboot Required",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+            }
+            catch {
+                $LogBox.AppendText("[$timestamp] ERROR: Failed to install DCB - $_`r`n")
+                $LogBox.AppendText("[$timestamp] Try running Rush Resolve as Administrator.`r`n")
+            }
+        }
+        $LogBox.ScrollToCaret()
+        return
+    }
+
+    # DCB is installed - enable LLDP on adapters
+    $LogBox.AppendText("[$timestamp] DCB feature is installed. Enabling LLDP on adapters...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.PhysicalMediaType -ne 'Unspecified' }
+    $enabledCount = 0
+
+    foreach ($adapter in $adapters) {
+        try {
+            Enable-NetLldpAgent -NetAdapterName $adapter.Name -ErrorAction Stop
+            $LogBox.AppendText("[$timestamp] LLDP enabled on: $($adapter.Name)`r`n")
+            $enabledCount++
+        }
+        catch {
+            $LogBox.AppendText("[$timestamp] Skipped $($adapter.Name): $_`r`n")
+        }
+        $LogBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    if ($enabledCount -gt 0) {
+        $LogBox.AppendText("`r`n[$timestamp] Setup complete! LLDP enabled on $enabledCount adapter(s).`r`n")
+        $LogBox.AppendText("[$timestamp] Wait ~30 seconds for switch to send data, then click 'Get Switch Info'.`r`n")
+    } else {
+        $LogBox.AppendText("[$timestamp] No adapters could be configured for LLDP.`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
+# Get LLDP info using Get-NetLldpNeighborInformation
 $script:GetLldpInfo = {
     param([string]$AdapterName)
 
@@ -135,40 +210,37 @@ $script:GetLldpInfo = {
         SwitchName = "N/A"
         SwitchIP = "N/A"
         Port = "N/A"
+        PortDesc = "N/A"
         VLAN = "N/A"
         Error = $null
     }
 
-    # Method 1: Try Windows built-in LLDP agent
+    # Try to get LLDP neighbor info
     try {
-        $agent = Get-NetLldpAgent -NetAdapterName $AdapterName -ErrorAction Stop
-        if ($agent) {
+        $neighbor = Get-NetLldpAgent -NetAdapterName $AdapterName -ErrorAction Stop |
+            Get-NetLldpNeighborInformation -ErrorAction Stop
+
+        if ($neighbor) {
             $info.Available = $true
-            # Try to get neighbor info
-            $neighbor = Get-CimInstance -Namespace root\StandardCimv2 -ClassName MSFT_NetLldpAgent -ErrorAction SilentlyContinue |
-                Where-Object { $_.NetAdapterName -eq $AdapterName }
-            if ($neighbor) {
-                $info.SwitchName = $neighbor.SystemName
-                $info.Port = $neighbor.PortId
+            $info.SwitchName = if ($neighbor.ChassisId) { $neighbor.ChassisId } else { "N/A" }
+            $info.SwitchIP = if ($neighbor.ManagementAddress) { $neighbor.ManagementAddress } else { "N/A" }
+            $info.Port = if ($neighbor.PortId) { $neighbor.PortId } else { "N/A" }
+            $info.PortDesc = if ($neighbor.PortDescription) { $neighbor.PortDescription } else { "N/A" }
+            # VLAN may be in SystemDescription or need separate query
+            if ($neighbor.SystemDescription -match "VLAN[:\s]*(\d+)") {
+                $info.VLAN = $matches[1]
             }
+        } else {
+            $info.Error = "No LLDP data received yet. Wait 30 seconds and try again."
         }
     }
     catch {
-        # LLDP agent not available or not enabled
-    }
-
-    # Method 2: Check if Data Center Bridging feature is available
-    if (-not $info.Available) {
-        try {
-            $dcb = Get-WindowsFeature -Name "Data-Center-Bridging" -ErrorAction SilentlyContinue
-            if ($dcb -and $dcb.Installed) {
-                $info.Error = "DCB installed but LLDP not returning data"
-            } else {
-                $info.Error = "LLDP requires Data Center Bridging feature or use LinkDiscovery tool"
-            }
-        }
-        catch {
-            $info.Error = "LLDP not available on this system. Use LinkDiscovery tool."
+        # Check if LLDP is configured
+        $dcb = Get-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -ErrorAction SilentlyContinue
+        if (-not $dcb -or $dcb.State -ne "Enabled") {
+            $info.Error = "Click 'Setup LLDP' to configure (one-time setup)."
+        } else {
+            $info.Error = "LLDP agent not enabled on this adapter. Click 'Setup LLDP'."
         }
     }
 
@@ -288,6 +360,7 @@ function Initialize-Module {
     $runTracerouteRef = $script:RunTraceroute
     $flushDnsRef = $script:FlushDns
     $releaseRenewRef = $script:ReleaseRenewIP
+    $setupLldpRef = $script:SetupLldp
     $getLldpRef = $script:GetLldpInfo
     $getWirelessRef = $script:GetWirelessInfo
     $scanNetworksRef = $script:ScanNetworks
@@ -533,9 +606,9 @@ function Initialize-Module {
             $info = & $getLldpRef -AdapterName $adapter.Name
 
             if ($info.Available) {
-                $lldpInfoLabelRef.Text = "Switch Port: $($info.Port)`nVLAN: $($info.VLAN)`nSwitch IP: $($info.SwitchIP)`nSwitch Name: $($info.SwitchName)"
+                $lldpInfoLabelRef.Text = "Switch Port: $($info.Port)`nPort Desc: $($info.PortDesc)`nVLAN: $($info.VLAN)`nSwitch IP: $($info.SwitchIP)`nSwitch Name: $($info.SwitchName)"
             } else {
-                $lldpInfoLabelRef.Text = "LLDP not available`n`n$($info.Error)"
+                $lldpInfoLabelRef.Text = "LLDP Info:`n`n$($info.Error)"
             }
         } else {
             [System.Windows.Forms.MessageBox]::Show("Select an adapter first", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
@@ -552,6 +625,26 @@ function Initialize-Module {
         [System.Windows.Forms.MessageBox]::Show("Copied!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
     }.GetNewClosure())
     $lldpPanel.Controls.Add($copyLldpBtn)
+
+    # Setup LLDP button (one-time on tech laptop)
+    $setupLldpBtn = New-Object System.Windows.Forms.Button
+    $setupLldpBtn.Text = "Setup LLDP"
+    $setupLldpBtn.Width = 90
+    $setupLldpBtn.Location = New-Object System.Drawing.Point(10, 140)
+    $setupLldpBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
+    $setupLldpBtn.Add_Click({
+        & $setupLldpRef -LogBox $script:diagLogBox
+    }.GetNewClosure())
+    $lldpPanel.Controls.Add($setupLldpBtn)
+
+    # Help label
+    $lldpHelpLabel = New-Object System.Windows.Forms.Label
+    $lldpHelpLabel.Text = "(One-time setup for tech laptop)"
+    $lldpHelpLabel.AutoSize = $true
+    $lldpHelpLabel.ForeColor = [System.Drawing.Color]::Gray
+    $lldpHelpLabel.Font = New-Object System.Drawing.Font("Segoe UI", 7)
+    $lldpHelpLabel.Location = New-Object System.Drawing.Point(105, 145)
+    $lldpPanel.Controls.Add($lldpHelpLabel)
 
     $lldpPanel.Controls.Add($script:lldpInfoLabel)
     $lldpGroup.Controls.Add($lldpPanel)
