@@ -10,9 +10,59 @@ $script:ModuleName = "Printers"
 $script:ModuleDescription = "Add, remove, and manage network printers"
 
 #region Configuration
-# Load default server from settings (falls back to hardcoded default if not set)
+# SECURITY: Hardcoded allowlist of approved print servers
+# Only these servers can be used - prevents path injection attacks
+$script:AllowedPrintServers = @(
+    "\\RUDWV-PS401",       # Primary RMC print server
+    "\\RUDWV-PS402",       # Secondary RMC print server
+    "\\RUCPMC-PS01",       # CPMC print server
+    "\\RUSH-PS01"          # Main campus print server
+)
+
+# Load default server from settings (must be in allowlist)
 $script:PrintServer = Get-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Default "\\RUDWV-PS401"
+# Validate default is in allowlist
+if ($script:PrintServer -and $script:AllowedPrintServers -notcontains $script:PrintServer) {
+    $script:PrintServer = $script:AllowedPrintServers[0]
+}
 $script:PrinterBackupShare = "\\rush.edu\vdi\apphub\tools\NetworkPrinters"
+#endregion
+
+#region Security Functions
+function Test-PrinterPathAllowed {
+    <#
+    .SYNOPSIS
+        Validates that a printer path uses an allowed print server
+    .PARAMETER PrinterPath
+        Full printer path (e.g., \\SERVER\PrinterName)
+    .RETURNS
+        Hashtable with Allowed (bool) and Reason (string)
+    #>
+    param([string]$PrinterPath)
+
+    if (-not $PrinterPath) {
+        return @{ Allowed = $false; Reason = "Printer path is empty" }
+    }
+
+    # Extract server from path (\\SERVER\Share format)
+    if ($PrinterPath -match '^\\\\([^\\]+)\\') {
+        $serverName = "\\$($Matches[1])"
+
+        # Check against allowlist (case-insensitive)
+        foreach ($allowedServer in $script:AllowedPrintServers) {
+            if ($serverName -ieq $allowedServer) {
+                return @{ Allowed = $true; Reason = $null }
+            }
+        }
+
+        return @{
+            Allowed = $false
+            Reason = "Server '$serverName' is not in the approved print server list.`n`nAllowed servers: $($script:AllowedPrintServers -join ', ')"
+        }
+    }
+
+    return @{ Allowed = $false; Reason = "Invalid printer path format. Expected: \\SERVER\PrinterName" }
+}
 #endregion
 
 #region Script Blocks
@@ -356,10 +406,21 @@ function Initialize-Module {
     $serverInputLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
     $serverInputPanel.Controls.Add($serverInputLabel)
 
-    $script:serverTextBox = New-Object System.Windows.Forms.TextBox
-    $script:serverTextBox.Text = $script:PrintServer
-    $script:serverTextBox.Width = 200
-    $serverInputPanel.Controls.Add($script:serverTextBox)
+    # SECURITY: Dropdown restricted to allowed print servers only
+    $script:serverComboBox = New-Object System.Windows.Forms.ComboBox
+    $script:serverComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList  # Prevents typing
+    $script:serverComboBox.Width = 200
+    foreach ($server in $script:AllowedPrintServers) {
+        $script:serverComboBox.Items.Add($server) | Out-Null
+    }
+    # Select the default server
+    $defaultIndex = $script:serverComboBox.Items.IndexOf($script:PrintServer)
+    if ($defaultIndex -ge 0) {
+        $script:serverComboBox.SelectedIndex = $defaultIndex
+    } elseif ($script:serverComboBox.Items.Count -gt 0) {
+        $script:serverComboBox.SelectedIndex = 0
+    }
+    $serverInputPanel.Controls.Add($script:serverComboBox)
 
     $script:browseServerBtn = New-Object System.Windows.Forms.Button
     $script:browseServerBtn.Text = "Browse"
@@ -456,7 +517,7 @@ function Initialize-Module {
 
     $script:RefreshServerPrinters = {
         $script:serverListView.Items.Clear()
-        $server = $script:serverTextBox.Text.Trim()
+        $server = $script:serverComboBox.SelectedItem
 
         if (-not $server) {
             Set-AppError "Enter a server name and click Browse"
@@ -757,38 +818,85 @@ function Initialize-Module {
         & $script:RefreshInstalledPrinters
     })
 
-    # Manual add by path
+    # Manual add by path - SECURITY: Server dropdown + printer name only
     $manualAddBtn.Add_Click({
         $inputForm = New-Object System.Windows.Forms.Form
-        $inputForm.Text = "Add Printer by Path"
-        $inputForm.Size = New-Object System.Drawing.Size(450, 150)
+        $inputForm.Text = "Add Printer Manually"
+        $inputForm.Size = New-Object System.Drawing.Size(400, 180)
         $inputForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
         $inputForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
         $inputForm.MaximizeBox = $false
         $inputForm.MinimizeBox = $false
 
-        $pathLabel = New-Object System.Windows.Forms.Label
-        $pathLabel.Text = "Enter printer path (e.g., \\server\printername):"
-        $pathLabel.Location = New-Object System.Drawing.Point(10, 15)
-        $pathLabel.AutoSize = $true
-        $inputForm.Controls.Add($pathLabel)
+        # Server dropdown (restricted to allowlist)
+        $serverLabel = New-Object System.Windows.Forms.Label
+        $serverLabel.Text = "Print Server:"
+        $serverLabel.Location = New-Object System.Drawing.Point(10, 15)
+        $serverLabel.AutoSize = $true
+        $inputForm.Controls.Add($serverLabel)
 
-        $pathTextBox = New-Object System.Windows.Forms.TextBox
-        $pathTextBox.Location = New-Object System.Drawing.Point(10, 40)
-        $pathTextBox.Width = 410
-        $pathTextBox.Text = $script:serverTextBox.Text + "\"
-        $inputForm.Controls.Add($pathTextBox)
+        $dialogServerCombo = New-Object System.Windows.Forms.ComboBox
+        $dialogServerCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        $dialogServerCombo.Location = New-Object System.Drawing.Point(100, 12)
+        $dialogServerCombo.Width = 270
+        foreach ($server in $script:AllowedPrintServers) {
+            $dialogServerCombo.Items.Add($server) | Out-Null
+        }
+        # Default to currently selected server
+        $currentServer = $script:serverComboBox.SelectedItem
+        $serverIndex = $dialogServerCombo.Items.IndexOf($currentServer)
+        if ($serverIndex -ge 0) {
+            $dialogServerCombo.SelectedIndex = $serverIndex
+        } elseif ($dialogServerCombo.Items.Count -gt 0) {
+            $dialogServerCombo.SelectedIndex = 0
+        }
+        $inputForm.Controls.Add($dialogServerCombo)
+
+        # Printer name input
+        $printerLabel = New-Object System.Windows.Forms.Label
+        $printerLabel.Text = "Printer Name:"
+        $printerLabel.Location = New-Object System.Drawing.Point(10, 50)
+        $printerLabel.AutoSize = $true
+        $inputForm.Controls.Add($printerLabel)
+
+        $printerNameTextBox = New-Object System.Windows.Forms.TextBox
+        $printerNameTextBox.Location = New-Object System.Drawing.Point(100, 47)
+        $printerNameTextBox.Width = 270
+        $inputForm.Controls.Add($printerNameTextBox)
+
+        # Preview label
+        $previewLabel = New-Object System.Windows.Forms.Label
+        $previewLabel.Text = "Path: (select server and enter printer name)"
+        $previewLabel.Location = New-Object System.Drawing.Point(10, 80)
+        $previewLabel.AutoSize = $true
+        $previewLabel.ForeColor = [System.Drawing.Color]::Gray
+        $inputForm.Controls.Add($previewLabel)
+
+        # Update preview when either control changes
+        $updatePreview = {
+            $server = $dialogServerCombo.SelectedItem
+            $name = $printerNameTextBox.Text.Trim()
+            if ($server -and $name) {
+                $previewLabel.Text = "Path: $server\$name"
+                $previewLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+            } else {
+                $previewLabel.Text = "Path: (select server and enter printer name)"
+                $previewLabel.ForeColor = [System.Drawing.Color]::Gray
+            }
+        }
+        $dialogServerCombo.Add_SelectedIndexChanged($updatePreview)
+        $printerNameTextBox.Add_TextChanged($updatePreview)
 
         $okBtn = New-Object System.Windows.Forms.Button
         $okBtn.Text = "Add"
-        $okBtn.Location = New-Object System.Drawing.Point(260, 75)
+        $okBtn.Location = New-Object System.Drawing.Point(210, 110)
         $okBtn.Width = 75
         $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
         $inputForm.Controls.Add($okBtn)
 
         $cancelBtn = New-Object System.Windows.Forms.Button
         $cancelBtn.Text = "Cancel"
-        $cancelBtn.Location = New-Object System.Drawing.Point(345, 75)
+        $cancelBtn.Location = New-Object System.Drawing.Point(295, 110)
         $cancelBtn.Width = 75
         $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
         $inputForm.Controls.Add($cancelBtn)
@@ -797,39 +905,65 @@ function Initialize-Module {
         $inputForm.CancelButton = $cancelBtn
 
         if ($inputForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $printerPath = $pathTextBox.Text.Trim()
-            if ($printerPath) {
-                $allUsers = $script:allUsersCheckbox.Checked
-                $modeText = if ($allUsers) { "all users" } else { "current user" }
+            $selectedServer = $dialogServerCombo.SelectedItem
+            $printerName = $printerNameTextBox.Text.Trim()
 
-                if ($allUsers) {
-                    $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
-                    # Also add for current user so it shows immediately
-                    if ($result.Success) {
-                        & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
-                    }
-                }
-                else {
-                    $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
-                }
+            if (-not $selectedServer) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Please select a print server.",
+                    "Missing Server",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                return
+            }
 
+            if (-not $printerName) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Please enter a printer name.",
+                    "Missing Printer Name",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                return
+            }
+
+            # Sanitize printer name - remove any path characters
+            $printerName = $printerName -replace '[\\\/]', ''
+
+            # Build the full path from validated components
+            $printerPath = "$selectedServer\$printerName"
+
+            $allUsers = $script:allUsersCheckbox.Checked
+            $modeText = if ($allUsers) { "all users" } else { "current user" }
+
+            if ($allUsers) {
+                $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
+                # Also add for current user so it shows immediately
                 if ($result.Success) {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Printer added successfully for $modeText.",
-                        "Success",
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Information
-                    )
-                    & $script:RefreshInstalledPrinters
+                    & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
                 }
-                else {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Failed to add printer: $($result.Error)",
-                        "Error",
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Error
-                    )
-                }
+            }
+            else {
+                $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
+            }
+
+            if ($result.Success) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Printer added successfully for $modeText.`n`nPath: $printerPath",
+                    "Success",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+                & $script:RefreshInstalledPrinters
+            }
+            else {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Failed to add printer: $($result.Error)",
+                    "Error",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error
+                )
             }
         }
         $inputForm.Dispose()

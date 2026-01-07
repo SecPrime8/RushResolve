@@ -1,9 +1,9 @@
 # Rush Resolve Security Assessment Report
 
-**Application:** Rush Resolve v2.1
+**Application:** Rush Resolve v2.2
 **Assessment Date:** January 6, 2026
 **Assessor:** KILA Strategies Security Review
-**Status:** AFTER MITIGATIONS (v2.1 Security Hardened)
+**Status:** AFTER MITIGATIONS (v2.2 Security Hardened)
 
 ---
 
@@ -11,7 +11,7 @@
 
 Rush Resolve is a PowerShell-based IT technician toolkit that handles elevated credentials for software installation, printer management, and system administration tasks. This assessment documents security vulnerabilities identified and mitigations implemented.
 
-**Overall Risk Level: LOW-MEDIUM** (Improved from MEDIUM-HIGH)
+**Overall Risk Level: LOW** (Improved from MEDIUM-HIGH)
 
 The v2.1 security update implements:
 - Module whitelist with SHA256 hash verification
@@ -20,7 +20,12 @@ The v2.1 security update implements:
 - Increased PIN complexity (6+ digits, was 4)
 - First-run security initialization workflow
 
-The application now protects against code tampering and module injection attacks. Remaining risks are inherent to the DPAPI credential storage model and require physical access to exploit.
+The v2.2 security update adds:
+- Print server allowlist (hardcoded approved servers only)
+- Dropdown-based server selection (prevents free-text injection)
+- Printer name sanitization (removes path traversal characters)
+
+The application now protects against code tampering, module injection, and path injection attacks. Remaining risks are inherent to the DPAPI credential storage model and require physical access to exploit.
 
 ---
 
@@ -234,7 +239,49 @@ While unlocked, credentials exist in memory as SecureString. An attacker with ad
 
 ---
 
-## Current Security Controls (v2.1)
+### VULN-007: Printer Path Injection
+**Severity:** MEDIUM → LOW (Mitigated)
+**CVSS Score:** 5.0 → 1.5 (Residual)
+**Status:** MITIGATED in v2.2
+
+**Description:**
+The "Add by Path" feature in Printer Management previously allowed users to enter arbitrary UNC paths, enabling potential redirection to attacker-controlled print servers.
+
+**Original Attack Vector:**
+1. Attacker modifies settings or social engineers tech to use malicious server
+2. Tech enters `\\ATTACKER-SERVER\FakePrinter` in Add by Path dialog
+3. Connection to attacker server could execute malicious driver code or leak credentials
+
+**Mitigation Implemented:**
+```powershell
+# SECURITY: Hardcoded allowlist of approved print servers
+$script:AllowedPrintServers = @(
+    "\\RUDWV-PS401",       # Primary RMC print server
+    "\\RUDWV-PS402",       # Secondary RMC print server
+    "\\RUCPMC-PS01",       # CPMC print server
+    "\\RUSH-PS01"          # Main campus print server
+)
+
+# Server selection via dropdown (DropDownList style prevents typing)
+$script:serverComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+
+# Printer name sanitized to remove path characters
+$printerName = $printerName -replace '[\\\/]', ''
+```
+
+**Location:** `Modules/03_PrinterManagement.ps1` - lines 12-65 (allowlist and validation)
+
+**Security Controls:**
+- Server selection restricted to dropdown (no free-text)
+- Allowlist hardcoded in module (not user-configurable)
+- Printer name sanitized to remove path traversal characters
+- "Add by Path" dialog split into Server dropdown + Printer name field
+
+**Residual Risk:** Minimal - attacker would need to modify source code (blocked by module integrity checks).
+
+---
+
+## Current Security Controls (v2.2)
 
 | Control | Status | Effectiveness |
 |---------|--------|---------------|
@@ -249,11 +296,12 @@ While unlocked, credentials exist in memory as SecureString. An attacker with ad
 | Settings Monitoring | **IMPLEMENTED v2.1** | Fair - Hash tracked for audit |
 | Security Mode Control | **IMPLEMENTED v2.1** | Good - Enforced/Warn/Disabled |
 | First-Run Protection | **IMPLEMENTED v2.1** | Good - Prompts manifest creation |
+| Print Server Allowlist | **IMPLEMENTED v2.2** | Good - Hardcoded server list |
 | Audit Logging | NOT IMPLEMENTED | N/A - Future enhancement |
 
 ---
 
-## Risk Matrix (Updated v2.1)
+## Risk Matrix (Updated v2.2)
 
 | Vulnerability | Likelihood | Impact | Risk Level | Status |
 |--------------|------------|--------|------------|--------|
@@ -263,6 +311,7 @@ While unlocked, credentials exist in memory as SecureString. An attacker with ad
 | VULN-004: DPAPI Domain Risk | Low | High | MEDIUM | Accepted |
 | VULN-005: Weak PIN | Very Low | Medium | LOW | Mitigated |
 | VULN-006: Memory Exposure | Very Low | High | LOW | Accepted |
+| VULN-007: Printer Path Injection | Very Low | Medium | LOW | Mitigated |
 
 ---
 
@@ -273,6 +322,7 @@ While unlocked, credentials exist in memory as SecureString. An attacker with ad
 | P0 | VULN-001 | Module whitelist with hash verification | **COMPLETE** |
 | P0 | VULN-002 | Startup integrity check | **COMPLETE** |
 | P1 | VULN-003 | Settings integrity verification | **MONITORED** |
+| P1 | VULN-007 | Print server allowlist | **COMPLETE** |
 | P2 | VULN-005 | Increase PIN to 6+ digits | **COMPLETE** |
 | P3 | VULN-004 | Migrate to Windows Credential Manager | Deferred |
 
@@ -283,7 +333,7 @@ While unlocked, credentials exist in memory as SecureString. An attacker with ad
 | PBKDF2 PIN Hashing | Use slow hash for PIN (100K+ iterations) | Low |
 | Audit Logging | Log security events to file | Medium |
 | Code Signing | Sign scripts with certificate | Medium |
-| Path Whitelist | Restrict software paths to approved servers | Low |
+| Software Path Whitelist | Restrict software paths to approved servers | Low |
 
 ---
 
@@ -355,4 +405,4 @@ While unlocked, credentials exist in memory as SecureString. An attacker with ad
 
 *Report generated for Rush IT Field Services cybersecurity review.*
 *Security hardening implemented: January 6, 2026*
-*Version: 2.1*
+*Version: 2.2*
