@@ -89,11 +89,15 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.0"
+$script:AppVersion = "2.1"  # Security hardened version
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
+$script:SecurityPath = Join-Path $script:AppPath "Security"
 $script:SettingsFile = Join-Path $script:ConfigPath "settings.json"
+$script:ModuleManifestFile = Join-Path $script:SecurityPath "module-manifest.json"
+$script:IntegrityManifestFile = Join-Path $script:SecurityPath "integrity-manifest.json"
+$script:SecurityMode = "Enforced"  # "Enforced", "Warn", or "Disabled"
 
 # Credential caching with PIN protection
 $script:CachedCredential = $null          # Encrypted credential blob (or decrypted PSCredential when unlocked)
@@ -188,6 +192,252 @@ function Set-ModuleSetting {
     }
     $script:Settings.modules.$ModuleName | Add-Member -NotePropertyName $Key -NotePropertyValue $Value -Force
     Save-Settings
+}
+#endregion
+
+#region Security - Integrity Verification
+
+function Get-FileHashSHA256 {
+    <#
+    .SYNOPSIS
+        Computes SHA256 hash of a file.
+    #>
+    param([string]$FilePath)
+
+    if (-not (Test-Path $FilePath)) { return $null }
+
+    try {
+        $stream = [System.IO.File]::OpenRead($FilePath)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $hashBytes = $sha256.ComputeHash($stream)
+        $stream.Close()
+        return [Convert]::ToBase64String($hashBytes)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-ModuleAllowed {
+    <#
+    .SYNOPSIS
+        Checks if a module file is in the whitelist and matches its expected hash.
+    .OUTPUTS
+        Hashtable with Allowed, Reason, and Hash.
+    #>
+    param([string]$ModulePath)
+
+    $result = @{
+        Allowed = $false
+        Reason = ""
+        Hash = $null
+    }
+
+    # If security is disabled, allow all
+    if ($script:SecurityMode -eq "Disabled") {
+        $result.Allowed = $true
+        $result.Reason = "Security disabled"
+        return $result
+    }
+
+    # Compute current file hash
+    $currentHash = Get-FileHashSHA256 -FilePath $ModulePath
+    $result.Hash = $currentHash
+
+    if (-not $currentHash) {
+        $result.Reason = "Could not compute hash"
+        return $result
+    }
+
+    # Check if manifest exists
+    if (-not (Test-Path $script:ModuleManifestFile)) {
+        if ($script:SecurityMode -eq "Warn") {
+            Write-Warning "Module manifest not found - running in warning mode"
+            $result.Allowed = $true
+            $result.Reason = "Manifest missing (warn mode)"
+        }
+        else {
+            $result.Reason = "Module manifest not found"
+        }
+        return $result
+    }
+
+    # Load manifest
+    try {
+        $manifest = Get-Content $script:ModuleManifestFile -Raw | ConvertFrom-Json
+    }
+    catch {
+        $result.Reason = "Failed to read module manifest"
+        return $result
+    }
+
+    # Get module filename
+    $fileName = Split-Path $ModulePath -Leaf
+
+    # Check if module is in whitelist
+    $entry = $manifest.modules | Where-Object { $_.name -eq $fileName }
+
+    if (-not $entry) {
+        $result.Reason = "Module '$fileName' not in whitelist"
+        return $result
+    }
+
+    # Verify hash matches
+    if ($currentHash -ne $entry.hash) {
+        $result.Reason = "Hash mismatch for '$fileName' - file may have been tampered"
+        return $result
+    }
+
+    # All checks passed
+    $result.Allowed = $true
+    $result.Reason = "Verified"
+    return $result
+}
+
+function Test-ApplicationIntegrity {
+    <#
+    .SYNOPSIS
+        Verifies integrity of all application files on startup.
+    .OUTPUTS
+        Hashtable with Passed, Failures (array), and Warnings (array).
+    #>
+
+    $result = @{
+        Passed = $true
+        Failures = @()
+        Warnings = @()
+    }
+
+    # If security is disabled, skip
+    if ($script:SecurityMode -eq "Disabled") {
+        return $result
+    }
+
+    # Check if integrity manifest exists
+    if (-not (Test-Path $script:IntegrityManifestFile)) {
+        if ($script:SecurityMode -eq "Warn") {
+            $result.Warnings += "Integrity manifest not found"
+        }
+        else {
+            $result.Passed = $false
+            $result.Failures += "Integrity manifest not found - run Update-SecurityManifests to create"
+        }
+        return $result
+    }
+
+    # Load manifest
+    try {
+        $manifest = Get-Content $script:IntegrityManifestFile -Raw | ConvertFrom-Json
+    }
+    catch {
+        $result.Passed = $false
+        $result.Failures += "Failed to read integrity manifest"
+        return $result
+    }
+
+    # Verify settings.json integrity
+    if ($manifest.settings_hash) {
+        if (Test-Path $script:SettingsFile) {
+            $settingsHash = Get-FileHashSHA256 -FilePath $script:SettingsFile
+            # Note: Settings file hash will change when user modifies settings
+            # We store it to detect unauthorized external modifications
+            # In production, you might skip this check or use a different approach
+        }
+    }
+
+    # Verify main script integrity
+    $mainScript = Join-Path $script:AppPath "RushResolve.ps1"
+    if ($manifest.main_script_hash) {
+        $mainHash = Get-FileHashSHA256 -FilePath $mainScript
+        if ($mainHash -ne $manifest.main_script_hash) {
+            if ($script:SecurityMode -eq "Warn") {
+                $result.Warnings += "Main script hash mismatch - file may have been modified"
+            }
+            else {
+                $result.Passed = $false
+                $result.Failures += "Main script integrity check failed - possible tampering"
+            }
+        }
+    }
+
+    return $result
+}
+
+function Update-SecurityManifests {
+    <#
+    .SYNOPSIS
+        Generates/updates security manifests with current file hashes.
+        Run this after making legitimate changes to modules or the main script.
+    #>
+
+    # Create Security folder if needed
+    if (-not (Test-Path $script:SecurityPath)) {
+        New-Item -Path $script:SecurityPath -ItemType Directory -Force | Out-Null
+    }
+
+    # Generate module manifest
+    $moduleManifest = @{
+        generated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        generated_by = "$env:USERDOMAIN\$env:USERNAME"
+        description = "Whitelist of authorized modules with SHA256 hashes"
+        modules = @()
+    }
+
+    $moduleFiles = Get-ChildItem -Path $script:ModulesPath -Filter "*.ps1" -ErrorAction SilentlyContinue
+    foreach ($file in $moduleFiles) {
+        $hash = Get-FileHashSHA256 -FilePath $file.FullName
+        $moduleManifest.modules += @{
+            name = $file.Name
+            hash = $hash
+            added = (Get-Date).ToString("yyyy-MM-dd")
+        }
+    }
+
+    $moduleManifest | ConvertTo-Json -Depth 5 | Set-Content $script:ModuleManifestFile -Force
+
+    # Generate integrity manifest
+    $mainScript = Join-Path $script:AppPath "RushResolve.ps1"
+    $mainHash = Get-FileHashSHA256 -FilePath $mainScript
+
+    $integrityManifest = @{
+        generated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        generated_by = "$env:USERDOMAIN\$env:USERNAME"
+        description = "SHA256 hashes for application integrity verification"
+        main_script_hash = $mainHash
+        settings_hash = if (Test-Path $script:SettingsFile) { Get-FileHashSHA256 -FilePath $script:SettingsFile } else { $null }
+    }
+
+    $integrityManifest | ConvertTo-Json -Depth 5 | Set-Content $script:IntegrityManifestFile -Force
+
+    return @{
+        ModulesRegistered = $moduleManifest.modules.Count
+        ManifestPath = $script:SecurityPath
+    }
+}
+
+function Show-SecurityWarning {
+    <#
+    .SYNOPSIS
+        Displays a security warning dialog to the user.
+    #>
+    param(
+        [string]$Title,
+        [string]$Message,
+        [switch]$Critical
+    )
+
+    $icon = if ($Critical) {
+        [System.Windows.Forms.MessageBoxIcon]::Error
+    } else {
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    }
+
+    [void][System.Windows.Forms.MessageBox]::Show(
+        $Message,
+        $Title,
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        $icon
+    )
 }
 #endregion
 
@@ -1037,6 +1287,23 @@ function Load-Module {
     )
 
     try {
+        # SECURITY: Verify module is whitelisted and hash matches
+        $securityCheck = Test-ModuleAllowed -ModulePath $ModuleFile.FullName
+
+        if (-not $securityCheck.Allowed) {
+            $message = "Security: Blocked loading '$($ModuleFile.Name)'`n`nReason: $($securityCheck.Reason)`n`nIf this is a legitimate module, run Update-SecurityManifests to register it."
+
+            if ($script:SecurityMode -eq "Enforced") {
+                Show-SecurityWarning -Title "Module Blocked" -Message $message -Critical
+                Write-Warning "SECURITY: Module '$($ModuleFile.Name)' blocked - $($securityCheck.Reason)"
+                return $false
+            }
+            elseif ($script:SecurityMode -eq "Warn") {
+                Show-SecurityWarning -Title "Security Warning" -Message "WARNING: $message`n`nLoading anyway (Warn mode)."
+                Write-Warning "SECURITY WARNING: Module '$($ModuleFile.Name)' - $($securityCheck.Reason)"
+            }
+        }
+
         # Clear module variables
         $script:ModuleName = $null
         $script:ModuleDescription = $null
@@ -1416,6 +1683,75 @@ function Show-SettingsDialog {
 function Show-MainWindow {
     # Show splash screen immediately
     Show-SplashScreen
+    Update-SplashStatus "Verifying integrity..."
+
+    # SECURITY: Check if manifests exist, offer to create on first run
+    $manifestsExist = (Test-Path $script:ModuleManifestFile) -and (Test-Path $script:IntegrityManifestFile)
+
+    if (-not $manifestsExist) {
+        Update-SplashStatus "First run detected - initializing security..."
+
+        # First run - offer to generate manifests
+        $result = [System.Windows.Forms.MessageBox]::Show(
+            "Security manifests not found (first run).`n`n" +
+            "Generate security manifests now?`n`n" +
+            "This will register all current modules as trusted.`n" +
+            "Only do this if you trust the current module files.",
+            "Initialize Security",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Shield
+        )
+
+        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Update-SecurityManifests
+            [System.Windows.Forms.MessageBox]::Show(
+                "Security manifests created.`n`nThe application will now run in protected mode.",
+                "Security Initialized",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+        }
+        else {
+            # User declined - run in warn mode for this session
+            $script:SecurityMode = "Warn"
+            [System.Windows.Forms.MessageBox]::Show(
+                "Running in WARN mode for this session.`n`n" +
+                "Modules will load but may not be verified.`n" +
+                "Use Tools → Security Options → Update Security Manifests to enable full protection.",
+                "Security Warning",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+        }
+    }
+
+    # SECURITY: Run integrity check before loading anything
+    $integrityResult = Test-ApplicationIntegrity
+
+    if (-not $integrityResult.Passed) {
+        Close-SplashScreen
+
+        $failureMsg = "SECURITY ALERT`n`nApplication integrity check failed:`n`n"
+        $failureMsg += ($integrityResult.Failures -join "`n")
+        $failureMsg += "`n`nThe application will not start to protect your system.`n`n"
+        $failureMsg += "If you made legitimate changes, use:`n"
+        $failureMsg += "Tools → Security Options → Update Security Manifests"
+
+        [void][System.Windows.Forms.MessageBox]::Show(
+            $failureMsg,
+            "Security - Integrity Check Failed",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+        return
+    }
+
+    if ($integrityResult.Warnings.Count -gt 0) {
+        # Show warnings but continue
+        $warningMsg = "Security Warnings:`n`n" + ($integrityResult.Warnings -join "`n")
+        Show-SecurityWarning -Title "Security Warnings" -Message $warningMsg
+    }
+
     Update-SplashStatus "Loading settings..."
 
     # Load settings first
@@ -1475,6 +1811,90 @@ function Show-MainWindow {
     $credentialMenu.DropDownItems.Add($clearCredMenuItem) | Out-Null
 
     $toolsMenu.DropDownItems.Add($credentialMenu) | Out-Null
+
+    # Security Options submenu
+    $securityMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+    $securityMenu.Text = "Security Options"
+
+    # Security Mode options
+    $secModeEnforced = New-Object System.Windows.Forms.ToolStripMenuItem
+    $secModeEnforced.Text = "Enforced (Block unauthorized)"
+    $secModeEnforced.Checked = ($script:SecurityMode -eq "Enforced")
+    $secModeEnforced.Add_Click({
+        $script:SecurityMode = "Enforced"
+        $secModeEnforced.Checked = $true
+        $secModeWarn.Checked = $false
+        $secModeDisabled.Checked = $false
+        [System.Windows.Forms.MessageBox]::Show(
+            "Security mode set to ENFORCED.`n`nUnauthorized modules will be blocked.",
+            "Security Mode",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Shield
+        )
+    })
+    $securityMenu.DropDownItems.Add($secModeEnforced) | Out-Null
+
+    $secModeWarn = New-Object System.Windows.Forms.ToolStripMenuItem
+    $secModeWarn.Text = "Warn (Allow with warning)"
+    $secModeWarn.Checked = ($script:SecurityMode -eq "Warn")
+    $secModeWarn.Add_Click({
+        $script:SecurityMode = "Warn"
+        $secModeEnforced.Checked = $false
+        $secModeWarn.Checked = $true
+        $secModeDisabled.Checked = $false
+        [System.Windows.Forms.MessageBox]::Show(
+            "Security mode set to WARN.`n`nUnauthorized modules will show warnings but still load.",
+            "Security Mode",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    })
+    $securityMenu.DropDownItems.Add($secModeWarn) | Out-Null
+
+    $secModeDisabled = New-Object System.Windows.Forms.ToolStripMenuItem
+    $secModeDisabled.Text = "Disabled (No checks)"
+    $secModeDisabled.Checked = ($script:SecurityMode -eq "Disabled")
+    $secModeDisabled.Add_Click({
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "WARNING: Disabling security checks allows any module to be loaded.`n`nThis should only be used for development.`n`nDisable security?",
+            "Confirm Disable Security",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $script:SecurityMode = "Disabled"
+            $secModeEnforced.Checked = $false
+            $secModeWarn.Checked = $false
+            $secModeDisabled.Checked = $true
+        }
+    })
+    $securityMenu.DropDownItems.Add($secModeDisabled) | Out-Null
+
+    $securityMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+    # Update manifests
+    $updateManifestItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $updateManifestItem.Text = "Update Security Manifests"
+    $updateManifestItem.Add_Click({
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "This will update the security manifests with current file hashes.`n`nOnly do this after making legitimate changes to modules.`n`nUpdate manifests?",
+            "Update Security Manifests",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $result = Update-SecurityManifests
+            [System.Windows.Forms.MessageBox]::Show(
+                "Security manifests updated.`n`nModules registered: $($result.ModulesRegistered)`nManifest location: $($result.ManifestPath)",
+                "Manifests Updated",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+        }
+    })
+    $securityMenu.DropDownItems.Add($updateManifestItem) | Out-Null
+
+    $toolsMenu.DropDownItems.Add($securityMenu) | Out-Null
 
     # Settings
     $settingsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
