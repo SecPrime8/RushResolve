@@ -1692,15 +1692,8 @@ function Show-MainWindow {
         Update-SplashStatus "First run detected - initializing security..."
 
         # First run - offer to generate manifests
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            "Security manifests not found (first run).`n`n" +
-            "Generate security manifests now?`n`n" +
-            "This will register all current modules as trusted.`n" +
-            "Only do this if you trust the current module files.",
-            "Initialize Security",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        )
+        $msg = "Security manifests not found (first run).`n`nGenerate security manifests now?`n`nThis will register all current modules as trusted.`nOnly do this if you trust the current module files."
+        $result = [System.Windows.Forms.MessageBox]::Show($msg, "Initialize Security", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
 
         if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
             Update-SecurityManifests
@@ -1714,14 +1707,8 @@ function Show-MainWindow {
         else {
             # User declined - run in warn mode for this session
             $script:SecurityMode = "Warn"
-            [System.Windows.Forms.MessageBox]::Show(
-                "Running in WARN mode for this session.`n`n" +
-                "Modules will load but may not be verified.`n" +
-                "Use Tools → Security Options → Update Security Manifests to enable full protection.",
-                "Security Warning",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
+            $warnMsg = "Running in WARN mode for this session.`n`nModules will load but may not be verified.`nUse Tools -> Security Options -> Update Security Manifests to enable full protection."
+            [System.Windows.Forms.MessageBox]::Show($warnMsg, "Security Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         }
     }
 
