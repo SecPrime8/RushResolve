@@ -126,7 +126,7 @@ $script:ReleaseRenewIP = {
     $LogBox.ScrollToCaret()
 }
 
-# Setup LLDP (one-time on tech laptop)
+# Setup LLDP (one-time on tech laptop) - requires elevation
 $script:SetupLldp = {
     param([System.Windows.Forms.TextBox]$LogBox)
 
@@ -135,13 +135,38 @@ $script:SetupLldp = {
     $LogBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
 
-    # Check if DCB is installed
-    $dcb = Get-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -ErrorAction SilentlyContinue
+    # Get credentials first
+    $cred = Get-ElevatedCredential -Message "Enter admin credentials to configure LLDP"
+    if (-not $cred) {
+        $LogBox.AppendText("[$timestamp] Operation cancelled - credentials required.`r`n")
+        $LogBox.ScrollToCaret()
+        return
+    }
 
-    if (-not $dcb -or $dcb.State -ne "Enabled") {
-        $LogBox.AppendText("[$timestamp] Data Center Bridging not installed.`r`n")
+    # Check if DCB is installed (this check can run without elevation)
+    $LogBox.AppendText("[$timestamp] Checking Data Center Bridging feature...`r`n")
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $checkResult = Invoke-Elevated -ScriptBlock {
+        $dcb = Get-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -ErrorAction SilentlyContinue
+        @{
+            Installed = ($dcb -and $dcb.State -eq "Enabled")
+            State = if ($dcb) { $dcb.State } else { "NotFound" }
+        }
+    } -Credential $cred -OperationName "check DCB feature"
+
+    if (-not $checkResult.Success) {
+        $LogBox.AppendText("[$timestamp] ERROR: $($checkResult.Error)`r`n")
+        $LogBox.ScrollToCaret()
+        return
+    }
+
+    $dcbStatus = $checkResult.Output
+
+    if (-not $dcbStatus.Installed) {
+        $LogBox.AppendText("[$timestamp] Data Center Bridging not installed (State: $($dcbStatus.State)).`r`n")
         $result = [System.Windows.Forms.MessageBox]::Show(
-            "LLDP requires the Data Center Bridging feature.`n`nInstall now? (Requires admin rights + reboot after)`n`nNote: This only needs to be done once on your tech laptop.",
+            "LLDP requires the Data Center Bridging feature.`n`nInstall now? (Requires reboot after)`n`nNote: This only needs to be done once on your tech laptop.",
             "Install DCB Feature",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Question
@@ -151,8 +176,12 @@ $script:SetupLldp = {
             $LogBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
 
-            try {
+            $installResult = Invoke-Elevated -ScriptBlock {
                 Enable-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -All -NoRestart -ErrorAction Stop
+                "DCB_INSTALLED"
+            } -Credential $cred -OperationName "install DCB feature"
+
+            if ($installResult.Success) {
                 $LogBox.AppendText("[$timestamp] DCB installed successfully.`r`n")
                 $LogBox.AppendText("[$timestamp] REBOOT REQUIRED - After reboot, click 'Setup LLDP' again.`r`n")
                 [System.Windows.Forms.MessageBox]::Show(
@@ -161,10 +190,8 @@ $script:SetupLldp = {
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
-            }
-            catch {
-                $LogBox.AppendText("[$timestamp] ERROR: Failed to install DCB - $_`r`n")
-                $LogBox.AppendText("[$timestamp] Try running Rush Resolve as Administrator.`r`n")
+            } else {
+                $LogBox.AppendText("[$timestamp] ERROR: Failed to install DCB - $($installResult.Error)`r`n")
             }
         }
         $LogBox.ScrollToCaret()
@@ -176,34 +203,49 @@ $script:SetupLldp = {
     $LogBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
 
-    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.PhysicalMediaType -ne 'Unspecified' }
-    $enabledCount = 0
-
-    foreach ($adapter in $adapters) {
-        try {
-            Enable-NetLldpAgent -NetAdapterName $adapter.Name -ErrorAction Stop
-            $LogBox.AppendText("[$timestamp] LLDP enabled on: $($adapter.Name)`r`n")
-            $enabledCount++
+    $enableResult = Invoke-Elevated -ScriptBlock {
+        $results = @()
+        $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.PhysicalMediaType -ne 'Unspecified' }
+        foreach ($adapter in $adapters) {
+            try {
+                Enable-NetLldpAgent -NetAdapterName $adapter.Name -ErrorAction Stop
+                $results += @{ Name = $adapter.Name; Success = $true; Error = $null }
+            }
+            catch {
+                $results += @{ Name = $adapter.Name; Success = $false; Error = $_.Exception.Message }
+            }
         }
-        catch {
-            $LogBox.AppendText("[$timestamp] Skipped $($adapter.Name): $_`r`n")
-        }
-        $LogBox.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-    }
+        $results
+    } -Credential $cred -OperationName "enable LLDP agents"
 
-    if ($enabledCount -gt 0) {
-        $LogBox.AppendText("`r`n[$timestamp] Setup complete! LLDP enabled on $enabledCount adapter(s).`r`n")
-        $LogBox.AppendText("[$timestamp] Wait ~30 seconds for switch to send data, then click 'Get Switch Info'.`r`n")
+    if ($enableResult.Success -and $enableResult.Output) {
+        $enabledCount = 0
+        foreach ($adapterResult in $enableResult.Output) {
+            if ($adapterResult.Success) {
+                $LogBox.AppendText("[$timestamp] LLDP enabled on: $($adapterResult.Name)`r`n")
+                $enabledCount++
+            } else {
+                $LogBox.AppendText("[$timestamp] Skipped $($adapterResult.Name): $($adapterResult.Error)`r`n")
+            }
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        if ($enabledCount -gt 0) {
+            $LogBox.AppendText("`r`n[$timestamp] Setup complete! LLDP enabled on $enabledCount adapter(s).`r`n")
+            $LogBox.AppendText("[$timestamp] Wait ~30 seconds for switch to send data, then click 'Get Switch Info'.`r`n")
+        } else {
+            $LogBox.AppendText("[$timestamp] No adapters could be configured for LLDP.`r`n")
+        }
     } else {
-        $LogBox.AppendText("[$timestamp] No adapters could be configured for LLDP.`r`n")
+        $LogBox.AppendText("[$timestamp] ERROR: $($enableResult.Error)`r`n")
     }
     $LogBox.ScrollToCaret()
 }
 
-# Get LLDP info using Get-NetLldpNeighborInformation
+# Get LLDP info using Get-NetLldpNeighborInformation - requires elevation
 $script:GetLldpInfo = {
-    param([string]$AdapterName)
+    param([string]$AdapterName, [PSCredential]$Credential)
 
     $info = @{
         Available = $false
@@ -215,36 +257,62 @@ $script:GetLldpInfo = {
         Error = $null
     }
 
-    # Try to get LLDP neighbor info
-    try {
-        $neighbor = Get-NetLldpAgent -NetAdapterName $AdapterName -ErrorAction Stop |
-            Get-NetLldpNeighborInformation -ErrorAction Stop
+    # If no credential provided, try to get one
+    if (-not $Credential) {
+        $Credential = Get-ElevatedCredential -Message "Enter admin credentials to query LLDP"
+        if (-not $Credential) {
+            $info.Error = "Credentials required to query LLDP data."
+            return [PSCustomObject]$info
+        }
+    }
 
-        if ($neighbor) {
-            $info.Available = $true
-            $info.SwitchName = if ($neighbor.ChassisId) { $neighbor.ChassisId } else { "N/A" }
-            $info.SwitchIP = if ($neighbor.ManagementAddress) { $neighbor.ManagementAddress } else { "N/A" }
-            $info.Port = if ($neighbor.PortId) { $neighbor.PortId } else { "N/A" }
-            $info.PortDesc = if ($neighbor.PortDescription) { $neighbor.PortDescription } else { "N/A" }
-            # VLAN may be in SystemDescription or need separate query
-            if ($neighbor.SystemDescription -match "VLAN[:\s]*(\d+)") {
-                $info.VLAN = $matches[1]
+    # Run LLDP query with elevation
+    $result = Invoke-Elevated -ScriptBlock {
+        param($AdapterName)
+        $info = @{
+            Available = $false
+            SwitchName = "N/A"
+            SwitchIP = "N/A"
+            Port = "N/A"
+            PortDesc = "N/A"
+            VLAN = "N/A"
+            Error = $null
+        }
+
+        try {
+            $neighbor = Get-NetLldpAgent -NetAdapterName $AdapterName -ErrorAction Stop |
+                Get-NetLldpNeighborInformation -ErrorAction Stop
+
+            if ($neighbor) {
+                $info.Available = $true
+                $info.SwitchName = if ($neighbor.ChassisId) { $neighbor.ChassisId } else { "N/A" }
+                $info.SwitchIP = if ($neighbor.ManagementAddress) { $neighbor.ManagementAddress } else { "N/A" }
+                $info.Port = if ($neighbor.PortId) { $neighbor.PortId } else { "N/A" }
+                $info.PortDesc = if ($neighbor.PortDescription) { $neighbor.PortDescription } else { "N/A" }
+                if ($neighbor.SystemDescription -match "VLAN[:\s]*(\d+)") {
+                    $info.VLAN = $matches[1]
+                }
+            } else {
+                $info.Error = "No LLDP data received yet. Wait 30 seconds and try again."
             }
-        } else {
-            $info.Error = "No LLDP data received yet. Wait 30 seconds and try again."
         }
-    }
-    catch {
-        # Check if LLDP is configured
-        $dcb = Get-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -ErrorAction SilentlyContinue
-        if (-not $dcb -or $dcb.State -ne "Enabled") {
-            $info.Error = "Click 'Setup LLDP' to configure (one-time setup)."
-        } else {
-            $info.Error = "LLDP agent not enabled on this adapter. Click 'Setup LLDP'."
+        catch {
+            $dcb = Get-WindowsOptionalFeature -Online -FeatureName "DataCenterBridging" -ErrorAction SilentlyContinue
+            if (-not $dcb -or $dcb.State -ne "Enabled") {
+                $info.Error = "Click 'Setup LLDP' to configure (one-time setup)."
+            } else {
+                $info.Error = "LLDP agent not enabled on this adapter. Click 'Setup LLDP'."
+            }
         }
-    }
+        $info
+    } -ArgumentList $AdapterName -Credential $Credential -OperationName "query LLDP info"
 
-    return [PSCustomObject]$info
+    if ($result.Success -and $result.Output) {
+        return [PSCustomObject]$result.Output
+    } else {
+        $info.Error = if ($result.Error) { $result.Error } else { "Failed to query LLDP data." }
+        return [PSCustomObject]$info
+    }
 }
 
 # Get wireless info
