@@ -1008,7 +1008,7 @@ function Invoke-Elevated {
 
     try {
         # Create temp folder if it doesn't exist
-        $tempFolder = "C:\Temp"
+        $tempFolder = "C:\Temp\RushResolve_Install"
         if (-not (Test-Path $tempFolder)) {
             New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
         }
