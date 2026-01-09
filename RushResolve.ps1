@@ -1008,11 +1008,11 @@ function Invoke-Elevated {
 
     try {
         # Create temp folder if it doesn't exist
-        $tempFolder = "C:\Windows\Temp\RushResolve_Install"
+        $tempFolder = "C:\Temp"
         if (-not (Test-Path $tempFolder)) {
             New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
         }
-        $tempScript = Join-Path $tempFolder "elevated_$(Get-Random).ps1"
+        $tempScript = Join-Path $tempFolder "RushResolve_$(Get-Random).ps1"
 
         # Build the script content
         $scriptContent = @"
