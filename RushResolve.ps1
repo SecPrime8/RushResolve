@@ -1699,7 +1699,7 @@ function Show-MainWindow {
             "Only do this if you trust the current module files.",
             "Initialize Security",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Shield
+            [System.Windows.Forms.MessageBoxIcon]::Warning
         )
 
         if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
@@ -1829,7 +1829,7 @@ function Show-MainWindow {
             "Security mode set to ENFORCED.`n`nUnauthorized modules will be blocked.",
             "Security Mode",
             [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Shield
+            [System.Windows.Forms.MessageBoxIcon]::Information
         )
     })
     $securityMenu.DropDownItems.Add($secModeEnforced) | Out-Null
