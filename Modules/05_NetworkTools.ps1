@@ -502,7 +502,7 @@ function Initialize-Module {
 
     $releaseBtn = New-Object System.Windows.Forms.Button
     $releaseBtn.Text = "IP Release"
-    $releaseBtn.Width = 75
+    $releaseBtn.Width = 85
     $releaseBtn.Add_Click({
         if ($adapterListViewRef.SelectedItems.Count -gt 0) {
             $adapter = $adapterListViewRef.SelectedItems[0].Tag
@@ -513,7 +513,7 @@ function Initialize-Module {
 
     $renewBtn = New-Object System.Windows.Forms.Button
     $renewBtn.Text = "IP Renew"
-    $renewBtn.Width = 75
+    $renewBtn.Width = 80
     $renewBtn.Add_Click({
         if ($adapterListViewRef.SelectedItems.Count -gt 0) {
             $adapter = $adapterListViewRef.SelectedItems[0].Tag
@@ -524,7 +524,7 @@ function Initialize-Module {
 
     $dnsFlushBtn = New-Object System.Windows.Forms.Button
     $dnsFlushBtn.Text = "DNS Flush"
-    $dnsFlushBtn.Width = 75
+    $dnsFlushBtn.Width = 85
     $dnsFlushBtn.Add_Click({
         & $flushDnsRef -LogBox $diagLogBoxRef
     }.GetNewClosure())
@@ -621,7 +621,7 @@ function Initialize-Module {
 
     $copyResultsBtn = New-Object System.Windows.Forms.Button
     $copyResultsBtn.Text = "Copy Results"
-    $copyResultsBtn.Width = 90
+    $copyResultsBtn.Width = 100
     $copyResultsBtn.Add_Click({
         if ($diagLogBoxRef.Text) {
             [System.Windows.Forms.Clipboard]::SetText($diagLogBoxRef.Text)
@@ -780,7 +780,7 @@ function Initialize-Module {
 
     $reconnectBtn = New-Object System.Windows.Forms.Button
     $reconnectBtn.Text = "Reconnect"
-    $reconnectBtn.Width = 75
+    $reconnectBtn.Width = 85
     $reconnectBtn.Add_Click({
         & $reconnectWifiRef -LogBox $diagLogBoxRef
     }.GetNewClosure())
@@ -822,7 +822,7 @@ function Initialize-Module {
 
     $scanBtn = New-Object System.Windows.Forms.Button
     $scanBtn.Text = "Scan Networks"
-    $scanBtn.Width = 100
+    $scanBtn.Width = 115
     $scanBtn.Add_Click({
         $networksListViewRef.Items.Clear()
         $networks = & $scanNetworksRef

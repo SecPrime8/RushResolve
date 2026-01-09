@@ -1007,8 +1007,9 @@ function Invoke-Elevated {
     }
 
     try {
-        # Create a temporary script file
-        $tempScript = [System.IO.Path]::GetTempFileName() + ".ps1"
+        # Create a temporary script file in shared location (accessible to all users)
+        $sharedTemp = "C:\Windows\Temp"
+        $tempScript = Join-Path $sharedTemp "RushResolve_$(Get-Random).ps1"
 
         # Write the script block to the temp file
         $scriptContent = @"
