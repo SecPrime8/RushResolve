@@ -434,6 +434,15 @@ function Initialize-Module {
     $scanNetworksRef = $script:ScanNetworks
     $reconnectWifiRef = $script:ReconnectWifi
 
+    # Create diag log FIRST so all buttons can reference it
+    $script:diagLogBox = New-Object System.Windows.Forms.TextBox
+    $script:diagLogBox.Multiline = $true
+    $script:diagLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:diagLogBox.ReadOnly = $true
+    $script:diagLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:diagLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $diagLogBoxRef = $script:diagLogBox
+
     # Main layout - split into sections
     $mainPanel = New-Object System.Windows.Forms.TableLayoutPanel
     $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -497,7 +506,7 @@ function Initialize-Module {
     $releaseBtn.Add_Click({
         if ($adapterListViewRef.SelectedItems.Count -gt 0) {
             $adapter = $adapterListViewRef.SelectedItems[0].Tag
-            & $releaseRenewRef -AdapterName $adapter.Name -Action "Release" -LogBox $script:diagLogBox
+            & $releaseRenewRef -AdapterName $adapter.Name -Action "Release" -LogBox $diagLogBoxRef
         }
     }.GetNewClosure())
     $adapterBtnPanel.Controls.Add($releaseBtn)
@@ -508,7 +517,7 @@ function Initialize-Module {
     $renewBtn.Add_Click({
         if ($adapterListViewRef.SelectedItems.Count -gt 0) {
             $adapter = $adapterListViewRef.SelectedItems[0].Tag
-            & $releaseRenewRef -AdapterName $adapter.Name -Action "Renew" -LogBox $script:diagLogBox
+            & $releaseRenewRef -AdapterName $adapter.Name -Action "Renew" -LogBox $diagLogBoxRef
         }
     }.GetNewClosure())
     $adapterBtnPanel.Controls.Add($renewBtn)
@@ -517,7 +526,7 @@ function Initialize-Module {
     $dnsFlushBtn.Text = "DNS Flush"
     $dnsFlushBtn.Width = 75
     $dnsFlushBtn.Add_Click({
-        & $flushDnsRef -LogBox $script:diagLogBox
+        & $flushDnsRef -LogBox $diagLogBoxRef
     }.GetNewClosure())
     $adapterBtnPanel.Controls.Add($dnsFlushBtn)
 
@@ -589,7 +598,7 @@ function Initialize-Module {
     $pingBtn.Add_Click({
         $target = $targetTextBoxRef.Text.Trim()
         if ($target) {
-            & $runPingRef -Target $target -Count 4 -LogBox $script:diagLogBox
+            & $runPingRef -Target $target -Count 4 -LogBox $diagLogBoxRef
         }
     }.GetNewClosure())
     $targetPanel.Controls.Add($pingBtn)
@@ -600,20 +609,10 @@ function Initialize-Module {
     $traceBtn.Add_Click({
         $target = $targetTextBoxRef.Text.Trim()
         if ($target) {
-            & $runTracerouteRef -Target $target -LogBox $script:diagLogBox
+            & $runTracerouteRef -Target $target -LogBox $diagLogBoxRef
         }
     }.GetNewClosure())
     $targetPanel.Controls.Add($traceBtn)
-
-    # Diag log
-    $script:diagLogBox = New-Object System.Windows.Forms.TextBox
-    $script:diagLogBox.Multiline = $true
-    $script:diagLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:diagLogBox.ReadOnly = $true
-    $script:diagLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:diagLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-
-    $diagLogBoxRef = $script:diagLogBox
 
     # Copy results button
     $diagBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
