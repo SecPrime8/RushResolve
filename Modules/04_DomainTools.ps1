@@ -140,28 +140,45 @@ $script:TestDCConnectivity = {
         $domain = $cs.Domain
         $LogBox.AppendText("[$timestamp] Domain: $domain`r`n")
 
-        # Discover DC using nltest
+        # Discover DC - try LOGONSERVER first (most reliable)
         $LogBox.AppendText("[$timestamp] Discovering domain controller...`r`n")
         [System.Windows.Forms.Application]::DoEvents()
 
-        $nltestOutput = nltest /dsgetdc:$domain 2>&1
-        if ($nltestOutput -match "DC:\\\\([^\s]+)") {
-            $result.DCName = $matches[1]
+        $dcShortName = $env:LOGONSERVER -replace '\\\\', ''
+        if ($dcShortName) {
+            $result.DCName = $dcShortName
             $LogBox.AppendText("[$timestamp] DC Found: $($result.DCName)`r`n")
+        } else {
+            # Fallback to nltest
+            $nltestOutput = nltest /dsgetdc:$domain 2>&1
+            if ($nltestOutput -match "DC: \\\\([^\s\.]+)") {
+                $result.DCName = $matches[1]
+                $LogBox.AppendText("[$timestamp] DC Found (nltest): $($result.DCName)`r`n")
+            }
         }
 
-        # Try DNS resolution
+        # Try DNS resolution - use FQDN for better resolution
         $LogBox.AppendText("[$timestamp] Testing DNS resolution...`r`n")
         [System.Windows.Forms.Application]::DoEvents()
 
+        $dcFQDN = "$($result.DCName).$domain"
         try {
-            $dnsResult = Resolve-DnsName -Name $result.DCName -ErrorAction Stop
+            $dnsResult = Resolve-DnsName -Name $dcFQDN -ErrorAction Stop
             $result.DCIP = ($dnsResult | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
             $result.DNSOK = $true
-            $LogBox.AppendText("[$timestamp] DNS: OK - Resolved to $($result.DCIP)`r`n")
+            $LogBox.AppendText("[$timestamp] DNS: OK - $dcFQDN resolved to $($result.DCIP)`r`n")
         }
         catch {
-            $LogBox.AppendText("[$timestamp] DNS: FAILED - Could not resolve DC name`r`n")
+            # Try short name as fallback
+            try {
+                $dnsResult = Resolve-DnsName -Name $result.DCName -ErrorAction Stop
+                $result.DCIP = ($dnsResult | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
+                $result.DNSOK = $true
+                $LogBox.AppendText("[$timestamp] DNS: OK - $($result.DCName) resolved to $($result.DCIP)`r`n")
+            }
+            catch {
+                $LogBox.AppendText("[$timestamp] DNS: FAILED - Could not resolve $dcFQDN or $($result.DCName)`r`n")
+            }
         }
 
         # Ping test
