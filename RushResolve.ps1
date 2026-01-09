@@ -1007,6 +1007,13 @@ function Invoke-Elevated {
     }
 
     try {
+        # Create temp folder if it doesn't exist
+        $tempFolder = "C:\Windows\Temp\RushResolve_Install"
+        if (-not (Test-Path $tempFolder)) {
+            New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
+        }
+        $tempScript = Join-Path $tempFolder "elevated_$(Get-Random).ps1"
+
         # Build the script content
         $scriptContent = @"
 `$ErrorActionPreference = 'Stop'
@@ -1022,14 +1029,12 @@ catch {
     exit 1
 }
 "@
-        # Encode as base64 to pass via -EncodedCommand (avoids temp file issues)
-        $bytes = [System.Text.Encoding]::Unicode.GetBytes($scriptContent)
-        $encodedCommand = [Convert]::ToBase64String($bytes)
+        Set-Content -Path $tempScript -Value $scriptContent -Force
 
         # Run the script with credentials
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = "powershell.exe"
-        $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
+        $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
         $processInfo.UseShellExecute = $false
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
@@ -1079,6 +1084,12 @@ catch {
     }
     catch {
         $result.Error = $_.Exception.Message
+    }
+    finally {
+        # Clean up temp file
+        if ($tempScript -and (Test-Path $tempScript)) {
+            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+        }
     }
 
     return $result
