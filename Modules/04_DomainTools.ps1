@@ -418,7 +418,7 @@ function Initialize-Module {
     # Refresh button
     $refreshStatusBtn = New-Object System.Windows.Forms.Button
     $refreshStatusBtn.Text = "Refresh"
-    $refreshStatusBtn.Width = 70
+    $refreshStatusBtn.Width = 80
     $refreshStatusBtn.Height = 25
     $statusPanel.Controls.Add($refreshStatusBtn)
 
@@ -483,7 +483,7 @@ function Initialize-Module {
 
     $testConnBtn = New-Object System.Windows.Forms.Button
     $testConnBtn.Text = "Test Connectivity"
-    $testConnBtn.Width = 120
+    $testConnBtn.Width = 140
     $testConnBtn.Height = 28
     $testConnBtn.Location = New-Object System.Drawing.Point(10, 40)
     $dcPanel.Controls.Add($testConnBtn)
@@ -550,7 +550,7 @@ function Initialize-Module {
 
     $copyLogBtn = New-Object System.Windows.Forms.Button
     $copyLogBtn.Text = "Copy Log"
-    $copyLogBtn.Width = 75
+    $copyLogBtn.Width = 85
     $logBtnPanel.Controls.Add($copyLogBtn)
 
     $clearLogBtn = New-Object System.Windows.Forms.Button
