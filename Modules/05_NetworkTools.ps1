@@ -701,7 +701,7 @@ function Initialize-Module {
     $setupLldpBtn.Location = New-Object System.Drawing.Point(10, 140)
     $setupLldpBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
     $setupLldpBtn.Add_Click({
-        & $setupLldpRef -LogBox $script:diagLogBox
+        & $setupLldpRef -LogBox $diagLogBoxRef
     }.GetNewClosure())
     $lldpPanel.Controls.Add($setupLldpBtn)
 
