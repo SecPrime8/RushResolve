@@ -1007,11 +1007,7 @@ function Invoke-Elevated {
     }
 
     try {
-        # Create a temporary script file in shared location (accessible to all users)
-        $sharedTemp = "C:\Windows\Temp"
-        $tempScript = Join-Path $sharedTemp "RushResolve_$(Get-Random).ps1"
-
-        # Write the script block to the temp file
+        # Build the script content
         $scriptContent = @"
 `$ErrorActionPreference = 'Stop'
 try {
@@ -1026,12 +1022,14 @@ catch {
     exit 1
 }
 "@
-        Set-Content -Path $tempScript -Value $scriptContent -Force
+        # Encode as base64 to pass via -EncodedCommand (avoids temp file issues)
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes($scriptContent)
+        $encodedCommand = [Convert]::ToBase64String($bytes)
 
         # Run the script with credentials
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = "powershell.exe"
-        $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
+        $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
         $processInfo.UseShellExecute = $false
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
@@ -1081,12 +1079,6 @@ catch {
     }
     catch {
         $result.Error = $_.Exception.Message
-    }
-    finally {
-        # Clean up temp file
-        if (Test-Path $tempScript) {
-            Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
-        }
     }
 
     return $result
