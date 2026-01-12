@@ -782,6 +782,135 @@ function Lock-CachedCredentials {
         [System.Windows.Forms.MessageBoxIcon]::Information
     )
 }
+
+function Copy-PasswordToClipboard {
+    <#
+    .SYNOPSIS
+        Copies the cached password to clipboard after PIN verification.
+        Auto-clears clipboard after 30 seconds for security.
+    .OUTPUTS
+        $true if password was copied, $false otherwise.
+    #>
+
+    # Check if we have saved credentials
+    $savedCred = Load-EncryptedCredential
+    if (-not $savedCred) {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "No credentials are saved. Use an elevated operation first to save credentials.",
+            "No Credentials",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        return $false
+    }
+
+    # Check if we have an unlocked credential in memory and PIN hasn't timed out
+    if ($script:CachedCredential -is [PSCredential] -and -not (Test-PINTimeout)) {
+        # Already unlocked - copy directly
+        $password = $script:CachedCredential.GetNetworkCredential().Password
+        [System.Windows.Forms.Clipboard]::SetText($password)
+
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
+            "Password Copied",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+
+        # Schedule clipboard clear after 30 seconds
+        Start-ClipboardClearTimer
+        return $true
+    }
+
+    # Need to prompt for PIN
+    $attemptsLeft = 3 - $script:PINFailCount
+
+    while ($attemptsLeft -gt 0) {
+        $pin = Show-PINEntryDialog -Title "Enter PIN to copy password ($attemptsLeft attempts left)"
+        if (-not $pin) {
+            # User cancelled
+            return $false
+        }
+
+        # Verify PIN hash
+        $enteredHash = Get-PINHash -PIN $pin
+        if ($enteredHash -eq $savedCred.PINHash) {
+            # PIN correct - decrypt credential
+            $decrypted = Unprotect-Credential -EncryptedData $savedCred.EncryptedData -PIN $pin
+            if ($decrypted) {
+                # Update cached state
+                $script:CachedCredential = $decrypted
+                $script:CredentialPINHash = $savedCred.PINHash
+                $script:PINLastVerified = Get-Date
+                $script:PINFailCount = 0
+                Update-CredentialStatusIndicator
+
+                # Copy password to clipboard
+                $password = $decrypted.GetNetworkCredential().Password
+                [System.Windows.Forms.Clipboard]::SetText($password)
+
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
+                    "Password Copied",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+
+                # Schedule clipboard clear after 30 seconds
+                Start-ClipboardClearTimer
+                return $true
+            }
+            else {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Failed to decrypt credentials. File may be corrupted.",
+                    "Error",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error
+                )
+                return $false
+            }
+        }
+        else {
+            # Wrong PIN
+            $script:PINFailCount++
+            $attemptsLeft = 3 - $script:PINFailCount
+
+            if ($attemptsLeft -gt 0) {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Incorrect PIN. $attemptsLeft attempts remaining.",
+                    "Wrong PIN",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+            }
+            else {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Maximum PIN attempts reached.",
+                    "Locked Out",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                return $false
+            }
+        }
+    }
+
+    return $false
+}
+
+function Start-ClipboardClearTimer {
+    <#
+    .SYNOPSIS
+        Starts a background job to clear clipboard after 30 seconds.
+    #>
+    # Use a simple approach with Start-Job for clipboard clearing
+    # Note: This runs in background and clears clipboard after delay
+    $null = Start-Job -ScriptBlock {
+        Start-Sleep -Seconds 30
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.Clipboard]::Clear()
+    }
+}
 #endregion
 
 #region Credential Elevation Helpers
@@ -1791,6 +1920,12 @@ function Show-MainWindow {
     $lockMenuItem.Text = "Lock Now (Require PIN)"
     $lockMenuItem.Add_Click({ Lock-CachedCredentials })
     $credentialMenu.DropDownItems.Add($lockMenuItem) | Out-Null
+
+    # Copy Password to Clipboard
+    $copyPwdMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $copyPwdMenuItem.Text = "Copy Password to Clipboard"
+    $copyPwdMenuItem.Add_Click({ Copy-PasswordToClipboard })
+    $credentialMenu.DropDownItems.Add($copyPwdMenuItem) | Out-Null
 
     # Separator
     $credentialMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
