@@ -45,26 +45,78 @@ $script:TestSecureChannel = {
 
     $timestamp = Get-Date -Format "HH:mm:ss"
     $LogBox.AppendText("[$timestamp] Testing domain trust relationship...`r`n")
+    $LogBox.AppendText("[$timestamp] Running diagnostics...`r`n")
     $LogBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
 
     try {
-        $result = Test-ComputerSecureChannel -Verbose 4>&1
+        # Gather diagnostic info first
+        $dc = $env:LOGONSERVER -replace '\\\\', ''
+        $domain = (Get-WmiObject Win32_ComputerSystem).Domain
+        $LogBox.AppendText("[$timestamp]   Domain: $domain`r`n")
+        $LogBox.AppendText("[$timestamp]   Logon Server (DC): $dc`r`n")
+
+        # Check time sync (Kerberos fails if >5 min drift)
+        try {
+            $w32tm = w32tm /query /status 2>&1 | Out-String
+            if ($w32tm -match "Source:\s*(.+)") {
+                $timeSource = $matches[1].Trim()
+                $LogBox.AppendText("[$timestamp]   Time Source: $timeSource`r`n")
+            }
+            # Check for time skew warning
+            $ntpQuery = w32tm /stripchart /computer:$dc /samples:1 /dataonly 2>&1 | Out-String
+            if ($ntpQuery -match "([+-]?\d+\.\d+)s") {
+                $skewSeconds = [math]::Abs([double]$matches[1])
+                if ($skewSeconds -gt 300) {
+                    $LogBox.AppendText("[$timestamp]   TIME SKEW WARNING: ${skewSeconds}s drift (Kerberos limit: 300s)`r`n")
+                    Write-SessionLog -Message "Time skew detected: ${skewSeconds}s" -Category "Domain Tools"
+                } else {
+                    $LogBox.AppendText("[$timestamp]   Time Skew: ${skewSeconds}s (OK)`r`n")
+                }
+            }
+        }
+        catch {
+            $LogBox.AppendText("[$timestamp]   Time check: Could not query ($($_.Exception.Message))`r`n")
+        }
+
+        [System.Windows.Forms.Application]::DoEvents()
+
+        # Test the secure channel
+        $LogBox.AppendText("[$timestamp] Running Test-ComputerSecureChannel...`r`n")
         $trustOK = Test-ComputerSecureChannel
 
         if ($trustOK) {
             $LogBox.AppendText("[$timestamp] Trust Status: OK - Secure channel is valid`r`n")
-            Write-SessionLog -Message "Trust test: PASSED" -Category "Domain Tools"
+            Write-SessionLog -Message "Trust test: PASSED (DC: $dc)" -Category "Domain Tools"
             return @{ Success = $true; TrustOK = $true; Message = "Trust relationship is healthy" }
         } else {
             $LogBox.AppendText("[$timestamp] Trust Status: BROKEN - Secure channel failed`r`n")
-            Write-SessionLog -Message "Trust test: BROKEN" -Category "Domain Tools"
+            $LogBox.AppendText("[$timestamp] Possible causes:`r`n")
+            $LogBox.AppendText("[$timestamp]   - Computer account password mismatch with AD`r`n")
+            $LogBox.AppendText("[$timestamp]   - Computer account deleted/disabled in AD`r`n")
+            $LogBox.AppendText("[$timestamp]   - Machine restored from old backup`r`n")
+            $LogBox.AppendText("[$timestamp]   - Network issues during last password rotation`r`n")
+            Write-SessionLog -Message "Trust test: BROKEN (DC: $dc)" -Category "Domain Tools"
             return @{ Success = $true; TrustOK = $false; Message = "Trust relationship is broken" }
         }
     }
     catch {
-        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
-        return @{ Success = $false; TrustOK = $false; Message = $_.Exception.Message }
+        $errorMsg = $_.Exception.Message
+        $LogBox.AppendText("[$timestamp] ERROR: $errorMsg`r`n")
+
+        # Provide specific guidance based on error
+        if ($errorMsg -match "access.*denied" -or $errorMsg -match "0x5") {
+            $LogBox.AppendText("[$timestamp] Hint: Access denied - may need to run as admin or trust already broken`r`n")
+        }
+        elseif ($errorMsg -match "network|RPC|unavailable") {
+            $LogBox.AppendText("[$timestamp] Hint: Network issue - check DC connectivity`r`n")
+        }
+        elseif ($errorMsg -match "not found|no such") {
+            $LogBox.AppendText("[$timestamp] Hint: Computer account may not exist in AD`r`n")
+        }
+
+        Write-SessionLog -Message "Trust test: ERROR - $errorMsg" -Category "Domain Tools"
+        return @{ Success = $false; TrustOK = $false; Message = $errorMsg }
     }
     finally {
         $LogBox.ScrollToCaret()
