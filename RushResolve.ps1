@@ -89,7 +89,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.2"  # Disk Cleanup + Clipboard features
+$script:AppVersion = "2.3"  # Session logging
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -108,6 +108,118 @@ $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
 $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
+
+# Session logging
+$script:LogsPath = Join-Path $script:AppPath "Logs"
+$script:SessionLogFile = $null
+#endregion
+
+#region Session Logging
+function Initialize-SessionLog {
+    <#
+    .SYNOPSIS
+        Creates a new session log file with header information.
+    #>
+    try {
+        # Create Logs folder if it doesn't exist
+        if (-not (Test-Path $script:LogsPath)) {
+            New-Item -Path $script:LogsPath -ItemType Directory -Force | Out-Null
+        }
+
+        # Generate filename with timestamp
+        $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+        $script:SessionLogFile = Join-Path $script:LogsPath "session_$timestamp.log"
+
+        # Write header
+        $header = @"
+================================================================================
+RUSH RESOLVE SESSION LOG
+================================================================================
+Started: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+User: $env:USERDOMAIN\$env:USERNAME
+Computer: $env:COMPUTERNAME
+Version: $($script:AppVersion)
+================================================================================
+
+"@
+        Set-Content -Path $script:SessionLogFile -Value $header -Force
+        Write-SessionLog "Application started"
+    }
+    catch {
+        # Logging failure shouldn't crash the app
+        $script:SessionLogFile = $null
+    }
+}
+
+function Write-SessionLog {
+    <#
+    .SYNOPSIS
+        Writes a timestamped entry to the session log.
+    .PARAMETER Message
+        The message to log.
+    .PARAMETER Category
+        Optional category prefix (e.g., "Credentials", "Disk Cleanup").
+    #>
+    param(
+        [string]$Message,
+        [string]$Category = ""
+    )
+
+    if (-not $script:SessionLogFile) { return }
+
+    try {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $logEntry = if ($Category) {
+            "[$timestamp] [$Category] $Message"
+        } else {
+            "[$timestamp] $Message"
+        }
+        Add-Content -Path $script:SessionLogFile -Value $logEntry
+    }
+    catch {
+        # Silently fail - logging shouldn't crash the app
+    }
+}
+
+function Close-SessionLog {
+    <#
+    .SYNOPSIS
+        Writes closing entry to the session log.
+    #>
+    if (-not $script:SessionLogFile) { return }
+
+    try {
+        Write-SessionLog "Application closed"
+        $footer = @"
+
+================================================================================
+Session ended: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+================================================================================
+"@
+        Add-Content -Path $script:SessionLogFile -Value $footer
+    }
+    catch {
+        # Silently fail
+    }
+}
+
+function Open-SessionLogsFolder {
+    <#
+    .SYNOPSIS
+        Opens the Logs folder in Windows Explorer.
+    #>
+    if (Test-Path $script:LogsPath) {
+        Start-Process explorer.exe -ArgumentList $script:LogsPath
+    }
+    else {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No logs folder found. Logs are created when you run operations.",
+            "No Logs",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }
+}
 #endregion
 
 #region Settings Management
@@ -775,6 +887,7 @@ function Lock-CachedCredentials {
     #>
     $script:PINLastVerified = $null
     Update-CredentialStatusIndicator
+    Write-SessionLog -Message "Credentials locked manually" -Category "Credentials"
     [void][System.Windows.Forms.MessageBox]::Show(
         "Credentials locked. PIN required for next elevated operation.",
         "Locked",
@@ -809,6 +922,7 @@ function Copy-PasswordToClipboard {
         # Already unlocked - copy directly
         $password = $script:CachedCredential.GetNetworkCredential().Password
         [System.Windows.Forms.Clipboard]::SetText($password)
+        Write-SessionLog -Message "Password copied to clipboard (already unlocked)" -Category "Credentials"
 
         [void][System.Windows.Forms.MessageBox]::Show(
             "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
@@ -848,6 +962,7 @@ function Copy-PasswordToClipboard {
                 # Copy password to clipboard
                 $password = $decrypted.GetNetworkCredential().Password
                 [System.Windows.Forms.Clipboard]::SetText($password)
+                Write-SessionLog -Message "Credentials unlocked with PIN, password copied to clipboard" -Category "Credentials"
 
                 [void][System.Windows.Forms.MessageBox]::Show(
                     "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
@@ -861,6 +976,7 @@ function Copy-PasswordToClipboard {
                 return $true
             }
             else {
+                Write-SessionLog -Message "Failed to decrypt credentials - file may be corrupted" -Category "Credentials"
                 [void][System.Windows.Forms.MessageBox]::Show(
                     "Failed to decrypt credentials. File may be corrupted.",
                     "Error",
@@ -1002,6 +1118,7 @@ function Get-ElevatedCredential {
                     $script:PINLastVerified = Get-Date
                     $script:PINFailCount = 0
                     Update-CredentialStatusIndicator
+                    Write-SessionLog -Message "Credentials unlocked with PIN for: $($decrypted.UserName)" -Category "Credentials"
                     return $decrypted
                 }
                 else {
@@ -1078,6 +1195,8 @@ function Get-ElevatedCredential {
                 $script:CredentialPINHash = $pinHash
                 $script:PINLastVerified = Get-Date
                 $script:PINFailCount = 0
+
+                Write-SessionLog -Message "New credentials saved for: $($cred.UserName)" -Category "Credentials"
 
                 [void][System.Windows.Forms.MessageBox]::Show(
                     "Credentials saved and encrypted with your PIN.",
@@ -1380,6 +1499,8 @@ function Clear-CachedCredentials {
     # Delete encrypted files from disk
     Remove-EncryptedCredential
 
+    Write-SessionLog -Message "Cached credentials cleared from memory and disk" -Category "Credentials"
+
     [System.Windows.Forms.MessageBox]::Show(
         "Cached credentials have been cleared from memory and disk.",
         "Credentials Cleared",
@@ -1468,9 +1589,11 @@ function Load-Module {
         # Add tab to control
         $TabControl.TabPages.Add($tab)
 
+        Write-SessionLog "Loaded module: $($script:ModuleName)"
         return $true
     }
     catch {
+        Write-SessionLog "Failed to load module: $($ModuleFile.Name) - $_"
         Write-Warning "Failed to load module '$($ModuleFile.Name)': $_"
         return $false
     }
@@ -1816,6 +1939,11 @@ function Show-SettingsDialog {
 function Show-MainWindow {
     # Show splash screen immediately
     Show-SplashScreen
+    Update-SplashStatus "Initializing..."
+
+    # Initialize session logging
+    Initialize-SessionLog
+
     Update-SplashStatus "Verifying integrity..."
 
     # SECURITY: Check if manifests exist, offer to create on first run
@@ -2050,6 +2178,13 @@ function Show-MainWindow {
     $helpMenu = New-Object System.Windows.Forms.ToolStripMenuItem
     $helpMenu.Text = "&Help"
 
+    $viewLogsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $viewLogsMenuItem.Text = "View Session Logs"
+    $viewLogsMenuItem.Add_Click({ Open-SessionLogsFolder })
+    $helpMenu.DropDownItems.Add($viewLogsMenuItem) | Out-Null
+
+    $helpMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
     $aboutMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $aboutMenuItem.Text = "About"
     $aboutMenuItem.Add_Click({
@@ -2193,6 +2328,7 @@ function Initialize-Module {
             $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
         }
         Save-Settings
+        Close-SessionLog
     })
 
     # Restore last tab

@@ -574,6 +574,7 @@ function Initialize-Module {
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:safeLogBox.AppendText("[$timestamp] Scan complete.`r`n")
+        Write-SessionLog -Message "Safe Cleanup scan completed" -Category "Disk Cleanup"
     })
     $safeButtonPanel.Controls.Add($scanBtn)
 
@@ -671,6 +672,7 @@ function Initialize-Module {
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:safeLogBox.AppendText("[$timestamp] Cleanup complete! Freed $(Format-FileSize -Bytes $totalFreed) ($totalDeleted files)`r`n")
+        Write-SessionLog -Message "Safe Cleanup: Freed $(Format-FileSize -Bytes $totalFreed) ($totalDeleted files)" -Category "Disk Cleanup"
 
         [System.Windows.Forms.MessageBox]::Show(
             "Cleanup complete!`n`nFreed: $(Format-FileSize -Bytes $totalFreed)`nFiles deleted: $totalDeleted",
@@ -936,6 +938,8 @@ function Initialize-Module {
 
         Clear-AppStatus
         Update-UnusedFilesTotal
+
+        Write-SessionLog -Message "Unused Files: Deleted $deleted files, freed $(Format-FileSize -Bytes $freed)" -Category "Disk Cleanup"
 
         $msg = "Deleted $deleted files, freed $(Format-FileSize -Bytes $freed)"
         if ($errors.Count -gt 0) {

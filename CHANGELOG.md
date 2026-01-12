@@ -1,5 +1,16 @@
 # Rush Resolve Changelog
 
+## v2.3 (2026-01-12)
+### New Features
+- **Session Logging** - All operations logged to `Logs/` folder
+  - New log file per session: `session_YYYY-MM-DD_HHmmss.log`
+  - Logs app start/close, module loads, credential operations
+  - Logs domain operations (trust tests, repairs, joins)
+  - Logs disk cleanup operations
+  - Logs system reboot/shutdown commands
+  - **No passwords or PINs logged** for security
+  - View logs via Help > View Session Logs
+
 ## v2.2 (2026-01-12)
 ### New Features
 - **Copy Password to Clipboard** - Tools > Credential Options > Copy Password to Clipboard

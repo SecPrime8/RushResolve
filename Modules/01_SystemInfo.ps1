@@ -256,6 +256,7 @@ function Initialize-Module {
     $rebootBtn.Add_Click({
         $confirm = [System.Windows.Forms.MessageBox]::Show("Reboot this computer?", "Confirm", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Write-SessionLog -Message "REBOOT initiated (30 second delay)" -Category "System Info"
             shutdown /r /t 30 /c "Reboot initiated by Rush Resolve"
         }
     })
@@ -270,6 +271,7 @@ function Initialize-Module {
     $shutdownBtn.Add_Click({
         $confirm = [System.Windows.Forms.MessageBox]::Show("Shut down this computer?", "Confirm", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Write-SessionLog -Message "SHUTDOWN initiated (30 second delay)" -Category "System Info"
             shutdown /s /t 30 /c "Shutdown initiated by Rush Resolve"
         }
     })

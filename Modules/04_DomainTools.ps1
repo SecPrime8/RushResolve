@@ -54,9 +54,11 @@ $script:TestSecureChannel = {
 
         if ($trustOK) {
             $LogBox.AppendText("[$timestamp] Trust Status: OK - Secure channel is valid`r`n")
+            Write-SessionLog -Message "Trust test: PASSED" -Category "Domain Tools"
             return @{ Success = $true; TrustOK = $true; Message = "Trust relationship is healthy" }
         } else {
             $LogBox.AppendText("[$timestamp] Trust Status: BROKEN - Secure channel failed`r`n")
+            Write-SessionLog -Message "Trust test: BROKEN" -Category "Domain Tools"
             return @{ Success = $true; TrustOK = $false; Message = "Trust relationship is broken" }
         }
     }
@@ -94,9 +96,11 @@ $script:RepairTrust = {
 
         if ($repairResult) {
             $LogBox.AppendText("[$timestamp] SUCCESS: Domain trust repaired`r`n")
+            Write-SessionLog -Message "Trust repair: SUCCESS" -Category "Domain Tools"
             return @{ Success = $true; Message = "Trust relationship repaired successfully" }
         } else {
             $LogBox.AppendText("[$timestamp] FAILED: Could not repair trust`r`n")
+            Write-SessionLog -Message "Trust repair: FAILED" -Category "Domain Tools"
             return @{ Success = $false; Message = "Repair command completed but trust still broken" }
         }
     }
@@ -290,6 +294,7 @@ $script:LeaveDomain = {
 
         $LogBox.AppendText("[$timestamp] SUCCESS: Computer removed from domain`r`n")
         $LogBox.AppendText("[$timestamp] RESTART REQUIRED to complete the operation`r`n")
+        Write-SessionLog -Message "LEAVE DOMAIN: SUCCESS - restart required" -Category "Domain Tools"
         return @{ Success = $true; Message = "Domain leave successful - restart required" }
     }
     catch {
@@ -325,6 +330,7 @@ $script:JoinDomain = {
 
         $LogBox.AppendText("[$timestamp] SUCCESS: Computer joined to $DomainName`r`n")
         $LogBox.AppendText("[$timestamp] RESTART REQUIRED to complete the operation`r`n")
+        Write-SessionLog -Message "JOIN DOMAIN: SUCCESS ($DomainName) - restart required" -Category "Domain Tools"
         return @{ Success = $true; Message = "Domain join successful - restart required" }
     }
     catch {
