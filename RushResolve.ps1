@@ -89,7 +89,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.1"  # Security hardened version
+$script:AppVersion = "2.2"  # Disk Cleanup + Clipboard features
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
