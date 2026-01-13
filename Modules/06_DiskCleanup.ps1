@@ -441,6 +441,36 @@ function Find-UnusedFiles {
 
 #endregion
 
+#region UI Helper Functions
+
+function Update-SafeCleanupTotal {
+    $totalBytes = 0
+    $totalFiles = 0
+
+    foreach ($item in $script:categoryListView.CheckedItems) {
+        if ($item.Tag -is [hashtable] -and $item.Tag.TotalBytes) {
+            $totalBytes += $item.Tag.TotalBytes
+            $totalFiles += $item.Tag.FileCount
+        }
+    }
+
+    $script:safeTotalLabel.Text = "Selected: $totalFiles files ($(Format-FileSize -Bytes $totalBytes))"
+}
+
+function Update-UnusedFilesTotal {
+    $totalBytes = 0
+    $count = 0
+
+    foreach ($item in $script:unusedListView.CheckedItems) {
+        $totalBytes += $item.Tag.Size
+        $count++
+    }
+
+    $script:unusedTotalLabel.Text = "Selected: $count files ($(Format-FileSize -Bytes $totalBytes))"
+}
+
+#endregion
+
 #region Module UI
 
 function Initialize-Module {
@@ -982,30 +1012,6 @@ function Initialize-Module {
     $tab.Controls.Add($mainPanel)
 }
 
-function Update-SafeCleanupTotal {
-    $totalBytes = 0
-    $totalFiles = 0
-
-    foreach ($item in $script:categoryListView.CheckedItems) {
-        if ($item.Tag -is [hashtable] -and $item.Tag.TotalBytes) {
-            $totalBytes += $item.Tag.TotalBytes
-            $totalFiles += $item.Tag.FileCount
-        }
-    }
-
-    $script:safeTotalLabel.Text = "Selected: $totalFiles files ($(Format-FileSize -Bytes $totalBytes))"
-}
-
-function Update-UnusedFilesTotal {
-    $totalBytes = 0
-    $count = 0
-
-    foreach ($item in $script:unusedListView.CheckedItems) {
-        $totalBytes += $item.Tag.Size
-        $count++
-    }
-
-    $script:unusedTotalLabel.Text = "Selected: $count files ($(Format-FileSize -Bytes $totalBytes))"
-}
+#endregion
 
 #endregion
