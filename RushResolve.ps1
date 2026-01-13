@@ -1027,6 +1027,130 @@ function Start-ClipboardClearTimer {
         [System.Windows.Forms.Clipboard]::Clear()
     }
 }
+
+function Copy-CredentialsForBarcode {
+    <#
+    .SYNOPSIS
+        Copies credentials in barcode-scanner format: username[TAB]password
+    .DESCRIPTION
+        When scanned by a HID barcode scanner, this will type:
+        1. Username
+        2. Tab key (moves to password field)
+        3. Password
+    #>
+
+    # Check if we have saved credentials
+    $savedCred = Load-EncryptedCredential
+    if (-not $savedCred) {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "No credentials are saved. Use 'Set/Update Credentials' first.",
+            "No Credentials",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        return $false
+    }
+
+    # Check if we have an unlocked credential in memory and PIN hasn't timed out
+    if ($script:CachedCredential -is [PSCredential] -and -not (Test-PINTimeout)) {
+        # Already unlocked - generate barcode string
+        $username = $script:CachedCredential.UserName
+        $password = $script:CachedCredential.GetNetworkCredential().Password
+
+        # Format: username + TAB + password (TAB = ASCII 9)
+        $barcodeString = "$username`t$password"
+
+        [System.Windows.Forms.Clipboard]::SetText($barcodeString)
+        Write-SessionLog -Message "Credentials copied in barcode format (already unlocked)" -Category "Credentials"
+
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "Credentials copied in barcode format:`n`nUsername[TAB]Password`n`nPaste into your QR code generator.`n`nClipboard will be cleared in 30 seconds.",
+            "Barcode Format Copied",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+
+        Start-ClipboardClearTimer
+        return $true
+    }
+
+    # Need to prompt for PIN
+    $attemptsLeft = 3 - $script:PINFailCount
+
+    while ($attemptsLeft -gt 0) {
+        $pin = Show-PINEntryDialog -Title "Enter PIN for barcode credentials ($attemptsLeft attempts left)"
+        if (-not $pin) {
+            return $false
+        }
+
+        # Verify PIN hash
+        $enteredHash = Get-PINHash -PIN $pin
+        if ($enteredHash -eq $savedCred.PINHash) {
+            # PIN correct - decrypt credential
+            $decrypted = Unprotect-Credential -EncryptedData $savedCred.EncryptedData -PIN $pin
+            if ($decrypted) {
+                # Update cached state
+                $script:CachedCredential = $decrypted
+                $script:CredentialPINHash = $savedCred.PINHash
+                $script:PINLastVerified = Get-Date
+                $script:PINFailCount = 0
+                Update-CredentialStatusIndicator
+
+                # Generate barcode string
+                $username = $decrypted.UserName
+                $password = $decrypted.GetNetworkCredential().Password
+                $barcodeString = "$username`t$password"
+
+                [System.Windows.Forms.Clipboard]::SetText($barcodeString)
+                Write-SessionLog -Message "Credentials copied in barcode format" -Category "Credentials"
+
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Credentials copied in barcode format:`n`nUsername[TAB]Password`n`nPaste into your QR code generator.`n`nClipboard will be cleared in 30 seconds.",
+                    "Barcode Format Copied",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+
+                Start-ClipboardClearTimer
+                return $true
+            }
+            else {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Failed to decrypt credentials. File may be corrupted.",
+                    "Error",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error
+                )
+                return $false
+            }
+        }
+        else {
+            # Wrong PIN
+            $script:PINFailCount++
+            $attemptsLeft = 3 - $script:PINFailCount
+
+            if ($attemptsLeft -gt 0) {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Incorrect PIN. $attemptsLeft attempts remaining.",
+                    "Wrong PIN",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+            }
+            else {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Maximum PIN attempts reached.",
+                    "Locked Out",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                return $false
+            }
+        }
+    }
+
+    return $false
+}
 #endregion
 
 #region Credential Elevation Helpers
@@ -2167,6 +2291,12 @@ function Show-MainWindow {
     $copyPwdMenuItem.Text = "Copy Password to Clipboard"
     $copyPwdMenuItem.Add_Click({ Copy-PasswordToClipboard })
     $credentialMenu.DropDownItems.Add($copyPwdMenuItem) | Out-Null
+
+    # Copy for Barcode Scanner (username + TAB + password)
+    $barcodeMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $barcodeMenuItem.Text = "Copy for Barcode/QR (User+Tab+Pass)"
+    $barcodeMenuItem.Add_Click({ Copy-CredentialsForBarcode })
+    $credentialMenu.DropDownItems.Add($barcodeMenuItem) | Out-Null
 
     # Separator
     $credentialMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
