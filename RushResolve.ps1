@@ -1508,6 +1508,113 @@ function Clear-CachedCredentials {
         [System.Windows.Forms.MessageBoxIcon]::Information
     )
 }
+
+function Set-ManualCredentials {
+    <#
+    .SYNOPSIS
+        Manually set or update admin credentials without running an elevated operation.
+    .DESCRIPTION
+        Prompts for username, password, and PIN, then saves encrypted credentials.
+    #>
+
+    # Check if credentials already exist - require PIN to replace them
+    $existingCred = Load-EncryptedCredential
+    if ($existingCred) {
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Credentials already exist. Do you want to replace them with new credentials?`n`nYou will need to enter your current PIN first.",
+            "Replace Credentials",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+            return
+        }
+
+        # Verify current PIN before allowing replacement
+        $pin = Show-PINEntryDialog -Title "Enter current PIN to update credentials"
+        if (-not $pin) { return }
+
+        $enteredHash = Get-PINHash -PIN $pin
+        if ($enteredHash -ne $existingCred.PINHash) {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Incorrect PIN. Credentials not updated.",
+                "Wrong PIN",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+    }
+
+    # Prompt for new credentials
+    try {
+        $cred = Get-Credential -Message "Enter administrator credentials to save"
+        if (-not $cred) { return }
+
+        # Auto-prepend default domain if username doesn't include domain
+        $username = $cred.UserName
+        if ($username -notmatch '\\' -and $username -notmatch '@') {
+            $defaultDomain = if ($script:Settings.global.defaultDomain) { $script:Settings.global.defaultDomain } else { "" }
+            if ($defaultDomain) {
+                $newUsername = "$defaultDomain\$username"
+                $cred = New-Object System.Management.Automation.PSCredential($newUsername, $cred.Password)
+            }
+        }
+
+        # Prompt for new PIN
+        $newPin = Show-PINEntryDialog -IsNewPIN $true
+        if (-not $newPin) {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Credentials not saved - PIN is required.",
+                "Cancelled",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        # Encrypt and save
+        $encrypted = Protect-Credential -Credential $cred -PIN $newPin
+        if ($encrypted) {
+            $pinHash = Get-PINHash -PIN $newPin
+            if (Save-EncryptedCredential -EncryptedData $encrypted -PINHash $pinHash) {
+                $script:CachedCredential = $cred
+                $script:CredentialPINHash = $pinHash
+                $script:PINLastVerified = Get-Date
+                $script:PINFailCount = 0
+
+                Write-SessionLog -Message "Credentials manually updated for: $($cred.UserName)" -Category "Credentials"
+
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Credentials saved and encrypted with your PIN.`n`nUsername: $($cred.UserName)",
+                    "Credentials Saved",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+                Update-CredentialStatusIndicator
+            }
+            else {
+                [void][System.Windows.Forms.MessageBox]::Show(
+                    "Failed to save credentials to disk.",
+                    "Error",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error
+                )
+            }
+        }
+        else {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Failed to encrypt credentials.",
+                "Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+        }
+    }
+    catch {
+        # User cancelled credential dialog
+    }
+}
 #endregion
 
 #region Module Loading
@@ -2042,6 +2149,12 @@ function Show-MainWindow {
         }
     })
     $credentialMenu.DropDownItems.Add($cacheMenuItem) | Out-Null
+
+    # Set/Update Credentials
+    $setCredMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $setCredMenuItem.Text = "Set/Update Credentials..."
+    $setCredMenuItem.Add_Click({ Set-ManualCredentials })
+    $credentialMenu.DropDownItems.Add($setCredMenuItem) | Out-Null
 
     # Lock Now (force PIN re-entry)
     $lockMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
