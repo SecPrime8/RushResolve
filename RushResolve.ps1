@@ -163,7 +163,7 @@ public class SimpleQRGenerator {
             if (coef != 0) {
                 int logCoef = GFLog[coef];
                 for (int j = 0; j < 15; j++)
-                    work[i + j + 1] ^= GFExp[(logCoef + gen[j]) % 255];
+                    work[i + j + 1] = (byte)(work[i + j + 1] ^ GFExp[(logCoef + gen[j]) % 255]);
             }
         }
         Array.Copy(work, 55, ec, 0, 15);
