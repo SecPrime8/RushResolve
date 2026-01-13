@@ -158,7 +158,7 @@ function Get-CategorySize {
     .SYNOPSIS
         Calculates total size and file count for a cleanup category.
     .OUTPUTS
-        Hashtable with TotalBytes, FileCount, AccessDenied boolean.
+        Hashtable with TotalBytes, FileCount, AccessDenied boolean, DebugInfo string.
     #>
     param([hashtable]$Category)
 
@@ -166,6 +166,7 @@ function Get-CategorySize {
         TotalBytes = 0
         FileCount = 0
         AccessDenied = $false
+        DebugInfo = ""
     }
 
     # Special handling for Recycle Bin
@@ -179,19 +180,31 @@ function Get-CategorySize {
                 $result.TotalBytes += $item.Size
             }
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+            $result.DebugInfo = "Recycle Bin: $($result.FileCount) items"
         }
         catch {
             $result.AccessDenied = $true
+            $result.DebugInfo = "Recycle Bin: Access denied - $($_.Exception.Message)"
         }
         return $result
     }
 
     # Regular path-based categories
+    $debugLines = @()
     foreach ($basePath in $Category.Paths) {
-        # Expand environment variables
-        $expandedPath = [Environment]::ExpandEnvironmentVariables($basePath)
+        # Expand environment variables - handle both $env:VAR and %VAR% formats
+        $expandedPath = $basePath
+        # First expand PowerShell $env: variables if they weren't expanded at definition
+        if ($basePath -match '\$env:') {
+            $expandedPath = $ExecutionContext.InvokeCommand.ExpandString($basePath)
+        }
+        # Then expand Windows %VAR% style variables
+        $expandedPath = [Environment]::ExpandEnvironmentVariables($expandedPath)
 
-        if (-not (Test-Path $expandedPath)) { continue }
+        if (-not (Test-Path $expandedPath)) {
+            $debugLines += "  Path not found: $expandedPath (raw: $basePath)"
+            continue
+        }
 
         try {
             $pattern = if ($Category.Pattern) { $Category.Pattern } else { "*" }
@@ -199,15 +212,21 @@ function Get-CategorySize {
             $maxAge = $Category.MaxAgeDays
             $cutoffDate = if ($maxAge -gt 0) { (Get-Date).AddDays(-$maxAge) } else { $null }
 
+            $debugLines += "  Scanning: $expandedPath (pattern: $pattern, recurse: $recurse)"
+
             # Get files
-            $files = Get-ChildItem -Path $expandedPath -Filter $pattern -File -Recurse:$recurse -Force -ErrorAction SilentlyContinue
+            $files = @(Get-ChildItem -Path $expandedPath -Filter $pattern -File -Recurse:$recurse -Force -ErrorAction SilentlyContinue)
 
             # Handle additional patterns
             if ($Category.AdditionalPatterns) {
                 foreach ($addPattern in $Category.AdditionalPatterns) {
-                    $files += Get-ChildItem -Path $expandedPath -Filter $addPattern -File -Recurse:$recurse -Force -ErrorAction SilentlyContinue
+                    $additionalFiles = @(Get-ChildItem -Path $expandedPath -Filter $addPattern -File -Recurse:$recurse -Force -ErrorAction SilentlyContinue)
+                    $files += $additionalFiles
                 }
             }
+
+            $filesFoundInPath = 0
+            $bytesInPath = 0
 
             foreach ($file in $files) {
                 # Apply age filter if specified
@@ -215,15 +234,22 @@ function Get-CategorySize {
 
                 $result.TotalBytes += $file.Length
                 $result.FileCount++
+                $filesFoundInPath++
+                $bytesInPath += $file.Length
             }
+
+            $debugLines += "    Found: $filesFoundInPath files ($(Format-FileSize -Bytes $bytesInPath))"
         }
         catch [System.UnauthorizedAccessException] {
             $result.AccessDenied = $true
+            $debugLines += "    Access denied: $expandedPath"
         }
         catch {
-            # Continue with other paths
+            $debugLines += "    Error: $($_.Exception.Message)"
         }
     }
+
+    $result.DebugInfo = $debugLines -join "`r`n"
 
     # Handle individual files (like MEMORY.DMP)
     if ($Category.IncludeFiles) {
@@ -584,9 +610,15 @@ function Initialize-Module {
 
             $sizeInfo = Get-CategorySize -Category $cat
 
+            # Show debug info from the scan
+            if ($sizeInfo.DebugInfo) {
+                $script:safeLogBox.AppendText("$($sizeInfo.DebugInfo)`r`n")
+            }
+
             if ($sizeInfo.AccessDenied) {
                 $item.SubItems[1].Text = "(Access Denied)"
                 $item.SubItems[2].Text = "-"
+                $script:safeLogBox.AppendText("[$timestamp]   Result: Access Denied`r`n")
             }
             else {
                 $item.SubItems[1].Text = Format-FileSize -Bytes $sizeInfo.TotalBytes
@@ -596,6 +628,7 @@ function Initialize-Module {
                     TotalBytes = $sizeInfo.TotalBytes
                     FileCount = $sizeInfo.FileCount
                 }
+                $script:safeLogBox.AppendText("[$timestamp]   Total: $($sizeInfo.FileCount) files ($(Format-FileSize -Bytes $sizeInfo.TotalBytes))`r`n")
             }
         }
 
