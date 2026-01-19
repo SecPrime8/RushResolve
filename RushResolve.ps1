@@ -1410,29 +1410,13 @@ function Show-QRCodeAuthenticator {
     $qrForm.Controls.Add($okButton)
     $qrForm.AcceptButton = $okButton
 
-    # Timer for auto-close
-    $secondsRemaining = 60
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 1000
+    # Update label to show instruction instead of countdown
+    $countdownLabel.Text = "Press OK or close when done"
 
-    $timer.Add_Tick({
-        $script:qrSecondsRemaining--
-        $countdownLabel.Text = "Auto-close in $($script:qrSecondsRemaining) seconds"
-        if ($script:qrSecondsRemaining -le 0) {
-            $timer.Stop()
-            $qrForm.Close()
-        }
-    }.GetNewClosure())
-
-    $script:qrSecondsRemaining = 60
-    $timer.Start()
-
-    # Show form
+    # Show form (waits for user to close)
     $qrForm.ShowDialog() | Out-Null
 
     # Cleanup
-    $timer.Stop()
-    $timer.Dispose()
     $qrBitmap.Dispose()
     $qrForm.Dispose()
 }
