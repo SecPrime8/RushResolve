@@ -38,6 +38,13 @@
 
 ## Feature Ideas
 
+### LLDP Network Discovery (Pending Hospital Approval)
+- Enable/check LLDP agent status on workstation
+- Display connected switch name and port
+- Useful for cable tracing without physical inspection
+- Requires: `Enable-NetLldpAgent` - needs approval from hospital IT
+- Status: Awaiting approval (see proposals/RushResolve-Hospital-Approval.md)
+
 ### AppLocker / Security Policy Refresh
 - Trigger gpupdate for AppLocker rules
 - Force rerun of application blocking policies
