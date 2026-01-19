@@ -1223,10 +1223,9 @@ function Show-QRCodeAuthenticator {
 
     if (-not $credential) { return }
 
-    # Generate QR code string: username + TAB + password
-    $username = $credential.UserName
+    # Generate QR code string: password only
     $password = $credential.GetNetworkCredential().Password
-    $qrString = "$username`t$password"
+    $qrString = $password
 
     Write-SessionLog -Message "QR Code Authenticator displayed" -Category "Credentials"
 
@@ -1279,7 +1278,7 @@ function Show-QRCodeAuthenticator {
     # Info label (below QR code)
     $infoY = 50 + $qrHeight + 15
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Text = "Contains: Username [TAB] Password`nScanner will type credentials automatically."
+    $infoLabel.Text = "Contains: Password only`nEnter username first, then scan for password."
     $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $infoLabel.ForeColor = [System.Drawing.Color]::DarkGray
     $infoLabel.AutoSize = $true
