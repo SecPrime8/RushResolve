@@ -15,208 +15,96 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# Inline QR Code Generator - generates QR codes locally without external dependencies
-$qrCodeSource = @"
-using System;
-using System.Drawing;
-using System.Text;
-using System.Collections.Generic;
+# QRCoder Library - reliable QR code generation
+# Downloads QRCoder.dll on first use and caches it locally
+$script:QRCoderPath = Join-Path $PSScriptRoot "lib\QRCoder.dll"
+$script:QRGeneratorAvailable = $false
 
-public class SimpleQRGenerator {
-    // QR Code Version 3 (29x29 modules) - supports up to 77 alphanumeric chars
-    private const int SIZE = 29;
-    private const int VERSION = 3;
-    private bool[,] modules;
-    private bool[,] isFunction;
+function Initialize-QRCoder {
+    # Check if already loaded
+    if ($script:QRGeneratorAvailable) { return $true }
 
-    public static Bitmap Generate(string text, int scale = 8) {
-        var qr = new SimpleQRGenerator();
-        return qr.CreateQR(text, scale);
+    # Create lib directory if needed
+    $libDir = Join-Path $PSScriptRoot "lib"
+    if (-not (Test-Path $libDir)) {
+        New-Item -ItemType Directory -Path $libDir -Force | Out-Null
     }
 
-    private Bitmap CreateQR(string text, int scale) {
-        modules = new bool[SIZE, SIZE];
-        isFunction = new bool[SIZE, SIZE];
+    # Download QRCoder if not present
+    if (-not (Test-Path $script:QRCoderPath)) {
+        try {
+            $nugetUrl = "https://www.nuget.org/api/v2/package/QRCoder/1.4.3"
+            $tempZip = Join-Path $env:TEMP "qrcoder.zip"
+            $tempExtract = Join-Path $env:TEMP "qrcoder_extract"
 
-        // Add function patterns
-        AddFinderPattern(0, 0);
-        AddFinderPattern(SIZE - 7, 0);
-        AddFinderPattern(0, SIZE - 7);
-        AddAlignmentPattern(22, 22);
-        AddTimingPatterns();
-        AddFormatInfo();
-        AddVersionInfo();
+            # Download NuGet package
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $nugetUrl -OutFile $tempZip -UseBasicParsing
 
-        // Encode data
-        byte[] data = EncodeData(text);
-        PlaceData(data);
-        ApplyMask();
+            # Extract
+            if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+            Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
 
-        // Render to bitmap
-        int imgSize = SIZE * scale + scale * 2;
-        Bitmap bmp = new Bitmap(imgSize, imgSize);
-        using (Graphics g = Graphics.FromImage(bmp)) {
-            g.Clear(Color.White);
-            for (int y = 0; y < SIZE; y++) {
-                for (int x = 0; x < SIZE; x++) {
-                    if (modules[y, x]) {
-                        g.FillRectangle(Brushes.Black,
-                            (x + 1) * scale, (y + 1) * scale, scale, scale);
-                    }
-                }
+            # Copy the .NET Framework 4.0 DLL (compatible with PowerShell 5.1)
+            $dllSource = Join-Path $tempExtract "lib\net40\QRCoder.dll"
+            if (-not (Test-Path $dllSource)) {
+                # Try netstandard2.0 as fallback
+                $dllSource = Join-Path $tempExtract "lib\netstandard2.0\QRCoder.dll"
             }
-        }
-        return bmp;
-    }
+            Copy-Item $dllSource $script:QRCoderPath -Force
 
-    private void AddFinderPattern(int row, int col) {
-        for (int r = -1; r <= 7; r++) {
-            for (int c = -1; c <= 7; c++) {
-                int rr = row + r, cc = col + c;
-                if (rr < 0 || rr >= SIZE || cc < 0 || cc >= SIZE) continue;
-                bool black = (r >= 0 && r <= 6 && (c == 0 || c == 6)) ||
-                            (c >= 0 && c <= 6 && (r == 0 || r == 6)) ||
-                            (r >= 2 && r <= 4 && c >= 2 && c <= 4);
-                modules[rr, cc] = black;
-                isFunction[rr, cc] = true;
-            }
+            # Cleanup
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        catch {
+            Write-Warning "Failed to download QRCoder: $_"
+            return $false
         }
     }
 
-    private void AddAlignmentPattern(int row, int col) {
-        for (int r = -2; r <= 2; r++) {
-            for (int c = -2; c <= 2; c++) {
-                int rr = row + r, cc = col + c;
-                bool black = Math.Max(Math.Abs(r), Math.Abs(c)) != 1;
-                modules[rr, cc] = black;
-                isFunction[rr, cc] = true;
-            }
-        }
+    # Load the assembly
+    try {
+        Add-Type -Path $script:QRCoderPath -ErrorAction Stop
+        $script:QRGeneratorAvailable = $true
+        return $true
     }
-
-    private void AddTimingPatterns() {
-        for (int i = 8; i < SIZE - 8; i++) {
-            bool black = i % 2 == 0;
-            modules[6, i] = black;
-            modules[i, 6] = black;
-            isFunction[6, i] = true;
-            isFunction[i, 6] = true;
-        }
-    }
-
-    private void AddFormatInfo() {
-        int format = 0x5412; // Mask 0, EC level L
-        for (int i = 0; i <= 5; i++) { modules[8, i] = ((format >> i) & 1) == 1; isFunction[8, i] = true; }
-        modules[8, 7] = ((format >> 6) & 1) == 1; isFunction[8, 7] = true;
-        modules[8, 8] = ((format >> 7) & 1) == 1; isFunction[8, 8] = true;
-        modules[7, 8] = ((format >> 8) & 1) == 1; isFunction[7, 8] = true;
-        for (int i = 9; i < 15; i++) { modules[14 - i, 8] = ((format >> i) & 1) == 1; isFunction[14 - i, 8] = true; }
-        for (int i = 0; i < 8; i++) { modules[SIZE - 1 - i, 8] = ((format >> i) & 1) == 1; isFunction[SIZE - 1 - i, 8] = true; }
-        modules[SIZE - 8, 8] = true; isFunction[SIZE - 8, 8] = true;
-        for (int i = 8; i < 15; i++) { modules[8, SIZE - 15 + i] = ((format >> i) & 1) == 1; isFunction[8, SIZE - 15 + i] = true; }
-    }
-
-    private void AddVersionInfo() { } // Not needed for version 3
-
-    private byte[] EncodeData(string text) {
-        List<bool> bits = new List<bool>();
-        // Mode indicator: Byte mode (0100)
-        bits.Add(false); bits.Add(true); bits.Add(false); bits.Add(false);
-        // Character count (8 bits for version 1-9 byte mode)
-        byte[] textBytes = Encoding.UTF8.GetBytes(text);
-        for (int i = 7; i >= 0; i--) bits.Add(((textBytes.Length >> i) & 1) == 1);
-        // Data
-        foreach (byte b in textBytes)
-            for (int i = 7; i >= 0; i--) bits.Add(((b >> i) & 1) == 1);
-        // Terminator
-        for (int i = 0; i < 4 && bits.Count < 440; i++) bits.Add(false);
-        // Pad to byte boundary
-        while (bits.Count % 8 != 0) bits.Add(false);
-        // Pad codewords
-        byte[] pads = { 0xEC, 0x11 };
-        int padIdx = 0;
-        while (bits.Count < 440) {
-            for (int i = 7; i >= 0; i--) bits.Add(((pads[padIdx] >> i) & 1) == 1);
-            padIdx = (padIdx + 1) % 2;
-        }
-        // Convert to bytes and add error correction
-        byte[] data = new byte[55];
-        for (int i = 0; i < 55; i++) {
-            for (int j = 0; j < 8; j++)
-                if (bits[i * 8 + j]) data[i] |= (byte)(1 << (7 - j));
-        }
-        byte[] ec = CalculateEC(data);
-        byte[] result = new byte[70];
-        Array.Copy(data, result, 55);
-        Array.Copy(ec, 0, result, 55, 15);
-        return result;
-    }
-
-    private byte[] CalculateEC(byte[] data) {
-        // Simplified Reed-Solomon for version 3-L (15 EC codewords)
-        int[] gen = { 8, 183, 61, 91, 202, 37, 51, 58, 58, 237, 140, 124, 5, 99, 105 };
-        byte[] ec = new byte[15];
-        byte[] work = new byte[70];
-        Array.Copy(data, work, 55);
-        for (int i = 0; i < 55; i++) {
-            byte coef = work[i];
-            if (coef != 0) {
-                int logCoef = GFLog[coef];
-                for (int j = 0; j < 15; j++)
-                    work[i + j + 1] = (byte)(work[i + j + 1] ^ GFExp[(logCoef + gen[j]) % 255]);
-            }
-        }
-        Array.Copy(work, 55, ec, 0, 15);
-        return ec;
-    }
-
-    private static int[] GFExp = new int[512];
-    private static int[] GFLog = new int[256];
-    static SimpleQRGenerator() {
-        int x = 1;
-        for (int i = 0; i < 255; i++) {
-            GFExp[i] = x; GFLog[x] = i;
-            x <<= 1;
-            if (x >= 256) x ^= 0x11D;
-        }
-        for (int i = 255; i < 512; i++) GFExp[i] = GFExp[i - 255];
-    }
-
-    private void PlaceData(byte[] data) {
-        int bitIdx = 0;
-        for (int right = SIZE - 1; right >= 1; right -= 2) {
-            if (right == 6) right = 5;
-            for (int vert = 0; vert < SIZE; vert++) {
-                for (int j = 0; j < 2; j++) {
-                    int x = right - j;
-                    bool upward = ((right + 1) / 2) % 2 == 0;
-                    int y = upward ? SIZE - 1 - vert : vert;
-                    if (!isFunction[y, x] && bitIdx < data.Length * 8) {
-                        modules[y, x] = ((data[bitIdx / 8] >> (7 - bitIdx % 8)) & 1) == 1;
-                        bitIdx++;
-                    }
-                }
-            }
-        }
-    }
-
-    private void ApplyMask() {
-        // Mask pattern 0: (row + column) mod 2 == 0
-        for (int y = 0; y < SIZE; y++)
-            for (int x = 0; x < SIZE; x++)
-                if (!isFunction[y, x] && (y + x) % 2 == 0)
-                    modules[y, x] = !modules[y, x];
+    catch {
+        Write-Warning "Failed to load QRCoder: $_"
+        return $false
     }
 }
-"@
 
+# Generate QR code bitmap using QRCoder
+function New-QRCodeBitmap {
+    param(
+        [string]$Text,
+        [int]$PixelsPerModule = 20
+    )
+
+    if (-not (Initialize-QRCoder)) {
+        throw "QRCoder library not available"
+    }
+
+    $qrGenerator = New-Object QRCoder.QRCodeGenerator
+    $qrData = $qrGenerator.CreateQrCode($Text, [QRCoder.QRCodeGenerator+ECCLevel]::M)
+    $qrCode = New-Object QRCoder.QRCode($qrData)
+    $bitmap = $qrCode.GetGraphic($PixelsPerModule)
+
+    # Cleanup
+    $qrCode.Dispose()
+    $qrData.Dispose()
+    $qrGenerator.Dispose()
+
+    return $bitmap
+}
+
+# Try to initialize QRCoder at startup (non-blocking)
 try {
-    Add-Type -TypeDefinition $qrCodeSource -ReferencedAssemblies System.Drawing -ErrorAction Stop
-    $script:QRGeneratorAvailable = $true
+    Initialize-QRCoder | Out-Null
 }
 catch {
-    $script:QRGeneratorAvailable = $false
-    Write-Warning "QR Code generator could not be loaded: $_"
+    # Will retry when QR code is actually needed
 }
 #endregion
 
@@ -1342,9 +1230,9 @@ function Show-QRCodeAuthenticator {
 
     Write-SessionLog -Message "QR Code Authenticator displayed" -Category "Credentials"
 
-    # Generate QR code bitmap
+    # Generate QR code bitmap using QRCoder (20 pixels per module for scanner readability)
     try {
-        $qrBitmap = [SimpleQRGenerator]::Generate($qrString, 10)
+        $qrBitmap = New-QRCodeBitmap -Text $qrString -PixelsPerModule 20
     }
     catch {
         [void][System.Windows.Forms.MessageBox]::Show(
@@ -1356,10 +1244,16 @@ function Show-QRCodeAuthenticator {
         return
     }
 
+    # Get QR code dimensions to size form dynamically
+    $qrWidth = $qrBitmap.Width
+    $qrHeight = $qrBitmap.Height
+    $formWidth = [Math]::Max(400, $qrWidth + 80)
+    $formHeight = $qrHeight + 200
+
     # Create popup form
     $qrForm = New-Object System.Windows.Forms.Form
     $qrForm.Text = "QR Code Authenticator"
-    $qrForm.Size = New-Object System.Drawing.Size(380, 480)
+    $qrForm.Size = New-Object System.Drawing.Size($formWidth, $formHeight)
     $qrForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
     $qrForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $qrForm.MaximizeBox = $false
@@ -1367,51 +1261,49 @@ function Show-QRCodeAuthenticator {
     $qrForm.TopMost = $true
     $qrForm.BackColor = [System.Drawing.Color]::White
 
-    # Title label
+    # Title label (centered)
     $titleLabel = New-Object System.Windows.Forms.Label
     $titleLabel.Text = "Scan with barcode scanner"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
     $titleLabel.AutoSize = $true
-    $titleLabel.Location = New-Object System.Drawing.Point(85, 15)
+    $titleLabel.Location = New-Object System.Drawing.Point(([int](($formWidth - 220) / 2)), 15)
     $qrForm.Controls.Add($titleLabel)
 
-    # QR code PictureBox
+    # QR code PictureBox (centered)
     $pictureBox = New-Object System.Windows.Forms.PictureBox
     $pictureBox.Image = $qrBitmap
     $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::AutoSize
-    $pictureBox.Location = New-Object System.Drawing.Point(35, 50)
+    $pictureBox.Location = New-Object System.Drawing.Point(([int](($formWidth - $qrWidth) / 2)), 50)
     $qrForm.Controls.Add($pictureBox)
 
-    # Info label
+    # Info label (below QR code)
+    $infoY = 50 + $qrHeight + 15
     $infoLabel = New-Object System.Windows.Forms.Label
-    $infoLabel.Text = "Contains: Username [TAB] Password`n`nScanner will type credentials automatically."
+    $infoLabel.Text = "Contains: Username [TAB] Password`nScanner will type credentials automatically."
     $infoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $infoLabel.ForeColor = [System.Drawing.Color]::DarkGray
     $infoLabel.AutoSize = $true
-    $infoLabel.Location = New-Object System.Drawing.Point(60, 365)
+    $infoLabel.Location = New-Object System.Drawing.Point(([int](($formWidth - 280) / 2)), $infoY)
     $qrForm.Controls.Add($infoLabel)
 
-    # Countdown label
+    # Instruction label
     $countdownLabel = New-Object System.Windows.Forms.Label
-    $countdownLabel.Text = "Auto-close in 60 seconds"
+    $countdownLabel.Text = "Press OK or close when done"
     $countdownLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $countdownLabel.ForeColor = [System.Drawing.Color]::Red
+    $countdownLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 120, 0)
     $countdownLabel.AutoSize = $true
-    $countdownLabel.Location = New-Object System.Drawing.Point(115, 405)
+    $countdownLabel.Location = New-Object System.Drawing.Point(([int](($formWidth - 180) / 2)), ($infoY + 45))
     $qrForm.Controls.Add($countdownLabel)
 
-    # OK button
+    # OK button (centered)
     $okButton = New-Object System.Windows.Forms.Button
     $okButton.Text = "OK"
     $okButton.Width = 100
     $okButton.Height = 30
-    $okButton.Location = New-Object System.Drawing.Point(140, 430)
+    $okButton.Location = New-Object System.Drawing.Point(([int](($formWidth - 100) / 2)), ($infoY + 75))
     $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $qrForm.Controls.Add($okButton)
     $qrForm.AcceptButton = $okButton
-
-    # Update label to show instruction instead of countdown
-    $countdownLabel.Text = "Press OK or close when done"
 
     # Show form (waits for user to close)
     $qrForm.ShowDialog() | Out-Null
