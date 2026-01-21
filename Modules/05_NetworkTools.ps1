@@ -70,15 +70,27 @@ $script:RunTraceroute = {
 
     try {
         $result = Test-NetConnection -ComputerName $Target -TraceRoute -ErrorAction Stop
-        $hop = 1
-        foreach ($ip in $result.TraceRoute) {
-            $timestamp = Get-Date -Format "HH:mm:ss"
-            $LogBox.AppendText("[$timestamp]   $hop  $ip`r`n")
-            $LogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-            $hop++
+
+        # Validate TraceRoute is not null before iterating
+        if ($result.TraceRoute) {
+            $hops = @($result.TraceRoute)  # Force array conversion
+            if ($hops.Count -gt 0) {
+                $hop = 1
+                foreach ($ip in $hops) {
+                    $timestamp = Get-Date -Format "HH:mm:ss"
+                    $LogBox.AppendText("[$timestamp]   $hop  $ip`r`n")
+                    $LogBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                    $hop++
+                }
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $LogBox.AppendText("`r`n[$timestamp] Trace complete.`r`n")
+            } else {
+                $LogBox.AppendText("[$timestamp] Target unreachable - no hops returned.`r`n")
+            }
+        } else {
+            $LogBox.AppendText("[$timestamp] Trace route failed - target may be unreachable.`r`n")
         }
-        $LogBox.AppendText("`r`n[$timestamp] Trace complete.`r`n")
     }
     catch {
         $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")

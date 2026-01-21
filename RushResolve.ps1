@@ -665,7 +665,8 @@ function Get-PINHash {
 function Protect-Credential {
     <#
     .SYNOPSIS
-        Encrypts a PSCredential using DPAPI with PIN as additional entropy.
+        Encrypts a PSCredential using AES-256 with PIN-derived key.
+        Portable across computers.
     #>
     param(
         [PSCredential]$Credential,
@@ -679,17 +680,40 @@ function Protect-Credential {
         $data = "$username|$password"
         $dataBytes = [System.Text.Encoding]::UTF8.GetBytes($data)
 
-        # Use PIN as additional entropy
-        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes($PIN)
+        # 1. Generate random Salt (16 bytes) and IV (16 bytes)
+        $salt = New-Object byte[] 16
+        $iv = New-Object byte[] 16
+        $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::Create()
+        $rng.GetBytes($salt)
+        $rng.GetBytes($iv)
+        $rng.Dispose()
 
-        # Encrypt with DPAPI (CurrentUser scope + entropy)
-        $encryptedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
-            $dataBytes,
-            $entropyBytes,
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
+        # 2. Derive Key from PIN + Salt (PBKDF2)
+        # 10000 iterations is a reasonable balance for this use case
+        $deriveBytes = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($PIN, $salt, 10000)
+        $key = $deriveBytes.GetBytes(32) # AES-256 requires 32-byte key
+        $deriveBytes.Dispose()
 
-        return $encryptedBytes
+        # 3. Encrypt with AES
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Key = $key
+        $aes.IV = $iv
+        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+
+        $encryptor = $aes.CreateEncryptor()
+        $encryptedBytes = $encryptor.TransformFinalBlock($dataBytes, 0, $dataBytes.Length)
+        
+        $aes.Dispose()
+        $encryptor.Dispose()
+
+        # 4. Pack result: Salt (16) + IV (16) + Ciphertext
+        $result = New-Object byte[] ($salt.Length + $iv.Length + $encryptedBytes.Length)
+        [Array]::Copy($salt, 0, $result, 0, $salt.Length)
+        [Array]::Copy($iv, 0, $result, $salt.Length, $iv.Length)
+        [Array]::Copy($encryptedBytes, 0, $result, ($salt.Length + $iv.Length), $encryptedBytes.Length)
+
+        return $result
     }
     catch {
         Write-Warning "Failed to encrypt credential: $_"
@@ -700,7 +724,7 @@ function Protect-Credential {
 function Unprotect-Credential {
     <#
     .SYNOPSIS
-        Decrypts credential blob using DPAPI with PIN as entropy.
+        Decrypts credential blob using AES-256 with PIN-derived key.
     #>
     param(
         [byte[]]$EncryptedData,
@@ -708,27 +732,54 @@ function Unprotect-Credential {
     )
 
     try {
-        # Use PIN as entropy
-        $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes($PIN)
+        if ($EncryptedData.Length -lt 32) { return $null } # Min length (Salt+IV)
 
-        # Decrypt with DPAPI
-        $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $EncryptedData,
-            $entropyBytes,
-            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
+        # 1. Extract Salt and IV
+        $salt = New-Object byte[] 16
+        $iv = New-Object byte[] 16
+        [Array]::Copy($EncryptedData, 0, $salt, 0, 16)
+        [Array]::Copy($EncryptedData, 16, $iv, 0, 16)
 
-        $data = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
-        $parts = $data -split '\|', 2
+        # 2. Extract Ciphertext
+        $cipherLen = $EncryptedData.Length - 32
+        $cipherText = New-Object byte[] $cipherLen
+        [Array]::Copy($EncryptedData, 32, $cipherText, 0, $cipherLen)
 
-        if ($parts.Count -eq 2) {
-            $securePassword = ConvertTo-SecureString $parts[1] -AsPlainText -Force
-            return New-Object System.Management.Automation.PSCredential($parts[0], $securePassword)
+        # 3. Derive Key from PIN + Salt
+        $deriveBytes = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($PIN, $salt, 10000)
+        $key = $deriveBytes.GetBytes(32)
+        $deriveBytes.Dispose()
+
+        # 4. Decrypt
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Key = $key
+        $aes.IV = $iv
+        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+
+        $decryptor = $aes.CreateDecryptor()
+        try {
+            $decryptedBytes = $decryptor.TransformFinalBlock($cipherText, 0, $cipherText.Length)
+            $data = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
+            
+            $parts = $data -split '\|', 2
+            if ($parts.Count -eq 2) {
+                $securePassword = ConvertTo-SecureString $parts[1] -AsPlainText -Force
+                return New-Object System.Management.Automation.PSCredential($parts[0], $securePassword)
+            }
         }
+        catch {
+            # Decryption failed (wrong PIN or corrupted data)
+            return $null
+        }
+        finally {
+            $aes.Dispose()
+            $decryptor.Dispose()
+        }
+
         return $null
     }
     catch {
-        # Decryption failed (wrong PIN or corrupted data)
         return $null
     }
 }
@@ -2734,10 +2785,22 @@ function Initialize-Module {
         Close-SessionLog
     })
 
-    # Restore last tab
+    # Restore last tab (or default to System Info)
+    $tabFound = $false
     if ($script:Settings.global.lastTab) {
         foreach ($tab in $tabControl.TabPages) {
             if ($tab.Text -eq $script:Settings.global.lastTab) {
+                $tabControl.SelectedTab = $tab
+                $tabFound = $true
+                break
+            }
+        }
+    }
+
+    # Fallback: ensure System Info is selected if no tab was matched
+    if (-not $tabFound) {
+        foreach ($tab in $tabControl.TabPages) {
+            if ($tab.Text -eq "System Info") {
                 $tabControl.SelectedTab = $tab
                 break
             }

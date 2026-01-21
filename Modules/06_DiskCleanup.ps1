@@ -397,6 +397,9 @@ function Find-UnusedFiles {
     <#
     .SYNOPSIS
         Finds large files that haven't been accessed in specified days.
+    .DESCRIPTION
+        Streams results incrementally to avoid loading entire filesystem into memory.
+        Filters early to minimize memory usage on large drives.
     .OUTPUTS
         Array of file objects with Path, Size, LastAccessed properties.
     #>
@@ -406,59 +409,83 @@ function Find-UnusedFiles {
         [scriptblock]$ProgressCallback
     )
 
-    $results = @()
+    $results = [System.Collections.Generic.List[PSCustomObject]]::new()
     $minBytes = $MinSizeMB * 1MB
     $cutoffDate = (Get-Date).AddDays(-$DaysUnused)
-
-    # Get all drives or just C:
     $searchRoot = "C:\"
+    $processedFiles = 0
+    $matchedFiles = 0
+    $errorCount = 0
 
-    # Build exclusion pattern for efficient filtering
-    $excludePatterns = $script:ExcludedPaths | ForEach-Object { [regex]::Escape($_) }
+    # Log scan parameters
+    if ($ProgressCallback) {
+        & $ProgressCallback -Message "Starting scan: files >= ${MinSizeMB}MB, unused >= ${DaysUnused} days"
+    }
 
     try {
-        # Get all files on C: drive, excluding system folders
-        $allFiles = Get-ChildItem -Path $searchRoot -File -Recurse -Force -ErrorAction SilentlyContinue |
-            Where-Object {
-                $path = $_.FullName
-                $excluded = $false
-                foreach ($excludePath in $script:ExcludedPaths) {
-                    if ($path -like "$excludePath*") {
-                        $excluded = $true
-                        break
-                    }
-                }
-                -not $excluded
-            }
-
-        $totalFiles = @($allFiles).Count
-        $processedFiles = 0
-
-        foreach ($file in $allFiles) {
+        # Stream files directly - filter early to avoid memory buildup
+        # Use -Directory $false to only get files (PowerShell 5.1 compatible)
+        Get-ChildItem -Path $searchRoot -File -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable +scanErrors | ForEach-Object {
+            $file = $_
             $processedFiles++
 
-            # Update progress every 100 files
-            if ($ProgressCallback -and ($processedFiles % 100 -eq 0)) {
-                & $ProgressCallback -Processed $processedFiles -Total $totalFiles
+            # Update progress every 500 files for better UI responsiveness
+            if ($ProgressCallback -and ($processedFiles % 500 -eq 0)) {
+                & $ProgressCallback -Message "Scanned $processedFiles files, found $matchedFiles matches..."
+                [System.Windows.Forms.Application]::DoEvents()
             }
 
-            # Check size threshold
-            if ($file.Length -lt $minBytes) { continue }
+            # Early filter: check if path is excluded FIRST (cheapest check)
+            $path = $file.FullName
+            foreach ($excludePath in $script:ExcludedPaths) {
+                if ($path -like "$excludePath*") {
+                    return  # Skip this file (continue in ForEach-Object)
+                }
+            }
 
-            # Check last access time
-            if ($file.LastAccessTime -gt $cutoffDate) { continue }
+            # Early filter: size threshold (cheap check)
+            if ($file.Length -lt $minBytes) { return }
 
-            $results += [PSCustomObject]@{
+            # Early filter: last access time
+            if ($file.LastAccessTime -gt $cutoffDate) { return }
+
+            # File matches all criteria - add to results
+            $matchedFiles++
+            $results.Add([PSCustomObject]@{
                 Path = $file.FullName
                 Size = $file.Length
                 SizeFormatted = Format-FileSize -Bytes $file.Length
                 LastAccessed = $file.LastAccessTime
                 Extension = $file.Extension
+            })
+
+            # Update UI with each match found (gives user feedback)
+            if ($ProgressCallback -and ($matchedFiles % 10 -eq 0)) {
+                & $ProgressCallback -Message "Scanned $processedFiles files, found $matchedFiles matches..."
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+
+        # Report any access errors encountered
+        if ($scanErrors -and $scanErrors.Count -gt 0) {
+            $errorCount = $scanErrors.Count
+            if ($ProgressCallback) {
+                & $ProgressCallback -Message "Note: $errorCount folders could not be accessed (permission denied)"
             }
         }
     }
     catch {
-        # Return what we have
+        # Log the error instead of silently swallowing it
+        $errorMsg = $_.Exception.Message
+        if ($ProgressCallback) {
+            & $ProgressCallback -Message "ERROR: Scan failed - $errorMsg"
+        }
+        Write-Warning "Find-UnusedFiles error: $errorMsg"
+    }
+
+    # Final progress update
+    if ($ProgressCallback) {
+        & $ProgressCallback -Message "Scan complete: $processedFiles files scanned, $matchedFiles matches found"
     }
 
     # Sort by size descending
@@ -833,8 +860,18 @@ function Initialize-Module {
         $script:unusedLogBox.AppendText("[$timestamp] Excluding system folders (Windows, Program Files, ProgramData)...`r`n")
         [System.Windows.Forms.Application]::DoEvents()
 
-        $files = Find-UnusedFiles -MinSizeMB $script:minSizeBox.Value -DaysUnused $script:daysBox.Value
+        # Progress callback to update log in real-time
+        $progressCallback = {
+            param([string]$Message)
+            $ts = Get-Date -Format "HH:mm:ss"
+            $script:unusedLogBox.AppendText("[$ts] $Message`r`n")
+            $script:unusedLogBox.ScrollToCaret()
+        }
 
+        $files = Find-UnusedFiles -MinSizeMB $script:minSizeBox.Value -DaysUnused $script:daysBox.Value -ProgressCallback $progressCallback
+
+        # Populate ListView with results
+        $script:unusedListView.BeginUpdate()
         foreach ($file in $files) {
             $item = New-Object System.Windows.Forms.ListViewItem("")
             $item.SubItems.Add($file.Path) | Out-Null
@@ -844,6 +881,7 @@ function Initialize-Module {
             $item.Tag = $file
             $script:unusedListView.Items.Add($item) | Out-Null
         }
+        $script:unusedListView.EndUpdate()
 
         Clear-AppStatus
         Update-UnusedFilesTotal
