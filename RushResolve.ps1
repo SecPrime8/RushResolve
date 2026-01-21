@@ -2797,13 +2797,20 @@ function Initialize-Module {
         }
     }
 
-    # Fallback: ensure System Info is selected if no tab was matched
-    if (-not $tabFound) {
+    # Fallback: select System Info (first tab, since 01_SystemInfo sorts first)
+    if (-not $tabFound -and $tabControl.TabPages.Count -gt 0) {
+        # Try to find System Info by name first
+        $systemInfoFound = $false
         foreach ($tab in $tabControl.TabPages) {
             if ($tab.Text -eq "System Info") {
                 $tabControl.SelectedTab = $tab
+                $systemInfoFound = $true
                 break
             }
+        }
+        # Ultimate fallback: select first tab (which should be System Info)
+        if (-not $systemInfoFound) {
+            $tabControl.SelectedIndex = 0
         }
     }
 
