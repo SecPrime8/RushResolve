@@ -444,34 +444,68 @@ function Find-UnusedFiles {
         try {
             # Use forfiles.exe - native Windows tool, works in restricted environments
             # /D -N means files modified more than N days ago
-            $forfilesCmd = "forfiles /P `"$searchPath`" /S /D -$DaysUnused /C `"cmd /c echo @path,@fsize,@fdate`" 2>nul"
+            # Note: @fsize returns bytes as plain number
+            $forfilesArgs = "/P `"$searchPath`" /S /D -$DaysUnused /C `"cmd /c echo @path^|@fsize^|@fdate`""
 
-            $output = cmd /c $forfilesCmd 2>&1
+            if ($ProgressCallback) {
+                & $ProgressCallback -Message "Running: forfiles $forfilesArgs"
+                [System.Windows.Forms.Application]::DoEvents()
+            }
 
-            foreach ($line in $output) {
-                if (-not $line -or $line -match "^ERROR" -or $line -match "^No files found") { continue }
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = "forfiles.exe"
+            $pinfo.Arguments = $forfilesArgs
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.RedirectStandardError = $true
+            $pinfo.UseShellExecute = $false
+            $pinfo.CreateNoWindow = $true
+
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $pinfo
+            $proc.Start() | Out-Null
+
+            $stdout = $proc.StandardOutput.ReadToEnd()
+            $stderr = $proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
+
+            if ($stderr -and $stderr -notmatch "No files found") {
+                if ($ProgressCallback) {
+                    & $ProgressCallback -Message "forfiles error: $stderr"
+                }
+            }
+
+            $lines = $stdout -split "`r?`n"
+            $lineCount = 0
+
+            foreach ($line in $lines) {
+                $lineCount++
+                if (-not $line.Trim()) { continue }
 
                 try {
-                    # Parse: "C:\path\file.ext",12345678,01/15/2025
-                    $parts = $line -split ','
+                    # Parse: "C:\path\file.ext"|12345678|01/15/2025
+                    $parts = $line -split '\|'
                     if ($parts.Count -ge 2) {
                         $filePath = $parts[0].Trim('"')
-                        $fileSize = [long]($parts[1].Trim())
+                        $sizeStr = $parts[1].Trim()
                         $fileDate = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "Unknown" }
 
-                        # Size filter
-                        if ($fileSize -ge $minBytes) {
-                            $results.Add([PSCustomObject]@{
-                                Path = $filePath
-                                Size = $fileSize
-                                SizeFormatted = Format-FileSize -Bytes $fileSize
-                                LastAccessed = $fileDate
-                                Extension = [System.IO.Path]::GetExtension($filePath)
-                            })
+                        # Parse size (forfiles returns bytes as number)
+                        $fileSize = 0
+                        if ([long]::TryParse($sizeStr, [ref]$fileSize)) {
+                            # Size filter
+                            if ($fileSize -ge $minBytes) {
+                                $results.Add([PSCustomObject]@{
+                                    Path = $filePath
+                                    Size = $fileSize
+                                    SizeFormatted = Format-FileSize -Bytes $fileSize
+                                    LastAccessed = $fileDate
+                                    Extension = [System.IO.Path]::GetExtension($filePath)
+                                })
 
-                            if ($ProgressCallback -and ($results.Count % 5 -eq 0)) {
-                                & $ProgressCallback -Message "Found $($results.Count) files so far..."
-                                [System.Windows.Forms.Application]::DoEvents()
+                                if ($ProgressCallback -and ($results.Count % 5 -eq 0)) {
+                                    & $ProgressCallback -Message "Found $($results.Count) large files so far..."
+                                    [System.Windows.Forms.Application]::DoEvents()
+                                }
                             }
                         }
                     }
@@ -479,6 +513,11 @@ function Find-UnusedFiles {
                 catch {
                     # Skip unparseable lines
                 }
+            }
+
+            if ($ProgressCallback) {
+                & $ProgressCallback -Message "Processed $lineCount lines from $searchPath, found $($results.Count) large files"
+                [System.Windows.Forms.Application]::DoEvents()
             }
         }
         catch {
