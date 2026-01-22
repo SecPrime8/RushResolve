@@ -59,7 +59,7 @@ $script:RunPing = {
     $LogBox.ScrollToCaret()
 }
 
-# Run traceroute
+# Run traceroute (using native tracert.exe - Test-NetConnection often blocked by policy)
 $script:RunTraceroute = {
     param([string]$Target, [System.Windows.Forms.TextBox]$LogBox)
 
@@ -69,28 +69,31 @@ $script:RunTraceroute = {
     [System.Windows.Forms.Application]::DoEvents()
 
     try {
-        $result = Test-NetConnection -ComputerName $Target -TraceRoute -ErrorAction Stop
+        # Use native tracert.exe - more reliable in restricted environments
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo.FileName = "tracert.exe"
+        $process.StartInfo.Arguments = "-d -w 1000 $Target"  # -d = no DNS lookup, -w = 1sec timeout
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        $process.StartInfo.CreateNoWindow = $true
 
-        # Validate TraceRoute is not null before iterating
-        if ($result.TraceRoute) {
-            $hops = @($result.TraceRoute)  # Force array conversion
-            if ($hops.Count -gt 0) {
-                $hop = 1
-                foreach ($ip in $hops) {
-                    $timestamp = Get-Date -Format "HH:mm:ss"
-                    $LogBox.AppendText("[$timestamp]   $hop  $ip`r`n")
-                    $LogBox.ScrollToCaret()
-                    [System.Windows.Forms.Application]::DoEvents()
-                    $hop++
-                }
+        $process.Start() | Out-Null
+
+        # Stream output line by line for real-time feedback
+        while (-not $process.StandardOutput.EndOfStream) {
+            $line = $process.StandardOutput.ReadLine()
+            if ($line -and $line.Trim()) {
                 $timestamp = Get-Date -Format "HH:mm:ss"
-                $LogBox.AppendText("`r`n[$timestamp] Trace complete.`r`n")
-            } else {
-                $LogBox.AppendText("[$timestamp] Target unreachable - no hops returned.`r`n")
+                $LogBox.AppendText("[$timestamp] $line`r`n")
+                $LogBox.ScrollToCaret()
+                [System.Windows.Forms.Application]::DoEvents()
             }
-        } else {
-            $LogBox.AppendText("[$timestamp] Trace route failed - target may be unreachable.`r`n")
         }
+
+        $process.WaitForExit()
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $LogBox.AppendText("[$timestamp] Trace complete.`r`n")
     }
     catch {
         $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")

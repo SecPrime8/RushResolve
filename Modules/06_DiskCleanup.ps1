@@ -396,12 +396,12 @@ function Clear-Category {
 function Find-UnusedFiles {
     <#
     .SYNOPSIS
-        Finds large files that haven't been accessed in specified days.
+        Finds large files that haven't been modified in specified days.
     .DESCRIPTION
-        Streams results incrementally to avoid loading entire filesystem into memory.
-        Filters early to minimize memory usage on large drives.
+        Uses native forfiles.exe for reliability in restricted environments.
+        Falls back to PowerShell if forfiles fails.
     .OUTPUTS
-        Array of file objects with Path, Size, LastAccessed properties.
+        Array of file objects with Path, Size, LastModified properties.
     #>
     param(
         [int]$MinSizeMB = 100,
@@ -411,81 +411,85 @@ function Find-UnusedFiles {
 
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
     $minBytes = $MinSizeMB * 1MB
-    $cutoffDate = (Get-Date).AddDays(-$DaysUnused)
-    $searchRoot = "C:\"
-    $processedFiles = 0
-    $matchedFiles = 0
-    $errorCount = 0
 
-    # Log scan parameters
     if ($ProgressCallback) {
-        & $ProgressCallback -Message "Starting scan: files >= ${MinSizeMB}MB, unused >= ${DaysUnused} days"
+        & $ProgressCallback -Message "Starting scan: files >= ${MinSizeMB}MB, not modified in ${DaysUnused}+ days"
+        & $ProgressCallback -Message "Using native forfiles.exe for reliability..."
     }
 
-    try {
-        # Stream files directly - filter early to avoid memory buildup
-        # Use -Directory $false to only get files (PowerShell 5.1 compatible)
-        Get-ChildItem -Path $searchRoot -File -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable +scanErrors | ForEach-Object {
-            $file = $_
-            $processedFiles++
+    # Search user-accessible locations (skip system folders)
+    $searchPaths = @(
+        "$env:USERPROFILE",
+        "C:\Users\Public"
+    )
 
-            # Update progress every 500 files for better UI responsiveness
-            if ($ProgressCallback -and ($processedFiles % 500 -eq 0)) {
-                & $ProgressCallback -Message "Scanned $processedFiles files, found $matchedFiles matches..."
-                [System.Windows.Forms.Application]::DoEvents()
+    # Also check for other user profiles if accessible
+    $usersDir = "C:\Users"
+    if (Test-Path $usersDir) {
+        Get-ChildItem -Path $usersDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -notin @("Public", "Default", "Default User", "All Users", $env:USERNAME)) {
+                $searchPaths += $_.FullName
             }
+        }
+    }
 
-            # Early filter: check if path is excluded FIRST (cheapest check)
-            $path = $file.FullName
-            foreach ($excludePath in $script:ExcludedPaths) {
-                if ($path -like "$excludePath*") {
-                    return  # Skip this file (continue in ForEach-Object)
+    foreach ($searchPath in $searchPaths) {
+        if (-not (Test-Path $searchPath)) { continue }
+
+        if ($ProgressCallback) {
+            & $ProgressCallback -Message "Scanning: $searchPath"
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        try {
+            # Use forfiles.exe - native Windows tool, works in restricted environments
+            # /D -N means files modified more than N days ago
+            $forfilesCmd = "forfiles /P `"$searchPath`" /S /D -$DaysUnused /C `"cmd /c echo @path,@fsize,@fdate`" 2>nul"
+
+            $output = cmd /c $forfilesCmd 2>&1
+
+            foreach ($line in $output) {
+                if (-not $line -or $line -match "^ERROR" -or $line -match "^No files found") { continue }
+
+                try {
+                    # Parse: "C:\path\file.ext",12345678,01/15/2025
+                    $parts = $line -split ','
+                    if ($parts.Count -ge 2) {
+                        $filePath = $parts[0].Trim('"')
+                        $fileSize = [long]($parts[1].Trim())
+                        $fileDate = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "Unknown" }
+
+                        # Size filter
+                        if ($fileSize -ge $minBytes) {
+                            $results.Add([PSCustomObject]@{
+                                Path = $filePath
+                                Size = $fileSize
+                                SizeFormatted = Format-FileSize -Bytes $fileSize
+                                LastAccessed = $fileDate
+                                Extension = [System.IO.Path]::GetExtension($filePath)
+                            })
+
+                            if ($ProgressCallback -and ($results.Count % 5 -eq 0)) {
+                                & $ProgressCallback -Message "Found $($results.Count) files so far..."
+                                [System.Windows.Forms.Application]::DoEvents()
+                            }
+                        }
+                    }
+                }
+                catch {
+                    # Skip unparseable lines
                 }
             }
-
-            # Early filter: size threshold (cheap check)
-            if ($file.Length -lt $minBytes) { return }
-
-            # Early filter: last access time
-            if ($file.LastAccessTime -gt $cutoffDate) { return }
-
-            # File matches all criteria - add to results
-            $matchedFiles++
-            $results.Add([PSCustomObject]@{
-                Path = $file.FullName
-                Size = $file.Length
-                SizeFormatted = Format-FileSize -Bytes $file.Length
-                LastAccessed = $file.LastAccessTime
-                Extension = $file.Extension
-            })
-
-            # Update UI with each match found (gives user feedback)
-            if ($ProgressCallback -and ($matchedFiles % 10 -eq 0)) {
-                & $ProgressCallback -Message "Scanned $processedFiles files, found $matchedFiles matches..."
-                [System.Windows.Forms.Application]::DoEvents()
-            }
         }
-
-        # Report any access errors encountered
-        if ($scanErrors -and $scanErrors.Count -gt 0) {
-            $errorCount = $scanErrors.Count
+        catch {
             if ($ProgressCallback) {
-                & $ProgressCallback -Message "Note: $errorCount folders could not be accessed (permission denied)"
+                & $ProgressCallback -Message "Warning: Could not scan $searchPath - $($_.Exception.Message)"
             }
         }
     }
-    catch {
-        # Log the error instead of silently swallowing it
-        $errorMsg = $_.Exception.Message
-        if ($ProgressCallback) {
-            & $ProgressCallback -Message "ERROR: Scan failed - $errorMsg"
-        }
-        Write-Warning "Find-UnusedFiles error: $errorMsg"
-    }
 
-    # Final progress update
     if ($ProgressCallback) {
-        & $ProgressCallback -Message "Scan complete: $processedFiles files scanned, $matchedFiles matches found"
+        & $ProgressCallback -Message "Scan complete: Found $($results.Count) large unused files"
     }
 
     # Sort by size descending
@@ -895,7 +899,7 @@ function Initialize-Module {
 
     # Unused files ListView
     $unusedListGroup = New-Object System.Windows.Forms.GroupBox
-    $unusedListGroup.Text = "Files Not Accessed in 90+ Days"
+    $unusedListGroup.Text = "Files Not Modified in 90+ Days"
     $unusedListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 
     $script:unusedListView = New-Object System.Windows.Forms.ListView
@@ -909,7 +913,7 @@ function Initialize-Module {
     $script:unusedListView.Columns.Add("", 30) | Out-Null  # Checkbox column
     $script:unusedListView.Columns.Add("Path", 400) | Out-Null
     $script:unusedListView.Columns.Add("Size", 100) | Out-Null
-    $script:unusedListView.Columns.Add("Last Accessed", 100) | Out-Null
+    $script:unusedListView.Columns.Add("Last Modified", 100) | Out-Null
     $script:unusedListView.Columns.Add("Type", 80) | Out-Null
 
     # Enable column sorting
@@ -924,7 +928,7 @@ function Initialize-Module {
             2 { # Size - sort by actual bytes
                 $sorted = $items | Sort-Object { $_.Tag.Size } -Descending
             }
-            3 { # Last Accessed
+            3 { # Last Modified
                 $sorted = $items | Sort-Object { $_.Tag.LastAccessed }
             }
             default {

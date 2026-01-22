@@ -2785,33 +2785,18 @@ function Initialize-Module {
         Close-SessionLog
     })
 
-    # Restore last tab (or default to System Info)
-    $tabFound = $false
-    if ($script:Settings.global.lastTab) {
-        foreach ($tab in $tabControl.TabPages) {
-            if ($tab.Text -eq $script:Settings.global.lastTab) {
-                $tabControl.SelectedTab = $tab
-                $tabFound = $true
-                break
-            }
+    # Always start on System Info (field techs move between machines constantly)
+    $systemInfoFound = $false
+    foreach ($tab in $tabControl.TabPages) {
+        if ($tab.Text -eq "System Info") {
+            $tabControl.SelectedTab = $tab
+            $systemInfoFound = $true
+            break
         }
     }
-
-    # Fallback: select System Info (first tab, since 01_SystemInfo sorts first)
-    if (-not $tabFound -and $tabControl.TabPages.Count -gt 0) {
-        # Try to find System Info by name first
-        $systemInfoFound = $false
-        foreach ($tab in $tabControl.TabPages) {
-            if ($tab.Text -eq "System Info") {
-                $tabControl.SelectedTab = $tab
-                $systemInfoFound = $true
-                break
-            }
-        }
-        # Ultimate fallback: select first tab (which should be System Info)
-        if (-not $systemInfoFound) {
-            $tabControl.SelectedIndex = 0
-        }
+    # Fallback: first tab (System Info sorts first due to 01_ prefix)
+    if (-not $systemInfoFound -and $tabControl.TabPages.Count -gt 0) {
+        $tabControl.SelectedIndex = 0
     }
 
     # Close splash and show main form
