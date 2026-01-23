@@ -446,6 +446,41 @@ function Initialize-Module {
     $listGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
     $listGroup.Padding = New-Object System.Windows.Forms.Padding(5)
 
+    # Container panel for filter bar + listview
+    $listContainer = New-Object System.Windows.Forms.Panel
+    $listContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    # Filter bar
+    $filterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $filterPanel.Dock = [System.Windows.Forms.DockStyle]::Top
+    $filterPanel.Height = 30
+    $filterPanel.Padding = New-Object System.Windows.Forms.Padding(0, 2, 0, 2)
+
+    $filterLabel = New-Object System.Windows.Forms.Label
+    $filterLabel.Text = "Filter:"
+    $filterLabel.AutoSize = $true
+    $filterLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
+    $filterPanel.Controls.Add($filterLabel)
+
+    $script:filterTextBox = New-Object System.Windows.Forms.TextBox
+    $script:filterTextBox.Width = 200
+    $script:filterTextBox.Height = 23
+    $filterPanel.Controls.Add($script:filterTextBox)
+
+    $clearFilterBtn = New-Object System.Windows.Forms.Button
+    $clearFilterBtn.Text = "X"
+    $clearFilterBtn.Width = 25
+    $clearFilterBtn.Height = 23
+    $clearFilterBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $filterPanel.Controls.Add($clearFilterBtn)
+
+    $filterCountLabel = New-Object System.Windows.Forms.Label
+    $filterCountLabel.Text = ""
+    $filterCountLabel.AutoSize = $true
+    $filterCountLabel.ForeColor = [System.Drawing.Color]::Gray
+    $filterCountLabel.Padding = New-Object System.Windows.Forms.Padding(10, 5, 0, 0)
+    $filterPanel.Controls.Add($filterCountLabel)
+
     $script:appListView = New-Object System.Windows.Forms.ListView
     $script:appListView.Dock = [System.Windows.Forms.DockStyle]::Fill
     $script:appListView.View = [System.Windows.Forms.View]::Details
@@ -460,7 +495,90 @@ function Initialize-Module {
     $script:appListView.Columns.Add("Type", 60) | Out-Null
     $script:appListView.Columns.Add("Config", 50) | Out-Null
 
-    $listGroup.Controls.Add($script:appListView)
+    # Track sort state
+    $script:sortColumn = 0
+    $script:sortAscending = $true
+
+    # Column click sorting
+    $script:appListView.Add_ColumnClick({
+        param($sender, $e)
+        $col = $e.Column
+
+        # Toggle sort direction if same column
+        if ($col -eq $script:sortColumn) {
+            $script:sortAscending = -not $script:sortAscending
+        } else {
+            $script:sortColumn = $col
+            $script:sortAscending = $true
+        }
+
+        # Sort items
+        $items = @($script:appListView.Items | ForEach-Object { $_ })
+        $sorted = $items | Sort-Object { $_.SubItems[$col].Text } -Descending:(-not $script:sortAscending)
+
+        $script:appListView.BeginUpdate()
+        $script:appListView.Items.Clear()
+        foreach ($item in $sorted) {
+            $script:appListView.Items.Add($item) | Out-Null
+        }
+        $script:appListView.EndUpdate()
+    })
+
+    # Helper: Apply filter to ListView from AppsList
+    $script:ApplyFilter = {
+        $filterText = $script:filterTextBox.Text.Trim().ToLower()
+        $script:appListView.BeginUpdate()
+        $script:appListView.Items.Clear()
+
+        $matchCount = 0
+        foreach ($app in $script:AppsList) {
+            # Match against name, version, or description
+            $match = $true
+            if ($filterText) {
+                $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
+                         ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
+                         ($app.Description -and $app.Description.ToLower().Contains($filterText))
+            }
+
+            if ($match) {
+                $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+                $item.SubItems.Add($app.Version) | Out-Null
+                $item.SubItems.Add($app.Description) | Out-Null
+                $typeText = $app.InstallerType.TrimStart('.').ToUpper()
+                $item.SubItems.Add($typeText) | Out-Null
+                $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+                $item.SubItems.Add($configText) | Out-Null
+                $item.Tag = $app
+                $script:appListView.Items.Add($item) | Out-Null
+                $matchCount++
+            }
+        }
+        $script:appListView.EndUpdate()
+
+        # Update count label
+        $totalCount = $script:AppsList.Count
+        if ($filterText) {
+            $filterCountLabel.Text = "Showing $matchCount of $totalCount"
+        } else {
+            $filterCountLabel.Text = ""
+        }
+    }
+
+    # Filter textbox - filter as user types
+    $script:filterTextBox.Add_TextChanged({
+        & $script:ApplyFilter
+    })
+
+    # Clear filter button
+    $clearFilterBtn.Add_Click({
+        $script:filterTextBox.Text = ""
+    })
+
+    # Add controls to container (order matters: filter first, then listview fills remaining)
+    $listContainer.Controls.Add($script:appListView)
+    $listContainer.Controls.Add($filterPanel)
+
+    $listGroup.Controls.Add($listContainer)
     $mainPanel.Controls.Add($listGroup, 0, 1)
     #endregion
 
@@ -573,17 +691,8 @@ function Initialize-Module {
         $script:AppsList = $apps
         Clear-AppStatus
 
-        foreach ($app in $apps) {
-            $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
-            $item.SubItems.Add($app.Version) | Out-Null
-            $item.SubItems.Add($app.Description) | Out-Null
-            $typeText = $app.InstallerType.TrimStart('.').ToUpper()
-            $item.SubItems.Add($typeText) | Out-Null
-            $configText = if ($app.HasConfig) { "Yes" } else { "No" }
-            $item.SubItems.Add($configText) | Out-Null
-            $item.Tag = $app
-            $script:appListView.Items.Add($item) | Out-Null
-        }
+        # Apply filter (will show all if filter is empty)
+        & $script:ApplyFilter
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:logBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
