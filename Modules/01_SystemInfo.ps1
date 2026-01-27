@@ -248,6 +248,21 @@ function Initialize-Module {
     $msInfoBtn.Add_Click({ Start-Process "msinfo32.exe" })
     $buttonPanel.Controls.Add($msInfoBtn)
 
+    # Memory Diagnostic
+    $memDiagBtn = New-Object System.Windows.Forms.Button
+    $memDiagBtn.Text = "Memory Test"
+    $memDiagBtn.Width = 85
+    $memDiagBtn.Height = 30
+    $memDiagBtn.Add_Click({
+        $msg = "Windows Memory Diagnostic will check your RAM for errors.`n`nThe computer must restart to run the test.`n`nSchedule memory test?"
+        $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Memory Diagnostic", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Write-SessionLog -Message "Memory Diagnostic scheduled via mdsched.exe" -Category "System Info"
+            Start-Process "mdsched.exe"
+        }
+    })
+    $buttonPanel.Controls.Add($memDiagBtn)
+
     # Installed Apps - opens ListView with all installed applications
     $installedAppsBtn = New-Object System.Windows.Forms.Button
     $installedAppsBtn.Text = "Installed Apps"
