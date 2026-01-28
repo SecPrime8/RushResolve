@@ -607,6 +607,7 @@ function Initialize-Module {
             }
         }
         $script:appListView.EndUpdate()
+        $script:appListView.Refresh()
 
         $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
         $script:installerLogBox.ScrollToCaret()
