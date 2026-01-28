@@ -261,7 +261,7 @@ function Initialize-Module {
         $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Memory Diagnostic", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
             Write-SessionLog -Message "Memory Diagnostic scheduled via mdsched.exe" -Category "System Info"
-            Start-Process "mdsched.exe"
+            Start-ElevatedProcess -FilePath "mdsched.exe" -OperationName "schedule Memory Diagnostic"
         }
     })
     $buttonPanel.Controls.Add($memDiagBtn)

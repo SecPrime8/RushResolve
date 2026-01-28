@@ -1354,7 +1354,7 @@ function Initialize-Module {
         $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Memory Diagnostic", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
             Write-SessionLog -Message "Memory Diagnostic scheduled via Diagnostics module" -Category "Diagnostics"
-            Start-Process "mdsched.exe"
+            Start-ElevatedProcess -FilePath "mdsched.exe" -OperationName "schedule Memory Diagnostic"
         }
     })
     $buttonPanel.Controls.Add($memTestBtn)
@@ -1452,7 +1452,7 @@ function Initialize-Module {
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Launching Disk Cleanup...`r`n")
         Write-SessionLog -Message "Launched Disk Cleanup via Diagnostics Quick Tools" -Category "Diagnostics"
-        Start-Process "cleanmgr.exe" -ArgumentList "/d", "C:"
+        Start-ElevatedProcess -FilePath "cleanmgr.exe" -ArgumentList "/d C:" -OperationName "open Disk Cleanup"
     })
     $quickToolsPanel.Controls.Add($cleanupBtn)
 
@@ -1465,7 +1465,7 @@ function Initialize-Module {
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Opening Event Viewer...`r`n")
         Write-SessionLog -Message "Opened Event Viewer via Diagnostics Quick Tools" -Category "Diagnostics"
-        Start-Process "eventvwr.msc"
+        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "eventvwr.msc" -OperationName "open Event Viewer"
     })
     $quickToolsPanel.Controls.Add($eventViewerBtn)
 
@@ -1478,7 +1478,7 @@ function Initialize-Module {
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Opening Device Manager...`r`n")
         Write-SessionLog -Message "Opened Device Manager via Diagnostics Quick Tools" -Category "Diagnostics"
-        Start-Process "devmgmt.msc"
+        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "devmgmt.msc" -OperationName "open Device Manager"
     })
     $quickToolsPanel.Controls.Add($devMgrBtn)
 
@@ -1491,7 +1491,7 @@ function Initialize-Module {
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Opening Reliability Monitor...`r`n")
         Write-SessionLog -Message "Opened Reliability Monitor via Diagnostics Quick Tools" -Category "Diagnostics"
-        Start-Process "perfmon.exe" -ArgumentList "/rel"
+        Start-ElevatedProcess -FilePath "perfmon.exe" -ArgumentList "/rel" -OperationName "open Reliability Monitor"
     })
     $quickToolsPanel.Controls.Add($reliabilityBtn)
 
