@@ -1115,7 +1115,7 @@ function Initialize-Module {
         }
 
         # Update ListView
-        Update-FindingsListView
+        & $script:UpdateFindingsListView
 
         Clear-AppStatus
         & $logCallback "Quick check complete. Found $($script:diagFindings.Count) findings."
@@ -1166,7 +1166,7 @@ function Initialize-Module {
         }
 
         # Update ListView
-        Update-FindingsListView
+        & $script:UpdateFindingsListView
 
         Clear-AppStatus
         & $logCallback "Full diagnostic complete. Found $($script:diagFindings.Count) findings."
@@ -1212,7 +1212,7 @@ function Initialize-Module {
         $script:diagFindings = @($script:diagFindings | Where-Object { $_.Category -ne "HP Drivers" })
         $script:diagFindings += $hpFindings
 
-        Update-FindingsListView
+        & $script:UpdateFindingsListView
         Clear-AppStatus
         & $logCallback "HP driver check complete."
     })
@@ -1364,7 +1364,7 @@ function Initialize-Module {
     $tab.Controls.Add($mainLayout)
 }
 
-function Update-FindingsListView {
+$script:UpdateFindingsListView = {
     $script:diagListView.BeginUpdate()
     $script:diagListView.Items.Clear()
 
