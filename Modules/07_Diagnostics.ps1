@@ -1136,7 +1136,7 @@ function Initialize-Module {
     # Quick Check button
     $quickCheckBtn = New-Object System.Windows.Forms.Button
     $quickCheckBtn.Text = "Quick Check"
-    $quickCheckBtn.Width = 100
+    $quickCheckBtn.AutoSize = $true
     $quickCheckBtn.Height = 30
     $quickCheckBtn.Add_Click({
         Start-AppActivity "Running quick diagnostic..."
@@ -1178,7 +1178,7 @@ function Initialize-Module {
     # Full Diagnostic button
     $fullDiagBtn = New-Object System.Windows.Forms.Button
     $fullDiagBtn.Text = "Full Diagnostic"
-    $fullDiagBtn.Width = 110
+    $fullDiagBtn.AutoSize = $true
     $fullDiagBtn.Height = 30
     $fullDiagBtn.Add_Click({
         Start-AppActivity "Running full diagnostic..."
@@ -1234,7 +1234,7 @@ function Initialize-Module {
     # We'll use a regular button with context menu instead for simpler implementation
     $hpBtn = New-Object System.Windows.Forms.Button
     $hpBtn.Text = "HP Drivers..."
-    $hpBtn.Width = 90
+    $hpBtn.AutoSize = $true
     $hpBtn.Height = 30
 
     $hpMenu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -1304,7 +1304,7 @@ function Initialize-Module {
     # Export button
     $exportBtn = New-Object System.Windows.Forms.Button
     $exportBtn.Text = "Export"
-    $exportBtn.Width = 70
+    $exportBtn.AutoSize = $true
     $exportBtn.Height = 30
     $exportBtn.Add_Click({
         if ($script:diagFindings.Count -eq 0) {
@@ -1324,7 +1324,7 @@ function Initialize-Module {
     # Clear button
     $clearBtn = New-Object System.Windows.Forms.Button
     $clearBtn.Text = "Clear"
-    $clearBtn.Width = 60
+    $clearBtn.AutoSize = $true
     $clearBtn.Height = 30
     $clearBtn.Add_Click({
         $script:diagFindings = @()
@@ -1342,7 +1342,7 @@ function Initialize-Module {
 
     $memTestBtn = New-Object System.Windows.Forms.Button
     $memTestBtn.Text = "Memory Test"
-    $memTestBtn.Width = 90
+    $memTestBtn.AutoSize = $true
     $memTestBtn.Height = 30
     $memTestBtn.Add_Click({
         $msg = "Windows Memory Diagnostic will check your RAM for errors.`n`nThe computer must restart to run the test.`n`nSchedule memory test?"
