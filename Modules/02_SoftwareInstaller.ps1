@@ -607,9 +607,15 @@ function Initialize-Module {
             }
         }
         $script:appListView.EndUpdate()
-        $script:appListView.Refresh()
+        $script:appListView.Invalidate()
+        $script:appListView.Update()
 
+        # Diagnostic: Check actual ListView state
         $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
+        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Items.Count = $($script:appListView.Items.Count)`r`n")
+        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Size = $($script:appListView.Width)x$($script:appListView.Height)`r`n")
+        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Visible = $($script:appListView.Visible)`r`n")
+        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Columns.Count = $($script:appListView.Columns.Count)`r`n")
         $script:installerLogBox.ScrollToCaret()
 
         # Update count label
