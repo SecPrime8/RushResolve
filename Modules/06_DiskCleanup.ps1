@@ -960,7 +960,7 @@ function Initialize-Module {
     $scanUnusedBtn = New-Object System.Windows.Forms.Button
     $scanUnusedBtn.Text = "Scan C: Drive"
     $scanUnusedBtn.Width = 120
-    $scanUnusedBtn.Height = 28
+    $scanUnusedBtn.Height = 30
     $scanUnusedBtn.Margin = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
     $scanUnusedBtn.Add_Click({
         Start-AppActivity "Scanning for unused files... This may take a while."
@@ -1233,7 +1233,7 @@ function Initialize-Module {
     $scanProfilesBtn = New-Object System.Windows.Forms.Button
     $scanProfilesBtn.Text = "Scan Profiles"
     $scanProfilesBtn.Width = 120
-    $scanProfilesBtn.Height = 28
+    $scanProfilesBtn.Height = 30
     $scanProfilesBtn.Margin = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
     $scanProfilesBtn.Add_Click({
         Start-AppActivity "Scanning user profiles..."

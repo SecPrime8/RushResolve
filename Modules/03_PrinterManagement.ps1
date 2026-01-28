@@ -345,32 +345,32 @@ function Initialize-Module {
     $refreshInstalledBtn = New-Object System.Windows.Forms.Button
     $refreshInstalledBtn.Text = "Refresh"
     $refreshInstalledBtn.Width = 65
-    $refreshInstalledBtn.Height = 28
+    $refreshInstalledBtn.Height = 30
     $installedBtnPanel.Controls.Add($refreshInstalledBtn)
 
     $setDefaultBtn = New-Object System.Windows.Forms.Button
     $setDefaultBtn.Text = "Set Default"
     $setDefaultBtn.Width = 90
-    $setDefaultBtn.Height = 28
+    $setDefaultBtn.Height = 30
     $installedBtnPanel.Controls.Add($setDefaultBtn)
 
     $removeBtn = New-Object System.Windows.Forms.Button
     $removeBtn.Text = "Remove"
     $removeBtn.Width = 75
-    $removeBtn.Height = 28
+    $removeBtn.Height = 30
     $removeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $installedBtnPanel.Controls.Add($removeBtn)
 
     $clearQueueBtn = New-Object System.Windows.Forms.Button
     $clearQueueBtn.Text = "Clear Queue"
     $clearQueueBtn.Width = 95
-    $clearQueueBtn.Height = 28
+    $clearQueueBtn.Height = 30
     $installedBtnPanel.Controls.Add($clearQueueBtn)
 
     $testPrintBtn = New-Object System.Windows.Forms.Button
     $testPrintBtn.Text = "Test Page"
     $testPrintBtn.Width = 75
-    $testPrintBtn.Height = 28
+    $testPrintBtn.Height = 30
     $installedBtnPanel.Controls.Add($testPrintBtn)
 
     $leftPanel.Controls.Add($installedBtnPanel, 0, 2)
@@ -425,7 +425,7 @@ function Initialize-Module {
     $script:browseServerBtn = New-Object System.Windows.Forms.Button
     $script:browseServerBtn.Text = "Browse"
     $script:browseServerBtn.Width = 65
-    $script:browseServerBtn.Height = 25
+    $script:browseServerBtn.Height = 30
     $serverInputPanel.Controls.Add($script:browseServerBtn)
 
     # Line break spacer (forces filter to second line)
@@ -441,9 +441,9 @@ function Initialize-Module {
     $filterLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
     $serverInputPanel.Controls.Add($filterLabel)
 
-    $script:filterTextBox = New-Object System.Windows.Forms.TextBox
-    $script:filterTextBox.Width = 200
-    $serverInputPanel.Controls.Add($script:filterTextBox)
+    $script:printerFilterBox = New-Object System.Windows.Forms.TextBox
+    $script:printerFilterBox.Width = 200
+    $serverInputPanel.Controls.Add($script:printerFilterBox)
 
     $rightPanel.Controls.Add($serverInputPanel, 0, 1)
 
@@ -468,14 +468,14 @@ function Initialize-Module {
     $addSelectedBtn = New-Object System.Windows.Forms.Button
     $addSelectedBtn.Text = "Add Selected"
     $addSelectedBtn.Width = 110
-    $addSelectedBtn.Height = 28
+    $addSelectedBtn.Height = 30
     $addSelectedBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
     $serverBtnPanel.Controls.Add($addSelectedBtn)
 
     $manualAddBtn = New-Object System.Windows.Forms.Button
     $manualAddBtn.Text = "Add by Path..."
     $manualAddBtn.Width = 95
-    $manualAddBtn.Height = 28
+    $manualAddBtn.Height = 30
     $serverBtnPanel.Controls.Add($manualAddBtn)
 
     # All users checkbox
@@ -526,7 +526,7 @@ function Initialize-Module {
 
         Start-AppActivity "Connecting to $server..."
         $script:ServerPrintersList = & $script:GetServerPrinters -Server $server
-        $filter = $script:filterTextBox.Text.Trim().ToLower()
+        $filter = $script:printerFilterBox.Text.Trim().ToLower()
 
         if ($script:ServerPrintersList.Count -eq 0) {
             Set-AppError "No printers found on $server - try Add by Path"
@@ -561,7 +561,7 @@ function Initialize-Module {
     $script:ApplyFilter = {
         $script:serverListView.BeginUpdate()
         $script:serverListView.Items.Clear()
-        $filter = $script:filterTextBox.Text.Trim().ToLower()
+        $filter = $script:printerFilterBox.Text.Trim().ToLower()
 
         foreach ($p in $script:ServerPrintersList) {
             # Apply filter - check if ANY field matches
@@ -613,7 +613,7 @@ function Initialize-Module {
     })
 
     # Filter text changed
-    $script:filterTextBox.Add_TextChanged({
+    $script:printerFilterBox.Add_TextChanged({
         & $script:ApplyFilter
     })
 

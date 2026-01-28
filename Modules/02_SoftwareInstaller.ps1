@@ -98,17 +98,41 @@ $script:ProcessFolder = {
 
 # Scan directory for installable applications (2 levels deep)
 $script:ScanForApps = {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [System.Windows.Forms.TextBox]$LogBox = $null
+    )
 
     $apps = @()
 
+    # Helper to log messages
+    $logMsg = {
+        param([string]$Msg)
+        if ($LogBox) {
+            $ts = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$ts]   $Msg`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+    }
+
     if (-not (Test-Path $Path)) {
+        & $logMsg "ERROR: Path does not exist or is not accessible"
         return $apps
     }
 
+    & $logMsg "Scanning root for standalone installers..."
+
     # Scan root level for standalone installers
-    $rootInstallers = Get-ChildItem -Path $Path -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in '.msi', '.exe' }
+    try {
+        $rootInstallers = Get-ChildItem -Path $Path -File -ErrorAction Stop |
+            Where-Object { $_.Extension -in '.msi', '.exe' }
+        & $logMsg "Found $($rootInstallers.Count) standalone installer(s) in root"
+    }
+    catch {
+        & $logMsg "ERROR reading root directory: $($_.Exception.Message)"
+        $rootInstallers = @()
+    }
 
     foreach ($installer in $rootInstallers) {
         # Determine args based on installer type
@@ -131,27 +155,48 @@ $script:ScanForApps = {
     }
 
     # Scan subfolders (level 1) for apps
-    $level1Folders = Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue
+    & $logMsg "Scanning level 1 subfolders..."
+    try {
+        $level1Folders = Get-ChildItem -Path $Path -Directory -ErrorAction Stop
+        & $logMsg "Found $($level1Folders.Count) subfolder(s) at level 1"
+    }
+    catch {
+        & $logMsg "ERROR reading level 1 folders: $($_.Exception.Message)"
+        $level1Folders = @()
+    }
 
     foreach ($folder in $level1Folders) {
+        & $logMsg "  Checking: $($folder.Name)"
         $result = & $script:ProcessFolder -Folder $folder
         if ($result) {
+            & $logMsg "    -> Found installer: $($result.Name)"
             $apps += $result
         }
         else {
             # No installer at level 1, check level 2 subfolders
-            $level2Folders = Get-ChildItem -Path $folder.FullName -Directory -ErrorAction SilentlyContinue
+            try {
+                $level2Folders = Get-ChildItem -Path $folder.FullName -Directory -ErrorAction Stop
+                if ($level2Folders.Count -gt 0) {
+                    & $logMsg "    -> No installer, checking $($level2Folders.Count) level 2 subfolder(s)"
+                }
+            }
+            catch {
+                & $logMsg "    -> ERROR reading level 2: $($_.Exception.Message)"
+                $level2Folders = @()
+            }
             foreach ($subfolder in $level2Folders) {
                 $subResult = & $script:ProcessFolder -Folder $subfolder
                 if ($subResult) {
                     # Prefix name with parent folder for clarity
                     $subResult.Name = "$($folder.Name) / $($subResult.Name)"
+                    & $logMsg "      -> Found installer: $($subResult.Name)"
                     $apps += $subResult
                 }
             }
         }
     }
 
+    & $logMsg "Scan complete. Total apps found: $($apps.Count)"
     return $apps
 }
 
@@ -428,13 +473,13 @@ function Initialize-Module {
     $browseBtn = New-Object System.Windows.Forms.Button
     $browseBtn.Text = "Browse..."
     $browseBtn.Width = 75
-    $browseBtn.Height = 25
+    $browseBtn.Height = 30
     $sourcePanel.Controls.Add($browseBtn)
 
     $refreshBtn = New-Object System.Windows.Forms.Button
     $refreshBtn.Text = "Refresh"
     $refreshBtn.Width = 70
-    $refreshBtn.Height = 25
+    $refreshBtn.Height = 30
     $sourcePanel.Controls.Add($refreshBtn)
 
     $mainPanel.Controls.Add($sourcePanel, 0, 0)
@@ -462,10 +507,10 @@ function Initialize-Module {
     $filterLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
     $filterPanel.Controls.Add($filterLabel)
 
-    $script:filterTextBox = New-Object System.Windows.Forms.TextBox
-    $script:filterTextBox.Width = 200
-    $script:filterTextBox.Height = 23
-    $filterPanel.Controls.Add($script:filterTextBox)
+    $script:installerFilterBox = New-Object System.Windows.Forms.TextBox
+    $script:installerFilterBox.Width = 200
+    $script:installerFilterBox.Height = 23
+    $filterPanel.Controls.Add($script:installerFilterBox)
 
     $clearFilterBtn = New-Object System.Windows.Forms.Button
     $clearFilterBtn.Text = "X"
@@ -526,7 +571,7 @@ function Initialize-Module {
 
     # Helper: Apply filter to ListView from AppsList
     $script:ApplyFilter = {
-        $filterText = $script:filterTextBox.Text.Trim().ToLower()
+        $filterText = $script:installerFilterBox.Text.Trim().ToLower()
         $script:appListView.BeginUpdate()
         $script:appListView.Items.Clear()
 
@@ -565,13 +610,13 @@ function Initialize-Module {
     }
 
     # Filter textbox - filter as user types
-    $script:filterTextBox.Add_TextChanged({
+    $script:installerFilterBox.Add_TextChanged({
         & $script:ApplyFilter
     })
 
     # Clear filter button
     $clearFilterBtn.Add_Click({
-        $script:filterTextBox.Text = ""
+        $script:installerFilterBox.Text = ""
     })
 
     # Add controls to container (order matters: filter first, then listview fills remaining)
@@ -646,16 +691,16 @@ function Initialize-Module {
     $logGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
     $logGroup.Padding = New-Object System.Windows.Forms.Padding(5)
 
-    $script:logBox = New-Object System.Windows.Forms.TextBox
-    $script:logBox.Multiline = $true
-    $script:logBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:logBox.ReadOnly = $true
-    $script:logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:logBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    $script:logBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
-    $script:logBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:installerLogBox = New-Object System.Windows.Forms.TextBox
+    $script:installerLogBox.Multiline = $true
+    $script:installerLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:installerLogBox.ReadOnly = $true
+    $script:installerLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:installerLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:installerLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:installerLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
 
-    $logGroup.Controls.Add($script:logBox)
+    $logGroup.Controls.Add($script:installerLogBox)
     $mainPanel.Controls.Add($logGroup, 0, 3)
     #endregion
 
@@ -677,17 +722,17 @@ function Initialize-Module {
 
         if (-not $path -or -not (Test-Path $path)) {
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:logBox.AppendText("[$timestamp] Invalid path: $path`r`n")
-            $script:logBox.AppendText("[$timestamp] Enter a valid local or network path (e.g., C:\Installers or \\server\share)`r`n")
+            $script:installerLogBox.AppendText("[$timestamp] Invalid path: $path`r`n")
+            $script:installerLogBox.AppendText("[$timestamp] Enter a valid local or network path (e.g., C:\Installers or \\server\share)`r`n")
             Set-AppError "Invalid path: $path"
             return
         }
 
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:logBox.AppendText("[$timestamp] Scanning: $path`r`n")
+        $script:installerLogBox.AppendText("[$timestamp] Scanning: $path`r`n")
         Start-AppActivity "Scanning for installers..."
 
-        $apps = & $script:ScanForApps -Path $path
+        $apps = & $script:ScanForApps -Path $path -LogBox $script:installerLogBox
         $script:AppsList = $apps
         Clear-AppStatus
 
@@ -695,8 +740,8 @@ function Initialize-Module {
         & $script:ApplyFilter
 
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:logBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
-        $script:logBox.ScrollToCaret()
+        $script:installerLogBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
+        $script:installerLogBox.ScrollToCaret()
     }
 
     # Browse button - no closure, use $script: vars directly
@@ -784,13 +829,13 @@ function Initialize-Module {
             foreach ($app in $selectedItems) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Installing $current of $total`: $($app.Name)"
-                & $script:InstallApp -App $app -Silent $silent -LogBox $script:logBox
+                & $script:InstallApp -App $app -Silent $silent -LogBox $script:installerLogBox
             }
 
             Clear-AppStatus
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:logBox.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
-            $script:logBox.ScrollToCaret()
+            $script:installerLogBox.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
+            $script:installerLogBox.ScrollToCaret()
         }
     })
 
@@ -865,13 +910,13 @@ Requires Elevation: $elevText
 
     # Initial log message
     $timestamp = Get-Date -Format "HH:mm:ss"
-    $script:logBox.AppendText("[$timestamp] Software Installer ready.`r`n")
+    $script:installerLogBox.AppendText("[$timestamp] Software Installer ready.`r`n")
 
     # Auto-load if path exists
     if ($script:currentPath -and (Test-Path $script:currentPath -ErrorAction SilentlyContinue)) {
         & $script:RefreshAppList
     }
     else {
-        $script:logBox.AppendText("[$timestamp] Enter a path or Browse, then click Refresh.`r`n")
+        $script:installerLogBox.AppendText("[$timestamp] Enter a path or Browse, then click Refresh.`r`n")
     }
 }

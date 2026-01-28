@@ -494,7 +494,7 @@ function Initialize-Module {
     $refreshStatusBtn = New-Object System.Windows.Forms.Button
     $refreshStatusBtn.Text = "Refresh"
     $refreshStatusBtn.Width = 80
-    $refreshStatusBtn.Height = 25
+    $refreshStatusBtn.Height = 30
     $statusPanel.Controls.Add($refreshStatusBtn)
 
     $statusGroup.Controls.Add($statusPanel)
@@ -513,20 +513,20 @@ function Initialize-Module {
     $testTrustBtn = New-Object System.Windows.Forms.Button
     $testTrustBtn.Text = "Test Trust"
     $testTrustBtn.Width = 85
-    $testTrustBtn.Height = 28
+    $testTrustBtn.Height = 30
     $trustPanel.Controls.Add($testTrustBtn)
 
     $repairTrustBtn = New-Object System.Windows.Forms.Button
     $repairTrustBtn.Text = "Repair Trust *"
     $repairTrustBtn.Width = 100
-    $repairTrustBtn.Height = 28
+    $repairTrustBtn.Height = 30
     $repairTrustBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
     $trustPanel.Controls.Add($repairTrustBtn)
 
     $gpupdateBtn = New-Object System.Windows.Forms.Button
     $gpupdateBtn.Text = "GPUpdate"
     $gpupdateBtn.Width = 85
-    $gpupdateBtn.Height = 28
+    $gpupdateBtn.Height = 30
     $trustPanel.Controls.Add($gpupdateBtn)
 
     $script:syncCheckbox = New-Object System.Windows.Forms.CheckBox
@@ -559,7 +559,7 @@ function Initialize-Module {
     $testConnBtn = New-Object System.Windows.Forms.Button
     $testConnBtn.Text = "Test Connectivity"
     $testConnBtn.Width = 140
-    $testConnBtn.Height = 28
+    $testConnBtn.Height = 30
     $testConnBtn.Location = New-Object System.Drawing.Point(10, 40)
     $dcPanel.Controls.Add($testConnBtn)
 
@@ -579,14 +579,14 @@ function Initialize-Module {
     $leaveBtn = New-Object System.Windows.Forms.Button
     $leaveBtn.Text = "Leave Domain *"
     $leaveBtn.Width = 115
-    $leaveBtn.Height = 28
+    $leaveBtn.Height = 30
     $leaveBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $rejoinPanel.Controls.Add($leaveBtn)
 
     $rejoinBtn = New-Object System.Windows.Forms.Button
     $rejoinBtn.Text = "Rejoin Domain *"
     $rejoinBtn.Width = 115
-    $rejoinBtn.Height = 28
+    $rejoinBtn.Height = 30
     $rejoinBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
     $rejoinPanel.Controls.Add($rejoinBtn)
 
@@ -610,14 +610,14 @@ function Initialize-Module {
     $logPanel = New-Object System.Windows.Forms.Panel
     $logPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
 
-    $script:logBox = New-Object System.Windows.Forms.TextBox
-    $script:logBox.Multiline = $true
-    $script:logBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:logBox.ReadOnly = $true
-    $script:logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:logBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    $script:logBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
-    $script:logBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:domainLogBox = New-Object System.Windows.Forms.TextBox
+    $script:domainLogBox.Multiline = $true
+    $script:domainLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:domainLogBox.ReadOnly = $true
+    $script:domainLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:domainLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:domainLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:domainLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
 
     $logBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $logBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
@@ -633,7 +633,7 @@ function Initialize-Module {
     $clearLogBtn.Width = 55
     $logBtnPanel.Controls.Add($clearLogBtn)
 
-    $logPanel.Controls.Add($script:logBox)
+    $logPanel.Controls.Add($script:domainLogBox)
     $logPanel.Controls.Add($logBtnPanel)
     $logGroup.Controls.Add($logPanel)
     $mainPanel.Controls.Add($logGroup, 0, 4)
@@ -647,7 +647,7 @@ function Initialize-Module {
     $trustValueLabelRef = $script:trustValueLabel
     $dcValueLabelRef = $script:dcValueLabel
     $dcInfoLabelRef = $script:dcInfoLabel
-    $logBoxRef = $script:logBox
+    $logBoxRef = $script:domainLogBox
     $syncCheckboxRef = $script:syncCheckbox
     $restartCheckboxRef = $script:restartCheckbox
 
@@ -869,7 +869,7 @@ function Initialize-Module {
 
     # Log module load
     $timestamp = Get-Date -Format "HH:mm:ss"
-    $script:logBox.AppendText("[$timestamp] Domain Tools module loaded`r`n")
+    $script:domainLogBox.AppendText("[$timestamp] Domain Tools module loaded`r`n")
 }
 
 #endregion

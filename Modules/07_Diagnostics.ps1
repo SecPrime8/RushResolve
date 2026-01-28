@@ -1376,7 +1376,7 @@ function Initialize-Module {
     $chkdskBtn = New-Object System.Windows.Forms.Button
     $chkdskBtn.Text = "Check Disk"
     $chkdskBtn.AutoSize = $true
-    $chkdskBtn.Height = 26
+    $chkdskBtn.Height = 30
     $chkdskBtn.Add_Click({
         $msg = "Check Disk (chkdsk /f /r) requires a reboot for the system drive.`n`nSchedule disk check on next restart?"
         $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Schedule Check Disk", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
@@ -1404,7 +1404,7 @@ function Initialize-Module {
     $sfcBtn = New-Object System.Windows.Forms.Button
     $sfcBtn.Text = "SFC Scan"
     $sfcBtn.AutoSize = $true
-    $sfcBtn.Height = 26
+    $sfcBtn.Height = 30
     $sfcBtn.Add_Click({
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Launching System File Checker (sfc /scannow)...`r`n")
@@ -1422,7 +1422,7 @@ function Initialize-Module {
     $dismBtn = New-Object System.Windows.Forms.Button
     $dismBtn.Text = "DISM Repair"
     $dismBtn.AutoSize = $true
-    $dismBtn.Height = 26
+    $dismBtn.Height = 30
     $dismBtn.Add_Click({
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth (this may take 10-20 minutes)...`r`n")
@@ -1447,7 +1447,7 @@ function Initialize-Module {
     $cleanupBtn = New-Object System.Windows.Forms.Button
     $cleanupBtn.Text = "Disk Cleanup"
     $cleanupBtn.AutoSize = $true
-    $cleanupBtn.Height = 26
+    $cleanupBtn.Height = 30
     $cleanupBtn.Add_Click({
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Launching Disk Cleanup...`r`n")
@@ -1460,7 +1460,7 @@ function Initialize-Module {
     $eventViewerBtn = New-Object System.Windows.Forms.Button
     $eventViewerBtn.Text = "Event Viewer"
     $eventViewerBtn.AutoSize = $true
-    $eventViewerBtn.Height = 26
+    $eventViewerBtn.Height = 30
     $eventViewerBtn.Add_Click({
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Opening Event Viewer...`r`n")
@@ -1473,7 +1473,7 @@ function Initialize-Module {
     $devMgrBtn = New-Object System.Windows.Forms.Button
     $devMgrBtn.Text = "Device Manager"
     $devMgrBtn.AutoSize = $true
-    $devMgrBtn.Height = 26
+    $devMgrBtn.Height = 30
     $devMgrBtn.Add_Click({
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Opening Device Manager...`r`n")
@@ -1486,7 +1486,7 @@ function Initialize-Module {
     $reliabilityBtn = New-Object System.Windows.Forms.Button
     $reliabilityBtn.Text = "Reliability"
     $reliabilityBtn.AutoSize = $true
-    $reliabilityBtn.Height = 26
+    $reliabilityBtn.Height = 30
     $reliabilityBtn.Add_Click({
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Opening Reliability Monitor...`r`n")
