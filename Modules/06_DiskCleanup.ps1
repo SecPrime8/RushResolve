@@ -1,16 +1,17 @@
 <#
 .SYNOPSIS
-    Disk Cleanup Module - Clean temp files and find large unused files
+    Disk Cleanup Module - Clean temp files, find large unused files, and remove old user profiles
 .DESCRIPTION
-    Two-tab module:
+    Three-tab module:
     1. Safe Cleanup - Automated cleanup of known-safe temp/cache locations
     2. Unused Files - Find and delete large files not accessed in 90+ days
+    3. Profile Cleanup - Remove old user profiles (30/90 day threshold) via WMI
 .NOTES
-    Requires elevation for system folder cleanup
+    Requires elevation for system folder cleanup and profile deletion
 #>
 
 $script:ModuleName = "Disk Cleanup"
-$script:ModuleDescription = "Clean temp files and find large unused files on C: drive"
+$script:ModuleDescription = "Clean temp files, find large unused files, and remove old user profiles"
 
 #region Cleanup Category Definitions
 $script:CleanupCategories = @(
@@ -510,6 +511,87 @@ $script:FindUnusedFiles = {
     return $results | Sort-Object -Property Size -Descending
 }
 
+$script:GetOldProfiles = {
+    param(
+        [int]$DaysOld = 90
+    )
+
+    $cutoffDate = (Get-Date).AddDays(-$DaysOld)
+    $currentUser = $env:USERNAME
+    $results = @()
+
+    try {
+        $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
+            -not $_.Special -and
+            $_.LocalPath -notmatch '\\(Default|Public|Default User|All Users)$' -and
+            $_.LocalPath -notmatch "\\$currentUser$" -and
+            $_.Loaded -eq $false -and
+            $_.LastUseTime -and
+            $_.LastUseTime -lt $cutoffDate
+        }
+
+        foreach ($profile in $profiles) {
+            $username = Split-Path $profile.LocalPath -Leaf
+            $profileSize = 0
+
+            if (Test-Path $profile.LocalPath) {
+                try {
+                    $profileSize = (Get-ChildItem -Path $profile.LocalPath -Recurse -Force -ErrorAction SilentlyContinue |
+                        Measure-Object -Property Length -Sum).Sum
+                    if (-not $profileSize) { $profileSize = 0 }
+                } catch { }
+            }
+
+            $results += [PSCustomObject]@{
+                Username = $username
+                Path = $profile.LocalPath
+                SID = $profile.SID
+                LastUsed = $profile.LastUseTime
+                Size = $profileSize
+                SizeFormatted = & $script:FormatFileSize -Bytes $profileSize
+                DaysOld = [math]::Floor(((Get-Date) - $profile.LastUseTime).TotalDays)
+            }
+        }
+    }
+    catch {
+        Write-Warning "Failed to query profiles: $($_.Exception.Message)"
+    }
+
+    return $results | Sort-Object -Property LastUsed
+}
+
+$script:RemoveUserProfile = {
+    param(
+        [string]$SID,
+        [PSCredential]$Credential
+    )
+
+    $result = @{
+        Success = $false
+        Error = $null
+    }
+
+    try {
+        $deleteResult = Invoke-Elevated -ScriptBlock {
+            param($sid)
+            $profile = Get-CimInstance -ClassName Win32_UserProfile | Where-Object { $_.SID -eq $sid }
+            if ($profile) {
+                Remove-CimInstance -InputObject $profile -ErrorAction Stop
+                return $true
+            }
+            return $false
+        } -ArgumentList $SID -Credential $Credential -OperationName "delete user profile"
+
+        $result.Success = $deleteResult.Success
+        $result.Error = $deleteResult.Error
+    }
+    catch {
+        $result.Error = $_.Exception.Message
+    }
+
+    return $result
+}
+
 #endregion
 
 #region UI Helper Functions
@@ -538,6 +620,18 @@ $script:UpdateUnusedFilesTotal = {
     }
 
     $script:unusedTotalLabel.Text = "Selected: $count files ($(& $script:FormatFileSize -Bytes $totalBytes))"
+}
+
+$script:UpdateProfileTotal = {
+    $totalBytes = 0
+    $count = 0
+
+    foreach ($item in $script:profileListView.CheckedItems) {
+        $totalBytes += $item.Tag.Size
+        $count++
+    }
+
+    $script:profileTotalLabel.Text = "Selected: $count profiles ($(& $script:FormatFileSize -Bytes $totalBytes))"
 }
 
 #endregion
@@ -1095,6 +1189,258 @@ function Initialize-Module {
 
     $unusedTab.Controls.Add($unusedLayout)
     $script:subTabControl.TabPages.Add($unusedTab)
+    #endregion
+
+    #region Profile Cleanup Tab
+    $profileTab = New-Object System.Windows.Forms.TabPage
+    $profileTab.Text = "Profile Cleanup"
+    $profileTab.Padding = New-Object System.Windows.Forms.Padding(10)
+
+    $profileLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $profileLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $profileLayout.RowCount = 4
+    $profileLayout.ColumnCount = 1
+    $profileLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null
+    $profileLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
+    $profileLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null
+    $profileLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
+
+    # Options panel with radio buttons
+    $profileOptionsPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $profileOptionsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $profileOptionsPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+    $profileOptionsPanel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+
+    $ageLabel = New-Object System.Windows.Forms.Label
+    $ageLabel.Text = "Show profiles not used in:"
+    $ageLabel.AutoSize = $true
+    $ageLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 10, 0)
+    $profileOptionsPanel.Controls.Add($ageLabel)
+
+    $script:profile30Radio = New-Object System.Windows.Forms.RadioButton
+    $script:profile30Radio.Text = "30+ days"
+    $script:profile30Radio.AutoSize = $true
+    $script:profile30Radio.Padding = New-Object System.Windows.Forms.Padding(0, 3, 15, 0)
+    $profileOptionsPanel.Controls.Add($script:profile30Radio)
+
+    $script:profile90Radio = New-Object System.Windows.Forms.RadioButton
+    $script:profile90Radio.Text = "90+ days"
+    $script:profile90Radio.AutoSize = $true
+    $script:profile90Radio.Checked = $true  # Default
+    $script:profile90Radio.Padding = New-Object System.Windows.Forms.Padding(0, 3, 15, 0)
+    $profileOptionsPanel.Controls.Add($script:profile90Radio)
+
+    $scanProfilesBtn = New-Object System.Windows.Forms.Button
+    $scanProfilesBtn.Text = "Scan Profiles"
+    $scanProfilesBtn.Width = 120
+    $scanProfilesBtn.Height = 28
+    $scanProfilesBtn.Margin = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
+    $scanProfilesBtn.Add_Click({
+        Start-AppActivity "Scanning user profiles..."
+        $script:profileLogBox.Clear()
+        $script:profileListView.Items.Clear()
+
+        $threshold = if ($script:profile30Radio.Checked) { 30 } else { 90 }
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:profileLogBox.AppendText("[$timestamp] Scanning for user profiles not used in $threshold+ days...`r`n")
+        $script:profileLogBox.AppendText("[$timestamp] Excluding: current user ($env:USERNAME), system profiles, loaded profiles`r`n")
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $profiles = & $script:GetOldProfiles -DaysOld $threshold
+
+        # Populate ListView
+        $script:profileListView.BeginUpdate()
+        foreach ($profile in $profiles) {
+            $item = New-Object System.Windows.Forms.ListViewItem("")
+            $item.SubItems.Add($profile.Username) | Out-Null
+            $item.SubItems.Add($profile.SizeFormatted) | Out-Null
+            $item.SubItems.Add($profile.LastUsed.ToString("yyyy-MM-dd")) | Out-Null
+            $item.SubItems.Add($profile.DaysOld.ToString()) | Out-Null
+            $item.Tag = $profile
+            $script:profileListView.Items.Add($item) | Out-Null
+        }
+        $script:profileListView.EndUpdate()
+
+        Clear-AppStatus
+        & $script:UpdateProfileTotal
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:profileLogBox.AppendText("[$timestamp] Found $($profiles.Count) old user profiles.`r`n")
+
+        if ($profiles.Count -eq 0) {
+            $script:profileLogBox.AppendText("[$timestamp] No profiles matching criteria found.`r`n")
+        }
+    })
+    $profileOptionsPanel.Controls.Add($scanProfilesBtn)
+
+    $profileLayout.Controls.Add($profileOptionsPanel, 0, 0)
+
+    # Profile ListView
+    $profileListGroup = New-Object System.Windows.Forms.GroupBox
+    $profileListGroup.Text = "Old User Profiles"
+    $profileListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $script:profileListView = New-Object System.Windows.Forms.ListView
+    $script:profileListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:profileListView.View = [System.Windows.Forms.View]::Details
+    $script:profileListView.CheckBoxes = $true
+    $script:profileListView.FullRowSelect = $true
+    $script:profileListView.GridLines = $true
+    $script:profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    $script:profileListView.Columns.Add("", 30) | Out-Null  # Checkbox column
+    $script:profileListView.Columns.Add("Username", 200) | Out-Null
+    $script:profileListView.Columns.Add("Size", 100) | Out-Null
+    $script:profileListView.Columns.Add("Last Used", 120) | Out-Null
+    $script:profileListView.Columns.Add("Days Old", 80) | Out-Null
+
+    $script:profileListView.Add_ItemChecked({
+        & $script:UpdateProfileTotal
+    })
+
+    $profileListGroup.Controls.Add($script:profileListView)
+    $profileLayout.Controls.Add($profileListGroup, 0, 1)
+
+    # Buttons and total
+    $profileButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $profileButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $profileButtonPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+    $profileButtonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 5)
+
+    $script:profileTotalLabel = New-Object System.Windows.Forms.Label
+    $script:profileTotalLabel.Text = "Selected: 0 profiles (0 B)"
+    $script:profileTotalLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:profileTotalLabel.AutoSize = $true
+    $script:profileTotalLabel.Padding = New-Object System.Windows.Forms.Padding(0, 7, 20, 0)
+    $profileButtonPanel.Controls.Add($script:profileTotalLabel)
+
+    $deleteProfilesBtn = New-Object System.Windows.Forms.Button
+    $deleteProfilesBtn.Text = "Delete Selected"
+    $deleteProfilesBtn.Width = 120
+    $deleteProfilesBtn.Height = 30
+    $deleteProfilesBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
+    $deleteProfilesBtn.Add_Click({
+        $checkedItems = @($script:profileListView.CheckedItems)
+
+        if ($checkedItems.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "No profiles selected.",
+                "Nothing to Delete",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        # Build confirmation message with usernames
+        $totalSize = 0
+        $usernames = @()
+        foreach ($item in $checkedItems) {
+            $totalSize += $item.Tag.Size
+            $usernames += $item.Tag.Username
+        }
+
+        $confirmMsg = "Permanently delete $($checkedItems.Count) user profile(s) ($(& $script:FormatFileSize -Bytes $totalSize))?`n`n"
+        $confirmMsg += "Profiles to delete:`n"
+        foreach ($u in $usernames) {
+            $confirmMsg += "  - $u`n"
+        }
+        $confirmMsg += "`nThis will remove:`n  - User folders from C:\Users`n  - Registry entries`n  - Profile settings`n`nThis cannot be undone!"
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            $confirmMsg,
+            "Confirm Profile Deletion",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        # Get elevated credentials
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials to delete user profiles"
+        if (-not $cred) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Profile deletion cancelled - admin credentials required.",
+                "Cancelled",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        Start-AppActivity "Deleting user profiles..."
+        $deleted = 0
+        $freed = 0
+        $errors = @()
+
+        foreach ($item in $checkedItems) {
+            $profile = $item.Tag
+
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:profileLogBox.AppendText("[$timestamp] Deleting profile: $($profile.Username)...`r`n")
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $result = & $script:RemoveUserProfile -SID $profile.SID -Credential $cred
+
+            if ($result.Success) {
+                $deleted++
+                $freed += $profile.Size
+                $script:profileListView.Items.Remove($item)
+
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:profileLogBox.AppendText("[$timestamp]   SUCCESS: Deleted $($profile.Username)`r`n")
+            }
+            else {
+                $errors += $profile.Username
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:profileLogBox.AppendText("[$timestamp]   ERROR: $($profile.Username) - $($result.Error)`r`n")
+            }
+        }
+
+        Clear-AppStatus
+        & $script:UpdateProfileTotal
+
+        Write-SessionLog -Message "Profile Cleanup: Deleted $deleted profiles, freed $(& $script:FormatFileSize -Bytes $freed)" -Category "Disk Cleanup"
+
+        $msg = "Deleted $deleted profile(s), freed $(& $script:FormatFileSize -Bytes $freed)"
+        if ($errors.Count -gt 0) {
+            $msg += "`n`n$($errors.Count) profile(s) could not be deleted:`n"
+            foreach ($e in $errors) {
+                $msg += "  - $e`n"
+            }
+        }
+
+        [System.Windows.Forms.MessageBox]::Show(
+            $msg,
+            "Profile Deletion Complete",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    })
+    $profileButtonPanel.Controls.Add($deleteProfilesBtn)
+
+    $profileLayout.Controls.Add($profileButtonPanel, 0, 2)
+
+    # Log output
+    $profileLogGroup = New-Object System.Windows.Forms.GroupBox
+    $profileLogGroup.Text = "Log"
+    $profileLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $script:profileLogBox = New-Object System.Windows.Forms.TextBox
+    $script:profileLogBox.Multiline = $true
+    $script:profileLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:profileLogBox.ReadOnly = $true
+    $script:profileLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:profileLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:profileLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:profileLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $profileLogGroup.Controls.Add($script:profileLogBox)
+    $profileLayout.Controls.Add($profileLogGroup, 0, 3)
+
+    $profileTab.Controls.Add($profileLayout)
+    $script:subTabControl.TabPages.Add($profileTab)
     #endregion
 
     $mainPanel.Controls.Add($script:subTabControl, 0, 0)
