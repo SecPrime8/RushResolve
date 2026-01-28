@@ -474,12 +474,12 @@ function Initialize-Module {
     $clearFilterBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $filterPanel.Controls.Add($clearFilterBtn)
 
-    $filterCountLabel = New-Object System.Windows.Forms.Label
-    $filterCountLabel.Text = ""
-    $filterCountLabel.AutoSize = $true
-    $filterCountLabel.ForeColor = [System.Drawing.Color]::Gray
-    $filterCountLabel.Padding = New-Object System.Windows.Forms.Padding(10, 5, 0, 0)
-    $filterPanel.Controls.Add($filterCountLabel)
+    $script:filterCountLabel = New-Object System.Windows.Forms.Label
+    $script:filterCountLabel.Text = ""
+    $script:filterCountLabel.AutoSize = $true
+    $script:filterCountLabel.ForeColor = [System.Drawing.Color]::Gray
+    $script:filterCountLabel.Padding = New-Object System.Windows.Forms.Padding(10, 5, 0, 0)
+    $filterPanel.Controls.Add($script:filterCountLabel)
 
     $script:appListView = New-Object System.Windows.Forms.ListView
     $script:appListView.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -558,9 +558,9 @@ function Initialize-Module {
         # Update count label
         $totalCount = $script:AppsList.Count
         if ($filterText) {
-            $filterCountLabel.Text = "Showing $matchCount of $totalCount"
+            $script:filterCountLabel.Text = "Showing $matchCount of $totalCount"
         } else {
-            $filterCountLabel.Text = ""
+            $script:filterCountLabel.Text = ""
         }
     }
 
