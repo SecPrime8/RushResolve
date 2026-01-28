@@ -782,18 +782,39 @@ function Initialize-Module {
         $script:AppsList = $apps
         Clear-AppStatus
 
-        # Apply filter (will show all if filter is empty)
+        # Populate ListView directly (inlined to avoid scriptblock issues)
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:installerLogBox.AppendText("[$timestamp] DEBUG: About to call ApplyFilter, scriptblock exists: $($null -ne $script:ApplyFilter)`r`n")
-        try {
-            & $script:ApplyFilter
-            $script:installerLogBox.AppendText("[$timestamp] DEBUG: ApplyFilter completed`r`n")
-        }
-        catch {
-            $script:installerLogBox.AppendText("[$timestamp] ERROR in ApplyFilter: $($_.Exception.Message)`r`n")
-        }
+        $script:installerLogBox.AppendText("[$timestamp] Populating ListView...`r`n")
 
-        $timestamp = Get-Date -Format "HH:mm:ss"
+        $filterText = $script:installerFilterBox.Text.Trim().ToLower()
+        $script:appListView.BeginUpdate()
+        $script:appListView.Items.Clear()
+
+        $matchCount = 0
+        foreach ($app in $script:AppsList) {
+            $match = $true
+            if ($filterText) {
+                $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
+                         ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
+                         ($app.Description -and $app.Description.ToLower().Contains($filterText))
+            }
+            if ($match) {
+                $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+                $item.SubItems.Add($app.Version) | Out-Null
+                $item.SubItems.Add($app.Description) | Out-Null
+                $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
+                $item.SubItems.Add($typeText) | Out-Null
+                $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+                $item.SubItems.Add($configText) | Out-Null
+                $item.Tag = $app
+                $script:appListView.Items.Add($item) | Out-Null
+                $matchCount++
+            }
+        }
+        $script:appListView.EndUpdate()
+        $script:appListView.Refresh()
+
+        $script:installerLogBox.AppendText("[$timestamp] Added $matchCount items to ListView`r`n")
         $script:installerLogBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
         $script:installerLogBox.ScrollToCaret()
     }
