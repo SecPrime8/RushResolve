@@ -1570,6 +1570,7 @@ function Invoke-Elevated {
         }
     }
 
+    $tempArgsFile = $null
     try {
         # Create temp folder if it doesn't exist
         $tempFolder = "C:\Temp\RushResolve_Install"
@@ -1578,13 +1579,27 @@ function Invoke-Elevated {
         }
         $tempScript = Join-Path $tempFolder "RushResolve_$(Get-Random).ps1"
 
-        # Build the script content
+        # Serialize arguments to temp file (secure - no string injection possible)
+        $tempArgsFile = Join-Path $tempFolder "RushResolve_Args_$(Get-Random).xml"
+        if ($ArgumentList) {
+            $ArgumentList | Export-Clixml -Path $tempArgsFile -Force
+        }
+
+        # Build the script content - arguments loaded from serialized file
         $scriptContent = @"
 `$ErrorActionPreference = 'Stop'
 try {
-    `$output = & {
+    # Import arguments from secure serialized file
+    `$args = @()
+    if (Test-Path '$tempArgsFile') {
+        `$args = @(Import-Clixml -Path '$tempArgsFile')
+    }
+
+    # Define and execute the scriptblock with arguments
+    `$sb = {
         $($ScriptBlock.ToString())
-    } $($ArgumentList -join ' ')
+    }
+    `$output = & `$sb @args
     `$output | ConvertTo-Json -Depth 10 | Write-Output
     exit 0
 }
@@ -1650,9 +1665,12 @@ catch {
         $result.Error = $_.Exception.Message
     }
     finally {
-        # Clean up temp file
+        # Clean up temp files
         if ($tempScript -and (Test-Path $tempScript)) {
             Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+        }
+        if ($tempArgsFile -and (Test-Path $tempArgsFile)) {
+            Remove-Item $tempArgsFile -Force -ErrorAction SilentlyContinue
         }
     }
 
