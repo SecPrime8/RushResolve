@@ -576,82 +576,82 @@ function Initialize-Module {
         $script:appListView.EndUpdate()
     })
 
+    # Re-entrancy guard for ApplyFilter
+    $script:ApplyFilterRunning = $false
+
     # Helper: Apply filter to ListView from AppsList
     $script:ApplyFilter = {
-        # Write to file to prove scriptblock executes
-        $debugFile = "C:\Temp\ApplyFilter_debug.txt"
-        $ts = Get-Date -Format "HH:mm:ss.fff"
-        Add-Content -Path $debugFile -Value "[$ts] ApplyFilter ENTERED - AppsList=$($script:AppsList.Count)"
+        # Prevent re-entrancy
+        if ($script:ApplyFilterRunning) {
+            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$(Get-Date -Format 'HH:mm:ss.fff')] BLOCKED - already running"
+            return
+        }
+        $script:ApplyFilterRunning = $true
 
         try {
-            $filterText = $script:installerFilterBox.Text.Trim().ToLower()
-        }
-        catch {
-            Add-Content -Path $debugFile -Value "[$ts] filterBox access failed: $($_.Exception.Message)"
-            $filterText = ""
-        }
+            $ts = Get-Date -Format "HH:mm:ss.fff"
+            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$ts] ApplyFilter ENTERED - AppsList=$($script:AppsList.Count)"
 
-        Add-Content -Path $debugFile -Value "[$ts] filterText='$filterText'"
-        $script:appListView.BeginUpdate()
-        $script:appListView.Items.Clear()
-
-        $script:installerLogBox.AppendText("[$ts] ApplyFilter: AppsList has $($script:AppsList.Count) items, filter='$filterText'`r`n")
-
-        $matchCount = 0
-        foreach ($app in $script:AppsList) {
             try {
-                # Match against name, version, or description
-                $match = $true
-                if ($filterText) {
-                    $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
-                             ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
-                             ($app.Description -and $app.Description.ToLower().Contains($filterText))
-                }
-
-                if ($match) {
-                    $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
-                    $item.SubItems.Add($app.Version) | Out-Null
-                    $item.SubItems.Add($app.Description) | Out-Null
-                    $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
-                    $item.SubItems.Add($typeText) | Out-Null
-                    $configText = if ($app.HasConfig) { "Yes" } else { "No" }
-                    $item.SubItems.Add($configText) | Out-Null
-                    $item.Tag = $app
-                    $script:appListView.Items.Add($item) | Out-Null
-                    $matchCount++
-                }
+                $filterText = $script:installerFilterBox.Text.Trim().ToLower()
             }
             catch {
-                $script:installerLogBox.AppendText("[$ts] ERROR adding app '$($app.Name)': $($_.Exception.Message)`r`n")
+                Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$ts] filterBox access failed: $($_.Exception.Message)"
+                $filterText = ""
+            }
+
+            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$ts] filterText='$filterText'"
+            $script:appListView.BeginUpdate()
+            $script:appListView.Items.Clear()
+
+            $script:installerLogBox.AppendText("[$ts] ApplyFilter: AppsList has $($script:AppsList.Count) items, filter='$filterText'`r`n")
+
+            $matchCount = 0
+            foreach ($app in $script:AppsList) {
+                try {
+                    $match = $true
+                    if ($filterText) {
+                        $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
+                                 ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
+                                 ($app.Description -and $app.Description.ToLower().Contains($filterText))
+                    }
+
+                    if ($match) {
+                        $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+                        $item.SubItems.Add($app.Version) | Out-Null
+                        $item.SubItems.Add($app.Description) | Out-Null
+                        $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
+                        $item.SubItems.Add($typeText) | Out-Null
+                        $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+                        $item.SubItems.Add($configText) | Out-Null
+                        $item.Tag = $app
+                        $script:appListView.Items.Add($item) | Out-Null
+                        $matchCount++
+                    }
+                }
+                catch {
+                    $script:installerLogBox.AppendText("[$ts] ERROR adding app '$($app.Name)': $($_.Exception.Message)`r`n")
+                }
+            }
+            $script:appListView.EndUpdate()
+            $script:appListView.Invalidate()
+            $script:appListView.Update()
+            $script:appListView.Refresh()
+
+            $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
+            $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Items.Count = $($script:appListView.Items.Count)`r`n")
+            $script:installerLogBox.ScrollToCaret()
+
+            $totalCount = $script:AppsList.Count
+            if ($filterText) {
+                $script:filterCountLabel.Text = "Showing $matchCount of $totalCount"
+            } else {
+                $script:filterCountLabel.Text = ""
             }
         }
-        $script:appListView.EndUpdate()
-        $script:appListView.Invalidate()
-        $script:appListView.Update()
-        $script:appListView.Refresh()
-
-        # Diagnostic: Check actual ListView state
-        $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
-        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Items.Count = $($script:appListView.Items.Count)`r`n")
-        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Size = $($script:appListView.Width)x$($script:appListView.Height)`r`n")
-        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Visible = $($script:appListView.Visible)`r`n")
-        $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Columns.Count = $($script:appListView.Columns.Count)`r`n")
-
-        # Check first item details
-        if ($script:appListView.Items.Count -gt 0) {
-            $firstItem = $script:appListView.Items[0]
-            $script:installerLogBox.AppendText("[$ts] DEBUG: First item text = '$($firstItem.Text)'`r`n")
-            $bounds = $firstItem.Bounds
-            $script:installerLogBox.AppendText("[$ts] DEBUG: First item bounds = X:$($bounds.X) Y:$($bounds.Y) W:$($bounds.Width) H:$($bounds.Height)`r`n")
-        }
-        $script:installerLogBox.ScrollToCaret()
-
-        # Update count label
-        $totalCount = $script:AppsList.Count
-        if ($filterText) {
-            $script:filterCountLabel.Text = "Showing $matchCount of $totalCount"
-        } else {
-            $script:filterCountLabel.Text = ""
+        finally {
+            $script:ApplyFilterRunning = $false
+            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$(Get-Date -Format 'HH:mm:ss.fff')] ApplyFilter EXITED"
         }
     }
 
