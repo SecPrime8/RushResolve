@@ -15,52 +15,33 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# QRCoder Library - reliable QR code generation
-# Downloads QRCoder.dll on first use and caches it locally
-$script:QRCoderPath = Join-Path $PSScriptRoot "lib\QRCoder.dll"
+# QRCoder Library - bundled for QR code generation
+# DLL is included in Lib folder - no runtime download needed
+$script:QRCoderPath = Join-Path $PSScriptRoot "Lib\QRCoder.dll"
+$script:QRCoderExpectedHash = "561ACFE4B1A14C837B189FB9FC5C6D3E82440184BBDE61912DE723D62D6368B3"
 $script:QRGeneratorAvailable = $false
 
 function Initialize-QRCoder {
     # Check if already loaded
     if ($script:QRGeneratorAvailable) { return $true }
 
-    # Create lib directory if needed
-    $libDir = Join-Path $PSScriptRoot "lib"
-    if (-not (Test-Path $libDir)) {
-        New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+    # Verify DLL exists
+    if (-not (Test-Path $script:QRCoderPath)) {
+        Write-Warning "QRCoder.dll not found at: $script:QRCoderPath"
+        return $false
     }
 
-    # Download QRCoder if not present
-    if (-not (Test-Path $script:QRCoderPath)) {
-        try {
-            $nugetUrl = "https://www.nuget.org/api/v2/package/QRCoder/1.4.3"
-            $tempZip = Join-Path $env:TEMP "qrcoder.zip"
-            $tempExtract = Join-Path $env:TEMP "qrcoder_extract"
-
-            # Download NuGet package
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $nugetUrl -OutFile $tempZip -UseBasicParsing
-
-            # Extract
-            if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
-            Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
-
-            # Copy the .NET Framework 4.0 DLL (compatible with PowerShell 5.1)
-            $dllSource = Join-Path $tempExtract "lib\net40\QRCoder.dll"
-            if (-not (Test-Path $dllSource)) {
-                # Try netstandard2.0 as fallback
-                $dllSource = Join-Path $tempExtract "lib\netstandard2.0\QRCoder.dll"
-            }
-            Copy-Item $dllSource $script:QRCoderPath -Force
-
-            # Cleanup
-            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-            Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        catch {
-            Write-Warning "Failed to download QRCoder: $_"
+    # Verify integrity (SHA256 hash)
+    try {
+        $actualHash = (Get-FileHash -Path $script:QRCoderPath -Algorithm SHA256).Hash
+        if ($actualHash -ne $script:QRCoderExpectedHash) {
+            Write-Warning "QRCoder.dll integrity check failed - hash mismatch"
             return $false
         }
+    }
+    catch {
+        Write-Warning "Failed to verify QRCoder.dll integrity: $_"
+        return $false
     }
 
     # Load the assembly

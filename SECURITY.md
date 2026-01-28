@@ -18,6 +18,18 @@
 
 ---
 
+## Bundled Dependencies
+
+### QRCoder.dll v1.4.3
+
+- **Source:** NuGet (https://www.nuget.org/packages/QRCoder/1.4.3)
+- **Target Framework:** .NET Framework 4.0
+- **SHA256:** `561ACFE4B1A14C837B189FB9FC5C6D3E82440184BBDE61912DE723D62D6368B3`
+- **Location:** `Lib/QRCoder.dll`
+- **Verification:** Hash checked at runtime before loading
+
+---
+
 ## Security Architecture
 
 ### Credential Protection
