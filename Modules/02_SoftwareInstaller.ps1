@@ -490,6 +490,7 @@ function Initialize-Module {
     $listGroup.Text = "Available Applications"
     $listGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
     $listGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+    $listGroup.MinimumSize = New-Object System.Drawing.Size(400, 150)
 
     # Container for filter bar + listview (TableLayoutPanel for explicit sizing)
     $listContainer = New-Object System.Windows.Forms.TableLayoutPanel
@@ -499,6 +500,7 @@ function Initialize-Module {
     $listContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
     $listContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
     $listContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $listContainer.MinimumSize = New-Object System.Drawing.Size(380, 100)
 
     # Filter bar
     $filterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
