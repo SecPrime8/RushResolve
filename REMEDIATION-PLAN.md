@@ -135,6 +135,37 @@
 
 ---
 
+## Feature: Diagnostics Quick Tools
+
+### Add Quick Tools Panel to Diagnostics Tab
+
+**Rationale:** When diagnostics show recommendations like "run chkdsk /f /r", techs should be able to launch the tool directly from RushResolve instead of opening separate windows.
+
+**Plan:**
+- Add a "Quick Tools" GroupBox to Diagnostics tab (below or beside existing buttons)
+- Include buttons for common diagnostic/repair tools that match recommendations:
+
+| Tool | Command | Elevation | Notes |
+|------|---------|-----------|-------|
+| Check Disk | `chkdsk C: /f /r` | Yes | Schedule on reboot for system drive |
+| Memory Diagnostic | `mdsched.exe` | Yes | Schedules test on next reboot |
+| System File Checker | `sfc /scannow` | Yes | Opens in elevated console |
+| DISM Repair | `DISM /Online /Cleanup-Image /RestoreHealth` | Yes | Opens in elevated console |
+| Disk Cleanup | `cleanmgr /d C:` | No | Standard cleanup wizard |
+| Event Viewer | `eventvwr.msc` | No | For detailed log review |
+| Device Manager | `devmgmt.msc` | No | For driver issues |
+| Reliability Monitor | `perfmon /rel` | No | Crash/failure history |
+
+**Behavior:**
+- Elevated tools use existing `Invoke-Elevated` (after it's fixed)
+- Console-based tools (sfc, DISM) open in visible PowerShell window so tech can watch progress
+- chkdsk on system drive shows dialog explaining reboot requirement
+- Log tool launches to session log
+
+**Files:** Modules/07_Diagnostics.ps1
+
+---
+
 ## Configuration Enhancement
 
 ### HPIA Path Configuration
@@ -152,18 +183,26 @@
 
 ## Implementation Order
 
+**Phase 1: Critical Security**
 1. **Bundle QRCoder DLL** - Eliminates critical download vulnerability
-2. **Fix Invoke-Elevated** - Eliminates command injection
+2. **Fix Invoke-Elevated** - Eliminates command injection (needed before Quick Tools)
 3. **Fix printer path case** - Quick fix, high impact
+
+**Phase 2: Features & Config**
 4. **HPIA path update** - Quick config change
-5. **Module Warn mode** - Security flow fix
-6. **Clipboard timer** - Resource leak + UX fix
-7. **Replace forfiles** - Eliminates injection vector
-8. **LLDP validation** - Input sanitization
-9. **Event log limits** - Performance/robustness
-10. **QR null check** - Error handling
-11. **UTC timestamps** - Edge case fix
-12. **Domain rejoin warning** - UX improvement
+5. **Diagnostics Quick Tools** - Add tool launcher buttons (depends on #2)
+
+**Phase 3: High Severity Security**
+6. **Module Warn mode** - Security flow fix
+7. **Clipboard timer** - Resource leak + UX fix
+8. **Replace forfiles** - Eliminates injection vector
+9. **LLDP validation** - Input sanitization
+
+**Phase 4: Polish**
+10. **Event log limits** - Performance/robustness
+11. **QR null check** - Error handling
+12. **UTC timestamps** - Edge case fix
+13. **Domain rejoin warning** - UX improvement
 
 ---
 
