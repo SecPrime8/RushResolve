@@ -539,7 +539,7 @@ function Find-UnusedFiles {
 
 #region UI Helper Functions
 
-function Update-SafeCleanupTotal {
+$script:UpdateSafeCleanupTotal = {
     $totalBytes = 0
     $totalFiles = 0
 
@@ -553,7 +553,7 @@ function Update-SafeCleanupTotal {
     $script:safeTotalLabel.Text = "Selected: $totalFiles files ($(Format-FileSize -Bytes $totalBytes))"
 }
 
-function Update-UnusedFilesTotal {
+$script:UpdateUnusedFilesTotal = {
     $totalBytes = 0
     $count = 0
 
@@ -645,7 +645,7 @@ function Initialize-Module {
 
     # Update total when checkboxes change
     $script:categoryListView.Add_ItemChecked({
-        Update-SafeCleanupTotal
+        & $script:UpdateSafeCleanupTotal
     })
 
     $listGroup.Controls.Add($script:categoryListView)
@@ -702,7 +702,7 @@ function Initialize-Module {
             }
         }
 
-        Update-SafeCleanupTotal
+        & $script:UpdateSafeCleanupTotal
         Clear-AppStatus
 
         $timestamp = Get-Date -Format "HH:mm:ss"
@@ -927,7 +927,7 @@ function Initialize-Module {
         $script:unusedListView.EndUpdate()
 
         Clear-AppStatus
-        Update-UnusedFilesTotal
+        & $script:UpdateUnusedFilesTotal
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:unusedLogBox.AppendText("[$timestamp] Found $($files.Count) files matching criteria.`r`n")
@@ -984,7 +984,7 @@ function Initialize-Module {
     })
 
     $script:unusedListView.Add_ItemChecked({
-        Update-UnusedFilesTotal
+        & $script:UpdateUnusedFilesTotal
     })
 
     $unusedListGroup.Controls.Add($script:unusedListView)
@@ -1081,7 +1081,7 @@ function Initialize-Module {
         }
 
         Clear-AppStatus
-        Update-UnusedFilesTotal
+        & $script:UpdateUnusedFilesTotal
 
         Write-SessionLog -Message "Unused Files: Deleted $deleted files, freed $(Format-FileSize -Bytes $freed)" -Category "Disk Cleanup"
 
