@@ -149,13 +149,7 @@ $script:FormatFileSize = {
     }
 }
 
-function Get-CategorySize {
-    <#
-    .SYNOPSIS
-        Calculates total size and file count for a cleanup category.
-    .OUTPUTS
-        Hashtable with TotalBytes, FileCount, AccessDenied boolean, DebugInfo string.
-    #>
+$script:GetCategorySize = {
     param([hashtable]$Category)
 
     $result = @{
@@ -266,13 +260,7 @@ function Get-CategorySize {
     return $result
 }
 
-function Clear-Category {
-    <#
-    .SYNOPSIS
-        Deletes files in a cleanup category.
-    .OUTPUTS
-        Hashtable with DeletedCount, FreedBytes, Errors array.
-    #>
+$script:ClearCategory = {
     param(
         [hashtable]$Category,
         [PSCredential]$Credential
@@ -389,16 +377,7 @@ function Clear-Category {
     return $result
 }
 
-function Find-UnusedFiles {
-    <#
-    .SYNOPSIS
-        Finds large files that haven't been modified in specified days.
-    .DESCRIPTION
-        Uses native forfiles.exe for reliability in restricted environments.
-        Falls back to PowerShell if forfiles fails.
-    .OUTPUTS
-        Array of file objects with Path, Size, LastModified properties.
-    #>
+$script:FindUnusedFiles = {
     param(
         [int]$MinSizeMB = 100,
         [int]$DaysUnused = 90,
@@ -674,7 +653,7 @@ function Initialize-Module {
             $script:safeLogBox.AppendText("[$timestamp] Scanning $($cat.Name)...`r`n")
             [System.Windows.Forms.Application]::DoEvents()
 
-            $sizeInfo = Get-CategorySize -Category $cat
+            $sizeInfo = & $script:GetCategorySize -Category $cat
 
             # Show debug info from the scan
             if ($sizeInfo.DebugInfo) {
@@ -784,7 +763,7 @@ function Initialize-Module {
             $script:safeLogBox.AppendText("[$timestamp] Cleaning $($cat.Name)...`r`n")
             [System.Windows.Forms.Application]::DoEvents()
 
-            $cleanResult = Clear-Category -Category $cat -Credential $cred
+            $cleanResult = & $script:ClearCategory -Category $cat -Credential $cred
 
             $totalFreed += $cleanResult.FreedBytes
             $totalDeleted += $cleanResult.DeletedCount
@@ -907,7 +886,7 @@ function Initialize-Module {
             $script:unusedLogBox.ScrollToCaret()
         }
 
-        $files = Find-UnusedFiles -MinSizeMB $script:minSizeBox.Value -DaysUnused $script:daysBox.Value -ProgressCallback $progressCallback
+        $files = & $script:FindUnusedFiles -MinSizeMB $script:minSizeBox.Value -DaysUnused $script:daysBox.Value -ProgressCallback $progressCallback
 
         # Populate ListView with results
         $script:unusedListView.BeginUpdate()
