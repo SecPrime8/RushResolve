@@ -491,14 +491,18 @@ function Initialize-Module {
     $listGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
     $listGroup.Padding = New-Object System.Windows.Forms.Padding(5)
 
-    # Container panel for filter bar + listview
-    $listContainer = New-Object System.Windows.Forms.Panel
+    # Container for filter bar + listview (TableLayoutPanel for explicit sizing)
+    $listContainer = New-Object System.Windows.Forms.TableLayoutPanel
     $listContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $listContainer.RowCount = 2
+    $listContainer.ColumnCount = 1
+    $listContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
+    $listContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $listContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
 
     # Filter bar
     $filterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $filterPanel.Dock = [System.Windows.Forms.DockStyle]::Top
-    $filterPanel.Height = 30
+    $filterPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $filterPanel.Padding = New-Object System.Windows.Forms.Padding(0, 2, 0, 2)
 
     $filterLabel = New-Object System.Windows.Forms.Label
@@ -637,9 +641,9 @@ function Initialize-Module {
         $script:installerFilterBox.Text = ""
     })
 
-    # Add controls to container (order matters: filter first, then listview fills remaining)
-    $listContainer.Controls.Add($script:appListView)
-    $listContainer.Controls.Add($filterPanel)
+    # Add controls to TableLayoutPanel (row 0 = filter, row 1 = listview)
+    $listContainer.Controls.Add($filterPanel, 0, 0)
+    $listContainer.Controls.Add($script:appListView, 0, 1)
 
     $listGroup.Controls.Add($listContainer)
     $mainPanel.Controls.Add($listGroup, 0, 1)
