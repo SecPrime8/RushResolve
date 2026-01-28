@@ -79,6 +79,42 @@
 
 ---
 
+## Security Improvements (2026-01-27 Brainstorm)
+
+| Priority | Improvement | Effort | Impact |
+|----------|-------------|--------|--------|
+| 1 | **Bundle QRCoder.dll** - eliminate runtime NuGet download | Low | High |
+| 2 | **SHA256 verify software packages** before install | Medium | High |
+| 3 | **Authenticode code signing** for distribution | Medium | High |
+| 4 | **LAPS integration** - JIT credential fetch, eliminate stored creds | High | Very High |
+
+---
+
+## Efficiency Improvements (2026-01-27 Brainstorm)
+
+| Priority | Improvement | Effort | Impact |
+|----------|-------------|--------|--------|
+| 1 | **Quick Actions panel** - 5 big buttons for common tasks | Low | Medium |
+| 2 | **Software favorites** - save frequently-used installer paths | Low | Medium |
+| 3 | **Export diagnostics to HTML** - shareable reports | Low | Medium |
+| 4 | **Searchable printer dropdown** with fuzzy matching | Medium | Medium |
+
+---
+
+## UX Ideas (2026-01-27 Brainstorm)
+
+- **Operation rollback** - undo last printer add, restore DNS settings
+- **Pre-flight confirmation** for destructive ops (rejoin domain, disk cleanup)
+- **Smart routing** - symptom input suggests relevant module
+- **Centralized logging** to network share or SIEM
+- **Configurable credential timeout** (5/10/15 min options)
+- **Offline mode** with sync queue for network-unavailable scenarios
+- **Tech stats** - tickets resolved, time saved (optional gamification)
+
+**Asymmetric move:** ServiceNow integration is highest leverage (~50 hrs/week total savings when combined with existing app benefits)
+
+---
+
 ## Notes
 
 - Modules should follow existing patterns in `docs/module-template.md`
