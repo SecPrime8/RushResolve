@@ -99,6 +99,58 @@ $script:NewFinding = {
 
 #endregion
 
+#region UI Helper Functions
+
+$script:UpdateFindingsListView = {
+    $script:diagListView.BeginUpdate()
+    $script:diagListView.Items.Clear()
+
+    # Sort by severity (Critical first, then Warning, Info, OK)
+    $severityOrder = @{ "Critical" = 0; "Warning" = 1; "Info" = 2; "OK" = 3 }
+    $sorted = $script:diagFindings | Sort-Object { $severityOrder[$_.Severity] }
+
+    foreach ($finding in $sorted) {
+        # Status icon character
+        $icon = switch ($finding.Severity) {
+            "Critical" { [char]0x25CF }  # Filled circle
+            "Warning"  { [char]0x25CF }
+            "Info"     { [char]0x25CF }
+            "OK"       { [char]0x25CB }  # Empty circle
+            default    { "" }
+        }
+
+        $item = New-Object System.Windows.Forms.ListViewItem($icon.ToString())
+        $item.SubItems.Add($finding.Category) | Out-Null
+        $item.SubItems.Add($finding.Issue) | Out-Null
+        $item.SubItems.Add($finding.Severity) | Out-Null
+        $item.SubItems.Add($finding.Recommendation) | Out-Null
+        $item.Tag = $finding
+
+        # Color based on severity
+        $item.ForeColor = switch ($finding.Severity) {
+            "Critical" { [System.Drawing.Color]::FromArgb(180, 40, 40) }
+            "Warning"  { [System.Drawing.Color]::FromArgb(180, 120, 0) }
+            "Info"     { [System.Drawing.Color]::FromArgb(0, 100, 180) }
+            "OK"       { [System.Drawing.Color]::FromArgb(40, 140, 40) }
+            default    { [System.Drawing.Color]::Black }
+        }
+
+        $script:diagListView.Items.Add($item) | Out-Null
+    }
+
+    $script:diagListView.EndUpdate()
+
+    # Update group text with summary
+    $critical = @($script:diagFindings | Where-Object { $_.Severity -eq "Critical" }).Count
+    $warning = @($script:diagFindings | Where-Object { $_.Severity -eq "Warning" }).Count
+    $findingsGroup = $script:diagListView.Parent
+    if ($findingsGroup -is [System.Windows.Forms.GroupBox]) {
+        $findingsGroup.Text = "Findings ($($script:diagFindings.Count) items - $critical critical, $warning warning)"
+    }
+}
+
+#endregion
+
 #region Data Collectors
 
 $script:CollectEventErrors = {
@@ -1362,54 +1414,6 @@ function Initialize-Module {
     #endregion
 
     $tab.Controls.Add($mainLayout)
-}
-
-$script:UpdateFindingsListView = {
-    $script:diagListView.BeginUpdate()
-    $script:diagListView.Items.Clear()
-
-    # Sort by severity (Critical first, then Warning, Info, OK)
-    $severityOrder = @{ "Critical" = 0; "Warning" = 1; "Info" = 2; "OK" = 3 }
-    $sorted = $script:diagFindings | Sort-Object { $severityOrder[$_.Severity] }
-
-    foreach ($finding in $sorted) {
-        # Status icon character
-        $icon = switch ($finding.Severity) {
-            "Critical" { [char]0x25CF }  # Filled circle
-            "Warning"  { [char]0x25CF }
-            "Info"     { [char]0x25CF }
-            "OK"       { [char]0x25CB }  # Empty circle
-            default    { "" }
-        }
-
-        $item = New-Object System.Windows.Forms.ListViewItem($icon.ToString())
-        $item.SubItems.Add($finding.Category) | Out-Null
-        $item.SubItems.Add($finding.Issue) | Out-Null
-        $item.SubItems.Add($finding.Severity) | Out-Null
-        $item.SubItems.Add($finding.Recommendation) | Out-Null
-        $item.Tag = $finding
-
-        # Color based on severity
-        $item.ForeColor = switch ($finding.Severity) {
-            "Critical" { [System.Drawing.Color]::FromArgb(180, 40, 40) }
-            "Warning"  { [System.Drawing.Color]::FromArgb(180, 120, 0) }
-            "Info"     { [System.Drawing.Color]::FromArgb(0, 100, 180) }
-            "OK"       { [System.Drawing.Color]::FromArgb(40, 140, 40) }
-            default    { [System.Drawing.Color]::Black }
-        }
-
-        $script:diagListView.Items.Add($item) | Out-Null
-    }
-
-    $script:diagListView.EndUpdate()
-
-    # Update group text with summary
-    $critical = @($script:diagFindings | Where-Object { $_.Severity -eq "Critical" }).Count
-    $warning = @($script:diagFindings | Where-Object { $_.Severity -eq "Warning" }).Count
-    $findingsGroup = $script:diagListView.Parent
-    if ($findingsGroup -is [System.Windows.Forms.GroupBox]) {
-        $findingsGroup.Text = "Findings ($($script:diagFindings.Count) items - $critical critical, $warning warning)"
-    }
 }
 
 #endregion
