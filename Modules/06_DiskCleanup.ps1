@@ -132,11 +132,7 @@ $script:ExcludedPaths = @(
 
 #region Helper Functions
 
-function Format-FileSize {
-    <#
-    .SYNOPSIS
-        Formats bytes into human-readable size string.
-    #>
+$script:FormatFileSize = {
     param([long]$Bytes)
 
     if ($Bytes -ge 1GB) {
@@ -238,7 +234,7 @@ function Get-CategorySize {
                 $bytesInPath += $file.Length
             }
 
-            $debugLines += "    Found: $filesFoundInPath files ($(Format-FileSize -Bytes $bytesInPath))"
+            $debugLines += "    Found: $filesFoundInPath files ($(& $script:FormatFileSize -Bytes $bytesInPath))"
         }
         catch [System.UnauthorizedAccessException] {
             $result.AccessDenied = $true
@@ -497,7 +493,7 @@ function Find-UnusedFiles {
                                 $results.Add([PSCustomObject]@{
                                     Path = $filePath
                                     Size = $fileSize
-                                    SizeFormatted = Format-FileSize -Bytes $fileSize
+                                    SizeFormatted = & $script:FormatFileSize -Bytes $fileSize
                                     LastAccessed = $fileDate
                                     Extension = [System.IO.Path]::GetExtension($filePath)
                                 })
@@ -550,7 +546,7 @@ $script:UpdateSafeCleanupTotal = {
         }
     }
 
-    $script:safeTotalLabel.Text = "Selected: $totalFiles files ($(Format-FileSize -Bytes $totalBytes))"
+    $script:safeTotalLabel.Text = "Selected: $totalFiles files ($(& $script:FormatFileSize -Bytes $totalBytes))"
 }
 
 $script:UpdateUnusedFilesTotal = {
@@ -562,7 +558,7 @@ $script:UpdateUnusedFilesTotal = {
         $count++
     }
 
-    $script:unusedTotalLabel.Text = "Selected: $count files ($(Format-FileSize -Bytes $totalBytes))"
+    $script:unusedTotalLabel.Text = "Selected: $count files ($(& $script:FormatFileSize -Bytes $totalBytes))"
 }
 
 #endregion
@@ -691,14 +687,14 @@ function Initialize-Module {
                 $script:safeLogBox.AppendText("[$timestamp]   Result: Access Denied`r`n")
             }
             else {
-                $item.SubItems[1].Text = Format-FileSize -Bytes $sizeInfo.TotalBytes
+                $item.SubItems[1].Text = & $script:FormatFileSize -Bytes $sizeInfo.TotalBytes
                 $item.SubItems[2].Text = $sizeInfo.FileCount.ToString()
                 $item.Tag = @{
                     Category = $cat
                     TotalBytes = $sizeInfo.TotalBytes
                     FileCount = $sizeInfo.FileCount
                 }
-                $script:safeLogBox.AppendText("[$timestamp]   Total: $($sizeInfo.FileCount) files ($(Format-FileSize -Bytes $sizeInfo.TotalBytes))`r`n")
+                $script:safeLogBox.AppendText("[$timestamp]   Total: $($sizeInfo.FileCount) files ($(& $script:FormatFileSize -Bytes $sizeInfo.TotalBytes))`r`n")
             }
         }
 
@@ -745,7 +741,7 @@ function Initialize-Module {
         }
 
         # Confirmation
-        $confirmMsg = "Delete approximately $totalFiles files ($(Format-FileSize -Bytes $totalBytes))?`n`nCategories:`n"
+        $confirmMsg = "Delete approximately $totalFiles files ($(& $script:FormatFileSize -Bytes $totalBytes))?`n`nCategories:`n"
         foreach ($item in $checkedItems) {
             $confirmMsg += "  - $($item.Tag.Category.Name)`n"
         }
@@ -794,7 +790,7 @@ function Initialize-Module {
             $totalDeleted += $cleanResult.DeletedCount
 
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:safeLogBox.AppendText("[$timestamp]   Deleted: $($cleanResult.DeletedCount) files ($(Format-FileSize -Bytes $cleanResult.FreedBytes))`r`n")
+            $script:safeLogBox.AppendText("[$timestamp]   Deleted: $($cleanResult.DeletedCount) files ($(& $script:FormatFileSize -Bytes $cleanResult.FreedBytes))`r`n")
 
             if ($cleanResult.Errors.Count -gt 0) {
                 $script:safeLogBox.AppendText("[$timestamp]   Errors: $($cleanResult.Errors.Count)`r`n")
@@ -804,11 +800,11 @@ function Initialize-Module {
         Clear-AppStatus
 
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:safeLogBox.AppendText("[$timestamp] Cleanup complete! Freed $(Format-FileSize -Bytes $totalFreed) ($totalDeleted files)`r`n")
-        Write-SessionLog -Message "Safe Cleanup: Freed $(Format-FileSize -Bytes $totalFreed) ($totalDeleted files)" -Category "Disk Cleanup"
+        $script:safeLogBox.AppendText("[$timestamp] Cleanup complete! Freed $(& $script:FormatFileSize -Bytes $totalFreed) ($totalDeleted files)`r`n")
+        Write-SessionLog -Message "Safe Cleanup: Freed $(& $script:FormatFileSize -Bytes $totalFreed) ($totalDeleted files)" -Category "Disk Cleanup"
 
         [System.Windows.Forms.MessageBox]::Show(
-            "Cleanup complete!`n`nFreed: $(Format-FileSize -Bytes $totalFreed)`nFiles deleted: $totalDeleted",
+            "Cleanup complete!`n`nFreed: $(& $script:FormatFileSize -Bytes $totalFreed)`nFiles deleted: $totalDeleted",
             "Complete",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
@@ -1049,7 +1045,7 @@ function Initialize-Module {
         }
 
         $confirm = [System.Windows.Forms.MessageBox]::Show(
-            "Permanently delete $($checkedItems.Count) files ($(Format-FileSize -Bytes $totalSize))?`n`nThis cannot be undone!",
+            "Permanently delete $($checkedItems.Count) files ($(& $script:FormatFileSize -Bytes $totalSize))?`n`nThis cannot be undone!",
             "Confirm Delete",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -1083,9 +1079,9 @@ function Initialize-Module {
         Clear-AppStatus
         & $script:UpdateUnusedFilesTotal
 
-        Write-SessionLog -Message "Unused Files: Deleted $deleted files, freed $(Format-FileSize -Bytes $freed)" -Category "Disk Cleanup"
+        Write-SessionLog -Message "Unused Files: Deleted $deleted files, freed $(& $script:FormatFileSize -Bytes $freed)" -Category "Disk Cleanup"
 
-        $msg = "Deleted $deleted files, freed $(Format-FileSize -Bytes $freed)"
+        $msg = "Deleted $deleted files, freed $(& $script:FormatFileSize -Bytes $freed)"
         if ($errors.Count -gt 0) {
             $msg += "`n`n$($errors.Count) files could not be deleted (may be in use)."
         }
