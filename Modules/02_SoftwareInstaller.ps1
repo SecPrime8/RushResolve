@@ -622,6 +622,7 @@ function Initialize-Module {
         $script:appListView.EndUpdate()
         $script:appListView.Invalidate()
         $script:appListView.Update()
+        $script:appListView.Refresh()
 
         # Diagnostic: Check actual ListView state
         $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
@@ -629,6 +630,14 @@ function Initialize-Module {
         $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Size = $($script:appListView.Width)x$($script:appListView.Height)`r`n")
         $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Visible = $($script:appListView.Visible)`r`n")
         $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Columns.Count = $($script:appListView.Columns.Count)`r`n")
+
+        # Check first item details
+        if ($script:appListView.Items.Count -gt 0) {
+            $firstItem = $script:appListView.Items[0]
+            $script:installerLogBox.AppendText("[$ts] DEBUG: First item text = '$($firstItem.Text)'`r`n")
+            $bounds = $firstItem.Bounds
+            $script:installerLogBox.AppendText("[$ts] DEBUG: First item bounds = X:$($bounds.X) Y:$($bounds.Y) W:$($bounds.Width) H:$($bounds.Height)`r`n")
+        }
         $script:installerLogBox.ScrollToCaret()
 
         # Update count label
@@ -768,7 +777,13 @@ function Initialize-Module {
         Clear-AppStatus
 
         # Apply filter (will show all if filter is empty)
-        & $script:ApplyFilter
+        try {
+            & $script:ApplyFilter
+        }
+        catch {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:installerLogBox.AppendText("[$timestamp] ERROR in ApplyFilter: $($_.Exception.Message)`r`n")
+        }
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:installerLogBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
