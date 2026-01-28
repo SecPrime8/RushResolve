@@ -539,6 +539,7 @@ function Initialize-Module {
     $script:appListView.FullRowSelect = $true
     $script:appListView.GridLines = $true
     $script:appListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:appListView.MinimumSize = New-Object System.Drawing.Size(300, 150)
 
     $script:appListView.Columns.Add("Name", 200) | Out-Null
     $script:appListView.Columns.Add("Version", 80) | Out-Null
