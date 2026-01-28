@@ -777,11 +777,13 @@ function Initialize-Module {
         Clear-AppStatus
 
         # Apply filter (will show all if filter is empty)
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:installerLogBox.AppendText("[$timestamp] DEBUG: About to call ApplyFilter, scriptblock exists: $($null -ne $script:ApplyFilter)`r`n")
         try {
             & $script:ApplyFilter
+            $script:installerLogBox.AppendText("[$timestamp] DEBUG: ApplyFilter completed`r`n")
         }
         catch {
-            $timestamp = Get-Date -Format "HH:mm:ss"
             $script:installerLogBox.AppendText("[$timestamp] ERROR in ApplyFilter: $($_.Exception.Message)`r`n")
         }
 
