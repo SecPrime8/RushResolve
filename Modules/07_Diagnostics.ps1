@@ -80,7 +80,7 @@ $script:GetHPIAPath = {
 
 #region Finding Object Helper
 
-function New-Finding {
+$script:NewFinding = {
     param(
         [string]$Category,
         [string]$Issue,
@@ -122,7 +122,7 @@ $script:CollectEventErrors = {
         if ($wheaEvents.Count -gt 0) {
             $severity = if ($wheaEvents.Count -gt 5) { "Critical" } else { "Warning" }
             $latestWhea = $wheaEvents[0]
-            $findings += New-Finding -Category "Events" `
+            $findings += & $script:NewFinding -Category "Events" `
                 -Issue "$($wheaEvents.Count) WHEA hardware errors" `
                 -Severity $severity `
                 -Recommendation "Run Windows Memory Diagnostic (mdsched.exe) - likely RAM issue" `
@@ -144,7 +144,7 @@ $script:CollectEventErrors = {
         } -ErrorAction SilentlyContinue)
 
         if ($kernelPowerEvents.Count -gt 0) {
-            $findings += New-Finding -Category "Events" `
+            $findings += & $script:NewFinding -Category "Events" `
                 -Issue "$($kernelPowerEvents.Count) unexpected shutdowns" `
                 -Severity "Critical" `
                 -Recommendation "Check power supply and thermals - unexpected shutdowns detected" `
@@ -167,7 +167,7 @@ $script:CollectEventErrors = {
 
         if ($diskEvents.Count -gt 0) {
             $severity = if ($diskEvents.Count -gt 10) { "Critical" } else { "Warning" }
-            $findings += New-Finding -Category "Events" `
+            $findings += & $script:NewFinding -Category "Events" `
                 -Issue "$($diskEvents.Count) disk/filesystem errors" `
                 -Severity $severity `
                 -Recommendation "Check drive health - run chkdsk /f /r" `
@@ -197,7 +197,7 @@ $script:CollectEventErrors = {
 
             $totalGpuEvents = $liveKernelEvents.Count + $tdrEvents.Count
             if ($totalGpuEvents -gt 0) {
-                $findings += New-Finding -Category "Events" `
+                $findings += & $script:NewFinding -Category "Events" `
                     -Issue "$totalGpuEvents GPU/display driver crashes" `
                     -Severity "Critical" `
                     -Recommendation "Update graphics driver (use DDU for clean install)" `
@@ -219,7 +219,7 @@ $script:CollectEventErrors = {
         } -ErrorAction SilentlyContinue)
 
         if ($bugCheckEvents.Count -gt 0) {
-            $findings += New-Finding -Category "Events" `
+            $findings += & $script:NewFinding -Category "Events" `
                 -Issue "$($bugCheckEvents.Count) BSOD crashes recorded" `
                 -Severity "Critical" `
                 -Recommendation "Check C:\Windows\Minidump for crash dumps - may indicate hardware failure" `
@@ -233,7 +233,7 @@ $script:CollectEventErrors = {
 
     # If no issues found, add OK finding
     if ($findings.Count -eq 0) {
-        $findings += New-Finding -Category "Events" `
+        $findings += & $script:NewFinding -Category "Events" `
             -Issue "No critical errors in last $daysBack days" `
             -Severity "OK" `
             -Recommendation "-"
@@ -262,21 +262,21 @@ $script:CollectStorageHealth = {
             if ($Log) { & $Log "  $($drive.DeviceID) $freeGB GB free ($usedPercent% used)" }
 
             if ($usedPercent -ge 95) {
-                $findings += New-Finding -Category "Storage" `
+                $findings += & $script:NewFinding -Category "Storage" `
                     -Issue "$($drive.DeviceID) drive $usedPercent% full" `
                     -Severity "Critical" `
                     -Recommendation "CRITICAL: Free up space immediately - system may freeze" `
                     -Details "$freeGB GB free of $totalGB GB"
             }
             elseif ($usedPercent -ge 90) {
-                $findings += New-Finding -Category "Storage" `
+                $findings += & $script:NewFinding -Category "Storage" `
                     -Issue "$($drive.DeviceID) drive $usedPercent% full" `
                     -Severity "Critical" `
                     -Recommendation "Run Disk Cleanup module to free space" `
                     -Details "$freeGB GB free of $totalGB GB"
             }
             elseif ($usedPercent -ge 80) {
-                $findings += New-Finding -Category "Storage" `
+                $findings += & $script:NewFinding -Category "Storage" `
                     -Issue "$($drive.DeviceID) drive $usedPercent% full" `
                     -Severity "Warning" `
                     -Recommendation "Consider cleanup - low space can cause issues" `
@@ -296,7 +296,7 @@ $script:CollectStorageHealth = {
             if ($Log) { & $Log "  Checking SMART: $($disk.FriendlyName)" }
 
             if ($disk.HealthStatus -ne "Healthy") {
-                $findings += New-Finding -Category "Storage" `
+                $findings += & $script:NewFinding -Category "Storage" `
                     -Issue "Disk '$($disk.FriendlyName)' health: $($disk.HealthStatus)" `
                     -Severity "Critical" `
                     -Recommendation "BACK UP DATA IMMEDIATELY - drive failure predicted" `
@@ -312,7 +312,7 @@ $script:CollectStorageHealth = {
                     if ($reliability.WriteErrorsTotal -gt 0) { $issues += "Write errors: $($reliability.WriteErrorsTotal)" }
 
                     if ($issues.Count -gt 0) {
-                        $findings += New-Finding -Category "Storage" `
+                        $findings += & $script:NewFinding -Category "Storage" `
                             -Issue "Disk '$($disk.FriendlyName)' has I/O errors" `
                             -Severity "Warning" `
                             -Recommendation "Monitor drive closely - may be failing" `
@@ -334,7 +334,7 @@ $script:CollectStorageHealth = {
     # If no issues found, add OK finding
     $storageIssues = $findings | Where-Object { $_.Category -eq "Storage" }
     if ($storageIssues.Count -eq 0) {
-        $findings += New-Finding -Category "Storage" `
+        $findings += & $script:NewFinding -Category "Storage" `
             -Issue "All drives healthy" `
             -Severity "OK" `
             -Recommendation "-"
@@ -367,7 +367,7 @@ $script:CollectMemoryInfo = {
         if ($Log) { & $Log "  Committed: $committedGB GB of $commitLimit GB" }
 
         if ($usedPercent -ge 90) {
-            $findings += New-Finding -Category "Memory" `
+            $findings += & $script:NewFinding -Category "Memory" `
                 -Issue "RAM $usedPercent% used" `
                 -Severity "Warning" `
                 -Recommendation "High memory usage - check for memory leaks or runaway processes" `
@@ -376,7 +376,7 @@ $script:CollectMemoryInfo = {
 
         # Check if committed > physical (heavy paging)
         if ($committedGB -gt $totalRAM * 1.5) {
-            $findings += New-Finding -Category "Memory" `
+            $findings += & $script:NewFinding -Category "Memory" `
                 -Issue "Memory pressure: Committed ${committedGB}GB exceeds RAM" `
                 -Severity "Warning" `
                 -Recommendation "System paging heavily - close unused applications or add RAM" `
@@ -396,7 +396,7 @@ $script:CollectMemoryInfo = {
 
         foreach ($event in $memDiagEvents) {
             if ($event.Message -match "hardware problems were detected|errors were found") {
-                $findings += New-Finding -Category "Memory" `
+                $findings += & $script:NewFinding -Category "Memory" `
                     -Issue "Memory diagnostic found hardware errors" `
                     -Severity "Critical" `
                     -Recommendation "Replace RAM - memory diagnostic detected bad memory" `
@@ -413,7 +413,7 @@ $script:CollectMemoryInfo = {
     # If no issues found, add OK finding
     $memIssues = $findings | Where-Object { $_.Category -eq "Memory" }
     if ($memIssues.Count -eq 0) {
-        $findings += New-Finding -Category "Memory" `
+        $findings += & $script:NewFinding -Category "Memory" `
             -Issue "$totalRAM GB total, $usedPercent% used" `
             -Severity "OK" `
             -Recommendation "-"
@@ -436,7 +436,7 @@ $script:CollectDriverIssues = {
 
         if ($problemDevices) {
             $deviceList = ($problemDevices | Select-Object -First 5 | ForEach-Object { $_.Name }) -join ", "
-            $findings += New-Finding -Category "Drivers" `
+            $findings += & $script:NewFinding -Category "Drivers" `
                 -Issue "$($problemDevices.Count) problem devices found" `
                 -Severity "Warning" `
                 -Recommendation "Check Device Manager for yellow/red icons" `
@@ -465,7 +465,7 @@ $script:CollectDriverIssues = {
 
         if ($recentDrivers) {
             $driverList = ($recentDrivers | ForEach-Object { $_.DeviceName }) -join ", "
-            $findings += New-Finding -Category "Drivers" `
+            $findings += & $script:NewFinding -Category "Drivers" `
                 -Issue "$($recentDrivers.Count) drivers updated recently" `
                 -Severity "Info" `
                 -Recommendation "Recent driver updates may correlate with issues" `
@@ -481,7 +481,7 @@ $script:CollectDriverIssues = {
     # If no issues found, add OK finding
     $driverIssues = $findings | Where-Object { $_.Category -eq "Drivers" -and $_.Severity -ne "Info" }
     if ($driverIssues.Count -eq 0 -and -not ($findings | Where-Object { $_.Category -eq "Drivers" })) {
-        $findings += New-Finding -Category "Drivers" `
+        $findings += & $script:NewFinding -Category "Drivers" `
             -Issue "No driver problems detected" `
             -Severity "OK" `
             -Recommendation "-"
@@ -509,7 +509,7 @@ $script:CollectThermalData = {
 
             # Significant throttling detection (running below 80% of max)
             if ($throttlePercent -lt 80) {
-                $findings += New-Finding -Category "Thermal" `
+                $findings += & $script:NewFinding -Category "Thermal" `
                     -Issue "CPU throttling detected ($throttlePercent% of max speed)" `
                     -Severity "Warning" `
                     -Recommendation "Check cooling - CPU running slow due to heat or power limits" `
@@ -531,21 +531,21 @@ $script:CollectThermalData = {
             if ($Log) { & $Log "  Temperature: ${celsius}C" }
 
             if ($celsius -gt 85) {
-                $findings += New-Finding -Category "Thermal" `
+                $findings += & $script:NewFinding -Category "Thermal" `
                     -Issue "High CPU temperature: ${celsius}C" `
                     -Severity "Critical" `
                     -Recommendation "Check cooling immediately - thermal throttling likely" `
                     -Details "Temperature exceeds safe operating range"
             }
             elseif ($celsius -gt 75) {
-                $findings += New-Finding -Category "Thermal" `
+                $findings += & $script:NewFinding -Category "Thermal" `
                     -Issue "Elevated CPU temperature: ${celsius}C" `
                     -Severity "Warning" `
                     -Recommendation "Check fans and ventilation" `
                     -Details "Temperature elevated but not critical"
             }
             else {
-                $findings += New-Finding -Category "Thermal" `
+                $findings += & $script:NewFinding -Category "Thermal" `
                     -Issue "CPU temperature: ${celsius}C" `
                     -Severity "OK" `
                     -Recommendation "-"
@@ -561,7 +561,7 @@ $script:CollectThermalData = {
 
     # If no findings at all, add OK
     if (-not ($findings | Where-Object { $_.Category -eq "Thermal" })) {
-        $findings += New-Finding -Category "Thermal" `
+        $findings += & $script:NewFinding -Category "Thermal" `
             -Issue "CPU speed normal, temp unavailable" `
             -Severity "OK" `
             -Recommendation "-"
@@ -585,14 +585,14 @@ $script:CollectSystemStability = {
         if ($Log) { & $Log "  Uptime: $($uptime.Days) days, $($uptime.Hours) hours" }
 
         if ($uptime.TotalDays -gt 14) {
-            $findings += New-Finding -Category "Stability" `
+            $findings += & $script:NewFinding -Category "Stability" `
                 -Issue "System uptime: $($uptime.Days) days" `
                 -Severity "Warning" `
                 -Recommendation "Schedule reboot - long uptime can cause memory leaks" `
                 -Details "Last boot: $($os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm'))"
         }
         elseif ($uptime.TotalDays -gt 7) {
-            $findings += New-Finding -Category "Stability" `
+            $findings += & $script:NewFinding -Category "Stability" `
                 -Issue "System uptime: $($uptime.Days) days" `
                 -Severity "Info" `
                 -Recommendation "Consider rebooting if experiencing issues" `
@@ -628,7 +628,7 @@ $script:CollectSystemStability = {
         }
 
         if ($pendingReboot) {
-            $findings += New-Finding -Category "Stability" `
+            $findings += & $script:NewFinding -Category "Stability" `
                 -Issue "Pending reboot required" `
                 -Severity "Warning" `
                 -Recommendation "Reboot to complete pending updates/changes" `
@@ -652,7 +652,7 @@ $script:CollectSystemStability = {
                 Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-30) })
 
             if ($recentDumps.Count -gt 0) {
-                $findings += New-Finding -Category "Stability" `
+                $findings += & $script:NewFinding -Category "Stability" `
                     -Issue "$($recentDumps.Count) crash dumps in last 30 days" `
                     -Severity "Warning" `
                     -Recommendation "Review minidumps with WinDbg or BlueScreenView" `
@@ -675,7 +675,7 @@ $script:CollectSystemStability = {
                     Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-30) })
 
                 if ($recentReports.Count -gt 0) {
-                    $findings += New-Finding -Category "Stability" `
+                    $findings += & $script:NewFinding -Category "Stability" `
                         -Issue "$($recentReports.Count) live kernel dumps (recovered crashes)" `
                         -Severity "Warning" `
                         -Recommendation "System recovered from hangs - check GPU/driver issues" `
@@ -694,7 +694,7 @@ $script:CollectSystemStability = {
     try {
         $fastStartup = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" -Name HiberbootEnabled -ErrorAction SilentlyContinue
         if ($fastStartup.HiberbootEnabled -eq 1) {
-            $findings += New-Finding -Category "Stability" `
+            $findings += & $script:NewFinding -Category "Stability" `
                 -Issue "Fast Startup enabled" `
                 -Severity "Info" `
                 -Recommendation "Fast Startup can cause driver issues - disable if problems persist" `
@@ -709,7 +709,7 @@ $script:CollectSystemStability = {
     # If no issues, add OK
     $stabilityIssues = $findings | Where-Object { $_.Category -eq "Stability" -and $_.Severity -ne "Info" }
     if ($stabilityIssues.Count -eq 0 -and -not ($findings | Where-Object { $_.Category -eq "Stability" })) {
-        $findings += New-Finding -Category "Stability" `
+        $findings += & $script:NewFinding -Category "Stability" `
             -Issue "System stable, no pending reboots" `
             -Severity "OK" `
             -Recommendation "-"
@@ -739,7 +739,7 @@ $script:CollectResourceUsage = {
         if ($Log) { & $Log "  Disk queue: $queueLength" }
 
         if ($queueLength -gt 2) {
-            $findings += New-Finding -Category "Resources" `
+            $findings += & $script:NewFinding -Category "Resources" `
                 -Issue "High disk queue: $queueLength" `
                 -Severity "Warning" `
                 -Recommendation "Disk I/O bottleneck - check for heavy disk activity" `
@@ -767,7 +767,7 @@ $script:CollectResourceUsage = {
         # Check for runaway process (single process > 80% CPU)
         $cpuHogs = Get-Process | Where-Object { $_.CPU -gt 1000 } | Sort-Object CPU -Descending | Select-Object -First 1
         if ($cpuHogs) {
-            $findings += New-Finding -Category "Resources" `
+            $findings += & $script:NewFinding -Category "Resources" `
                 -Issue "Process '$($cpuHogs.Name)' using high CPU" `
                 -Severity "Info" `
                 -Recommendation "Check if process is stuck or legitimately busy" `
@@ -780,7 +780,7 @@ $script:CollectResourceUsage = {
 
     # If no issues, add OK
     if (-not ($findings | Where-Object { $_.Category -eq "Resources" })) {
-        $findings += New-Finding -Category "Resources" `
+        $findings += & $script:NewFinding -Category "Resources" `
             -Issue "Resource usage normal" `
             -Severity "OK" `
             -Recommendation "-"
@@ -806,7 +806,7 @@ $script:RunHPIAAnalysis = {
 
     $hpiaPath = & $script:GetHPIAPath
     if (-not $hpiaPath) {
-        $findings += New-Finding -Category "HP Drivers" `
+        $findings += & $script:NewFinding -Category "HP Drivers" `
             -Issue "HPIA not installed" `
             -Severity "Info" `
             -Recommendation "Download HP Image Assistant for driver management" `
@@ -858,7 +858,7 @@ $script:RunHPIAAnalysis = {
                 $driverNames = ($outdated | ForEach-Object { $_.Name }) -join ", "
                 $severity = if ($outdated.Count -gt 3) { "Warning" } else { "Info" }
 
-                $findings += New-Finding -Category "HP Drivers" `
+                $findings += & $script:NewFinding -Category "HP Drivers" `
                     -Issue "$($outdated.Count) drivers need updates" `
                     -Severity $severity `
                     -Recommendation "Run HPIA Update to install driver updates" `
@@ -867,7 +867,7 @@ $script:RunHPIAAnalysis = {
                 if ($Log) { & $Log "  Outdated drivers: $($outdated.Count)" }
             }
             else {
-                $findings += New-Finding -Category "HP Drivers" `
+                $findings += & $script:NewFinding -Category "HP Drivers" `
                     -Issue "All HP drivers current" `
                     -Severity "OK" `
                     -Recommendation "-"
@@ -881,7 +881,7 @@ $script:RunHPIAAnalysis = {
     }
     catch {
         if ($Log) { & $Log "  HPIA analysis failed: $($_.Exception.Message)" }
-        $findings += New-Finding -Category "HP Drivers" `
+        $findings += & $script:NewFinding -Category "HP Drivers" `
             -Issue "HPIA analysis failed" `
             -Severity "Info" `
             -Recommendation "Run HPIA manually to check drivers" `
