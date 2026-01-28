@@ -578,20 +578,20 @@ function Initialize-Module {
 
     # Helper: Apply filter to ListView from AppsList
     $script:ApplyFilter = {
-        Write-Host "DEBUG CONSOLE: ApplyFilter entered"
-        $ts = Get-Date -Format "HH:mm:ss"
-        Write-Host "DEBUG CONSOLE: AppsList count = $($script:AppsList.Count)"
-        Write-Host "DEBUG CONSOLE: installerLogBox exists = $($null -ne $script:installerLogBox)"
+        # Write to file to prove scriptblock executes
+        $debugFile = "C:\Temp\ApplyFilter_debug.txt"
+        $ts = Get-Date -Format "HH:mm:ss.fff"
+        Add-Content -Path $debugFile -Value "[$ts] ApplyFilter ENTERED - AppsList=$($script:AppsList.Count)"
 
         try {
             $filterText = $script:installerFilterBox.Text.Trim().ToLower()
         }
         catch {
-            Write-Host "DEBUG CONSOLE: filterBox access failed: $($_.Exception.Message)"
+            Add-Content -Path $debugFile -Value "[$ts] filterBox access failed: $($_.Exception.Message)"
             $filterText = ""
         }
 
-        Write-Host "DEBUG CONSOLE: filterText = '$filterText'"
+        Add-Content -Path $debugFile -Value "[$ts] filterText='$filterText'"
         $script:appListView.BeginUpdate()
         $script:appListView.Items.Clear()
 
