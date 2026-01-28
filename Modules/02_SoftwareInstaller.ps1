@@ -578,11 +578,17 @@ function Initialize-Module {
 
     # Helper: Apply filter to ListView from AppsList
     $script:ApplyFilter = {
-        $filterText = $script:installerFilterBox.Text.Trim().ToLower()
+        $ts = Get-Date -Format "HH:mm:ss"
+        try {
+            $filterText = $script:installerFilterBox.Text.Trim().ToLower()
+        }
+        catch {
+            $script:installerLogBox.AppendText("[$ts] ERROR: installerFilterBox access failed: $($_.Exception.Message)`r`n")
+            $filterText = ""
+        }
         $script:appListView.BeginUpdate()
         $script:appListView.Items.Clear()
 
-        $ts = Get-Date -Format "HH:mm:ss"
         $script:installerLogBox.AppendText("[$ts] ApplyFilter: AppsList has $($script:AppsList.Count) items, filter='$filterText'`r`n")
 
         $matchCount = 0
