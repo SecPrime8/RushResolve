@@ -575,30 +575,41 @@ function Initialize-Module {
         $script:appListView.BeginUpdate()
         $script:appListView.Items.Clear()
 
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:installerLogBox.AppendText("[$ts] ApplyFilter: AppsList has $($script:AppsList.Count) items, filter='$filterText'`r`n")
+
         $matchCount = 0
         foreach ($app in $script:AppsList) {
-            # Match against name, version, or description
-            $match = $true
-            if ($filterText) {
-                $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
-                         ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
-                         ($app.Description -and $app.Description.ToLower().Contains($filterText))
-            }
+            try {
+                # Match against name, version, or description
+                $match = $true
+                if ($filterText) {
+                    $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
+                             ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
+                             ($app.Description -and $app.Description.ToLower().Contains($filterText))
+                }
 
-            if ($match) {
-                $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
-                $item.SubItems.Add($app.Version) | Out-Null
-                $item.SubItems.Add($app.Description) | Out-Null
-                $typeText = $app.InstallerType.TrimStart('.').ToUpper()
-                $item.SubItems.Add($typeText) | Out-Null
-                $configText = if ($app.HasConfig) { "Yes" } else { "No" }
-                $item.SubItems.Add($configText) | Out-Null
-                $item.Tag = $app
-                $script:appListView.Items.Add($item) | Out-Null
-                $matchCount++
+                if ($match) {
+                    $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+                    $item.SubItems.Add($app.Version) | Out-Null
+                    $item.SubItems.Add($app.Description) | Out-Null
+                    $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
+                    $item.SubItems.Add($typeText) | Out-Null
+                    $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+                    $item.SubItems.Add($configText) | Out-Null
+                    $item.Tag = $app
+                    $script:appListView.Items.Add($item) | Out-Null
+                    $matchCount++
+                }
+            }
+            catch {
+                $script:installerLogBox.AppendText("[$ts] ERROR adding app '$($app.Name)': $($_.Exception.Message)`r`n")
             }
         }
         $script:appListView.EndUpdate()
+
+        $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
+        $script:installerLogBox.ScrollToCaret()
 
         # Update count label
         $totalCount = $script:AppsList.Count
