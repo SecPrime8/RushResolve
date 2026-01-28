@@ -576,88 +576,43 @@ function Initialize-Module {
         $script:appListView.EndUpdate()
     })
 
-    # Re-entrancy guard for ApplyFilter
-    $script:ApplyFilterRunning = $false
-
-    # Helper: Apply filter to ListView from AppsList
-    $script:ApplyFilter = {
-        # Prevent re-entrancy
-        if ($script:ApplyFilterRunning) {
-            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$(Get-Date -Format 'HH:mm:ss.fff')] BLOCKED - already running"
-            return
-        }
-        $script:ApplyFilterRunning = $true
-
-        try {
-            $ts = Get-Date -Format "HH:mm:ss.fff"
-            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$ts] ApplyFilter ENTERED - AppsList=$($script:AppsList.Count)"
-
-            try {
-                $filterText = $script:installerFilterBox.Text.Trim().ToLower()
-            }
-            catch {
-                Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$ts] filterBox access failed: $($_.Exception.Message)"
-                $filterText = ""
-            }
-
-            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$ts] filterText='$filterText'"
-            $script:appListView.BeginUpdate()
-            $script:appListView.Items.Clear()
-
-            $script:installerLogBox.AppendText("[$ts] ApplyFilter: AppsList has $($script:AppsList.Count) items, filter='$filterText'`r`n")
-
-            $matchCount = 0
-            foreach ($app in $script:AppsList) {
-                try {
-                    $match = $true
-                    if ($filterText) {
-                        $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
-                                 ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
-                                 ($app.Description -and $app.Description.ToLower().Contains($filterText))
-                    }
-
-                    if ($match) {
-                        $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
-                        $item.SubItems.Add($app.Version) | Out-Null
-                        $item.SubItems.Add($app.Description) | Out-Null
-                        $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
-                        $item.SubItems.Add($typeText) | Out-Null
-                        $configText = if ($app.HasConfig) { "Yes" } else { "No" }
-                        $item.SubItems.Add($configText) | Out-Null
-                        $item.Tag = $app
-                        $script:appListView.Items.Add($item) | Out-Null
-                        $matchCount++
-                    }
-                }
-                catch {
-                    $script:installerLogBox.AppendText("[$ts] ERROR adding app '$($app.Name)': $($_.Exception.Message)`r`n")
-                }
-            }
-            $script:appListView.EndUpdate()
-            $script:appListView.Invalidate()
-            $script:appListView.Update()
-            $script:appListView.Refresh()
-
-            $script:installerLogBox.AppendText("[$ts] ApplyFilter: Added $matchCount items to ListView`r`n")
-            $script:installerLogBox.AppendText("[$ts] DEBUG: ListView.Items.Count = $($script:appListView.Items.Count)`r`n")
-            $script:installerLogBox.ScrollToCaret()
-
-            $totalCount = $script:AppsList.Count
-            if ($filterText) {
-                $script:filterCountLabel.Text = "Showing $matchCount of $totalCount"
-            } else {
-                $script:filterCountLabel.Text = ""
-            }
-        }
-        finally {
-            $script:ApplyFilterRunning = $false
-            Add-Content -Path "C:\Temp\ApplyFilter_debug.txt" -Value "[$(Get-Date -Format 'HH:mm:ss.fff')] ApplyFilter EXITED"
-        }
-    }
-
-    # Filter textbox - filter as user types
+    # Filter textbox - filter as user types (inlined to avoid scriptblock issues)
     $script:installerFilterBox.Add_TextChanged({
-        & $script:ApplyFilter
+        $filterText = $script:installerFilterBox.Text.Trim().ToLower()
+        $script:appListView.BeginUpdate()
+        $script:appListView.Items.Clear()
+
+        $matchCount = 0
+        foreach ($app in $script:AppsList) {
+            $match = $true
+            if ($filterText) {
+                $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
+                         ($app.Version -and $app.Version.ToLower().Contains($filterText)) -or
+                         ($app.Description -and $app.Description.ToLower().Contains($filterText))
+            }
+            if ($match) {
+                $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+                $item.SubItems.Add($app.Version) | Out-Null
+                $item.SubItems.Add($app.Description) | Out-Null
+                $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
+                $item.SubItems.Add($typeText) | Out-Null
+                $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+                $item.SubItems.Add($configText) | Out-Null
+                $item.Tag = $app
+                $script:appListView.Items.Add($item) | Out-Null
+                $matchCount++
+            }
+        }
+        $script:appListView.EndUpdate()
+        $script:appListView.Refresh()
+
+        # Update count label
+        $totalCount = $script:AppsList.Count
+        if ($filterText) {
+            $script:filterCountLabel.Text = "Showing $matchCount of $totalCount"
+        } else {
+            $script:filterCountLabel.Text = ""
+        }
     })
 
     # Clear filter button
@@ -814,7 +769,7 @@ function Initialize-Module {
         $script:appListView.EndUpdate()
         $script:appListView.Refresh()
 
-        $script:installerLogBox.AppendText("[$timestamp] Added $matchCount items to ListView`r`n")
+        $timestamp = Get-Date -Format "HH:mm:ss"
         $script:installerLogBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
         $script:installerLogBox.ScrollToCaret()
     }
