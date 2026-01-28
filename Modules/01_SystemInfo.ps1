@@ -243,6 +243,45 @@ function Initialize-Module {
     })
     $buttonPanel.Controls.Add($svcBtn)
 
+    # Separator for Admin Consoles
+    $sep2 = New-Object System.Windows.Forms.Label
+    $sep2.Text = " | "
+    $sep2.AutoSize = $true
+    $sep2.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+    $buttonPanel.Controls.Add($sep2)
+
+    # Active Directory Users and Computers (elevated)
+    $adBtn = New-Object System.Windows.Forms.Button
+    $adBtn.Text = "AD Users"
+    $adBtn.Width = 75
+    $adBtn.Height = 30
+    $adBtn.Add_Click({
+        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "dsa.msc" -OperationName "open Active Directory Users and Computers"
+    })
+    $buttonPanel.Controls.Add($adBtn)
+
+    # SCCM Console (elevated)
+    $sccmBtn = New-Object System.Windows.Forms.Button
+    $sccmBtn.Text = "SCCM"
+    $sccmBtn.Width = 60
+    $sccmBtn.Height = 30
+    $sccmBtn.Add_Click({
+        # Check common SCCM console paths
+        $sccmPaths = @(
+            "${env:ProgramFiles(x86)}\Microsoft Endpoint Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe",
+            "${env:ProgramFiles(x86)}\Microsoft Configuration Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe",
+            "${env:ProgramFiles}\Microsoft Endpoint Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe",
+            "${env:ProgramFiles}\Microsoft Configuration Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe"
+        )
+        $sccmPath = $sccmPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($sccmPath) {
+            Start-ElevatedProcess -FilePath $sccmPath -OperationName "open SCCM Console"
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("SCCM Console not found.`n`nExpected locations:`n- Program Files (x86)\Microsoft Endpoint Manager\AdminConsole`n- Program Files (x86)\Microsoft Configuration Manager\AdminConsole", "SCCM Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    })
+    $buttonPanel.Controls.Add($sccmBtn)
+
     # MSInfo32
     $msInfoBtn = New-Object System.Windows.Forms.Button
     $msInfoBtn.Text = "MSInfo32"
