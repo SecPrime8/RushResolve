@@ -61,7 +61,11 @@ $script:DetectHP = {
 
 $script:GetHPIAPath = {
     if ($null -eq $script:HPIAPath) {
+        # Check repo location first (Tools/HPIA/ relative to module's parent directory)
+        $repoHPIA = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\HPIA\HPImageAssistant.exe"
+
         $possiblePaths = @(
+            $repoHPIA,
             "${env:ProgramFiles(x86)}\HP\HPIA\HPImageAssistant.exe",
             "${env:ProgramFiles}\HP\HPIA\HPImageAssistant.exe",
             "C:\HPIA\HPImageAssistant.exe"
@@ -1118,11 +1122,12 @@ function Initialize-Module {
     # Main layout
     $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
     $mainLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $mainLayout.RowCount = 3
+    $mainLayout.RowCount = 4
     $mainLayout.ColumnCount = 1
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null   # Diagnostic buttons
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 60))) | Out-Null   # Quick Tools
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null    # Findings
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null    # Log
 
     #region Button Panel
     $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -1357,6 +1362,143 @@ function Initialize-Module {
     $mainLayout.Controls.Add($buttonPanel, 0, 0)
     #endregion
 
+    #region Quick Tools Panel
+    $quickToolsGroup = New-Object System.Windows.Forms.GroupBox
+    $quickToolsGroup.Text = "Quick Tools"
+    $quickToolsGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $quickToolsPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $quickToolsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $quickToolsPanel.Padding = New-Object System.Windows.Forms.Padding(5, 2, 5, 2)
+    $quickToolsPanel.WrapContents = $false
+
+    # Check Disk button
+    $chkdskBtn = New-Object System.Windows.Forms.Button
+    $chkdskBtn.Text = "Check Disk"
+    $chkdskBtn.AutoSize = $true
+    $chkdskBtn.Height = 26
+    $chkdskBtn.Add_Click({
+        $msg = "Check Disk (chkdsk /f /r) requires a reboot for the system drive.`n`nSchedule disk check on next restart?"
+        $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Schedule Check Disk", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $ts = Get-Date -Format "HH:mm:ss"
+            $script:diagLogBox.AppendText("[$ts] Scheduling chkdsk /f /r for C: on next reboot...`r`n")
+            Write-SessionLog -Message "Scheduled chkdsk /f /r via Diagnostics Quick Tools" -Category "Diagnostics"
+            # Schedule chkdsk - requires elevation
+            $cred = Get-ElevatedCredential -Message "Enter admin credentials to schedule Check Disk"
+            if ($cred) {
+                $result = Invoke-Elevated -ScriptBlock {
+                    # Schedule chkdsk on next boot
+                    $output = & cmd /c "echo Y | chkdsk C: /f /r" 2>&1
+                    return $output
+                } -Credential $cred -OperationName "schedule Check Disk"
+                if ($result.Success) {
+                    [System.Windows.Forms.MessageBox]::Show("Check Disk scheduled.`nReboot to run the disk check.", "Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                }
+            }
+        }
+    })
+    $quickToolsPanel.Controls.Add($chkdskBtn)
+
+    # SFC button
+    $sfcBtn = New-Object System.Windows.Forms.Button
+    $sfcBtn.Text = "SFC Scan"
+    $sfcBtn.AutoSize = $true
+    $sfcBtn.Height = 26
+    $sfcBtn.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching System File Checker (sfc /scannow)...`r`n")
+        Write-SessionLog -Message "Launched SFC via Diagnostics Quick Tools" -Category "Diagnostics"
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for System File Checker"
+        if ($cred) {
+            Invoke-Elevated -ScriptBlock {
+                Start-Process "powershell.exe" -ArgumentList "-NoExit", "-Command", "Write-Host 'Running System File Checker...' -ForegroundColor Cyan; sfc /scannow; Write-Host '`nSFC Complete. Review results above.' -ForegroundColor Green; pause" -Wait
+            } -Credential $cred -OperationName "run SFC scan"
+        }
+    })
+    $quickToolsPanel.Controls.Add($sfcBtn)
+
+    # DISM button
+    $dismBtn = New-Object System.Windows.Forms.Button
+    $dismBtn.Text = "DISM Repair"
+    $dismBtn.AutoSize = $true
+    $dismBtn.Height = 26
+    $dismBtn.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth (this may take 10-20 minutes)...`r`n")
+        Write-SessionLog -Message "Launched DISM repair via Diagnostics Quick Tools" -Category "Diagnostics"
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for DISM Repair"
+        if ($cred) {
+            Invoke-Elevated -ScriptBlock {
+                Start-Process "powershell.exe" -ArgumentList "-NoExit", "-Command", "Write-Host 'Running DISM RestoreHealth (this may take 10-20 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host '`nDISM Complete. Review results above.' -ForegroundColor Green; pause" -Wait
+            } -Credential $cred -OperationName "run DISM repair"
+        }
+    })
+    $quickToolsPanel.Controls.Add($dismBtn)
+
+    # Separator
+    $toolSep1 = New-Object System.Windows.Forms.Label
+    $toolSep1.Text = "|"
+    $toolSep1.AutoSize = $true
+    $toolSep1.Padding = New-Object System.Windows.Forms.Padding(3, 6, 3, 0)
+    $quickToolsPanel.Controls.Add($toolSep1)
+
+    # Disk Cleanup button (no elevation needed)
+    $cleanupBtn = New-Object System.Windows.Forms.Button
+    $cleanupBtn.Text = "Disk Cleanup"
+    $cleanupBtn.AutoSize = $true
+    $cleanupBtn.Height = 26
+    $cleanupBtn.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching Disk Cleanup...`r`n")
+        Write-SessionLog -Message "Launched Disk Cleanup via Diagnostics Quick Tools" -Category "Diagnostics"
+        Start-Process "cleanmgr.exe" -ArgumentList "/d", "C:"
+    })
+    $quickToolsPanel.Controls.Add($cleanupBtn)
+
+    # Event Viewer button
+    $eventViewerBtn = New-Object System.Windows.Forms.Button
+    $eventViewerBtn.Text = "Event Viewer"
+    $eventViewerBtn.AutoSize = $true
+    $eventViewerBtn.Height = 26
+    $eventViewerBtn.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Opening Event Viewer...`r`n")
+        Write-SessionLog -Message "Opened Event Viewer via Diagnostics Quick Tools" -Category "Diagnostics"
+        Start-Process "eventvwr.msc"
+    })
+    $quickToolsPanel.Controls.Add($eventViewerBtn)
+
+    # Device Manager button
+    $devMgrBtn = New-Object System.Windows.Forms.Button
+    $devMgrBtn.Text = "Device Manager"
+    $devMgrBtn.AutoSize = $true
+    $devMgrBtn.Height = 26
+    $devMgrBtn.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Opening Device Manager...`r`n")
+        Write-SessionLog -Message "Opened Device Manager via Diagnostics Quick Tools" -Category "Diagnostics"
+        Start-Process "devmgmt.msc"
+    })
+    $quickToolsPanel.Controls.Add($devMgrBtn)
+
+    # Reliability Monitor button
+    $reliabilityBtn = New-Object System.Windows.Forms.Button
+    $reliabilityBtn.Text = "Reliability"
+    $reliabilityBtn.AutoSize = $true
+    $reliabilityBtn.Height = 26
+    $reliabilityBtn.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Opening Reliability Monitor...`r`n")
+        Write-SessionLog -Message "Opened Reliability Monitor via Diagnostics Quick Tools" -Category "Diagnostics"
+        Start-Process "perfmon.exe" -ArgumentList "/rel"
+    })
+    $quickToolsPanel.Controls.Add($reliabilityBtn)
+
+    $quickToolsGroup.Controls.Add($quickToolsPanel)
+    $mainLayout.Controls.Add($quickToolsGroup, 0, 1)
+    #endregion
+
     #region Findings ListView
     $findingsGroup = New-Object System.Windows.Forms.GroupBox
     $findingsGroup.Text = "Findings"
@@ -1392,7 +1534,7 @@ function Initialize-Module {
     })
 
     $findingsGroup.Controls.Add($script:diagListView)
-    $mainLayout.Controls.Add($findingsGroup, 0, 1)
+    $mainLayout.Controls.Add($findingsGroup, 0, 2)
     #endregion
 
     #region Log TextBox
@@ -1410,7 +1552,7 @@ function Initialize-Module {
     $script:diagLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
 
     $logGroup.Controls.Add($script:diagLogBox)
-    $mainLayout.Controls.Add($logGroup, 0, 2)
+    $mainLayout.Controls.Add($logGroup, 0, 3)
     #endregion
 
     $tab.Controls.Add($mainLayout)
