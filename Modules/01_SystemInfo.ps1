@@ -98,9 +98,11 @@ $script:GetSysInfoData = {
         $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" }
         foreach ($adapter in $adapters) {
-            $ifName = (Get-NetAdapter -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue).Name
-            if ($ifName) {
-                [void]$info.AppendLine("  $($ifName): $($adapter.IPAddress)")
+            $netAdapter = Get-NetAdapter -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
+            if ($netAdapter) {
+                [void]$info.AppendLine("  $($netAdapter.Name):")
+                [void]$info.AppendLine("    IP:   $($adapter.IPAddress)")
+                [void]$info.AppendLine("    MAC:  $($netAdapter.MacAddress)")
             }
         }
 
