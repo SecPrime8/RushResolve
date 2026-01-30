@@ -911,16 +911,34 @@ $script:RunHPIAAnalysis = {
             }
 
             if ($outdated.Count -gt 0) {
-                $driverNames = ($outdated | ForEach-Object { $_.Name }) -join ", "
-                $severity = if ($outdated.Count -gt 3) { "Warning" } else { "Info" }
+                # Create individual finding for each driver with proper severity
+                foreach ($driver in $outdated) {
+                    # Map HPIA priority to our severity (Critical, Recommended, Routine)
+                    $priority = if ($driver.CvaPackageInformation.Priority) { $driver.CvaPackageInformation.Priority } else { "Recommended" }
+                    $severity = switch ($priority) {
+                        "Critical" { "Critical" }
+                        "Recommended" { "Warning" }
+                        default { "Info" }  # Routine
+                    }
 
-                $findings += & $script:NewFinding -Category "HP Drivers" `
-                    -Issue "$($outdated.Count) drivers need updates" `
-                    -Severity $severity `
-                    -Recommendation "Run HPIA Update to install driver updates" `
-                    -Details $driverNames
+                    $softpaqId = if ($driver.Id) { $driver.Id } else { "N/A" }
+                    $version = if ($driver.Version) { $driver.Version } else { "N/A" }
 
-                if ($Log) { & $Log "  Outdated drivers: $($outdated.Count)" }
+                    $findings += & $script:NewFinding -Category "HP Drivers" `
+                        -Issue "[$priority] $($driver.Name)" `
+                        -Severity $severity `
+                        -Recommendation "Install via HP Drivers menu" `
+                        -Details "SoftPaq: $softpaqId | Version: $version"
+
+                    if ($Log) { & $Log "  [$priority] $($driver.Name) - $softpaqId" }
+                }
+
+                # Summary finding
+                $critCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Critical" }).Count
+                $recCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Recommended" }).Count
+                $routineCount = $outdated.Count - $critCount - $recCount
+
+                if ($Log) { & $Log "  Summary: $critCount critical, $recCount recommended, $routineCount routine" }
             }
             else {
                 $findings += & $script:NewFinding -Category "HP Drivers" `
@@ -952,7 +970,12 @@ $script:RunHPIAAnalysis = {
 }
 
 $script:RunHPIAUpdate = {
-    param([scriptblock]$Log, [PSCredential]$Credential)
+    param(
+        [scriptblock]$Log,
+        [PSCredential]$Credential,
+        [ValidateSet("All", "Critical", "Recommended")]
+        [string]$Selection = "All"
+    )
 
     if (-not (& $script:DetectHP)) {
         [System.Windows.Forms.MessageBox]::Show("This is not an HP machine.", "Not HP", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -965,8 +988,15 @@ $script:RunHPIAUpdate = {
         return
     }
 
+    # Build selection description for confirmation dialog
+    $selectionDesc = switch ($Selection) {
+        "Critical" { "CRITICAL drivers only" }
+        "Recommended" { "CRITICAL and RECOMMENDED drivers" }
+        default { "ALL available drivers" }
+    }
+
     $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "This will download and install HP driver updates.`n`nThe system may require a reboot after updates.`n`nContinue?",
+        "This will download and install $selectionDesc.`n`nThe system may require a reboot after updates.`n`nContinue?",
         "Install HP Driver Updates",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question
@@ -974,15 +1004,18 @@ $script:RunHPIAUpdate = {
 
     if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
-    if ($Log) { & $Log "Starting HP driver update..." }
+    if ($Log) { & $Log "Starting HP driver update (Selection: $Selection)..." }
 
     $reportPath = "$env:TEMP\HPIA_Update"
     if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
     New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
     try {
+        # Build selection string - for "Recommended" we want Critical+Recommended
+        $selectionArg = if ($Selection -eq "Recommended") { "Critical,Recommended" } else { $Selection }
+
         # Note: Skipping BIOS updates for safety
-        $args = "/Operation:Analyze /Action:Install /Category:Drivers /Selection:All /Silent /ReportFolder:`"$reportPath`""
+        $args = "/Operation:Analyze /Action:Install /Category:Drivers /Selection:$selectionArg /Silent /ReportFolder:`"$reportPath`""
 
         if ($Log) { & $Log "  Running HPIA with /Action:Install..." }
 
@@ -1275,9 +1308,13 @@ function Initialize-Module {
     })
     $hpMenu.Items.Add($hpCheckItem) | Out-Null
 
-    $hpUpdateItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $hpUpdateItem.Text = "Update Drivers"
-    $hpUpdateItem.Add_Click({
+    # Separator
+    $hpMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+    # Install All
+    $hpInstallAllItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $hpInstallAllItem.Text = "Install All Drivers"
+    $hpInstallAllItem.Add_Click({
         $logCallback = {
             param([string]$Message)
             $ts = Get-Date -Format "HH:mm:ss"
@@ -1286,13 +1323,50 @@ function Initialize-Module {
             [System.Windows.Forms.Application]::DoEvents()
         }
 
-        # Get credentials if needed
         $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
         if ($cred) {
-            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred
+            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred -Selection "All"
         }
     })
-    $hpMenu.Items.Add($hpUpdateItem) | Out-Null
+    $hpMenu.Items.Add($hpInstallAllItem) | Out-Null
+
+    # Install Critical Only
+    $hpInstallCriticalItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $hpInstallCriticalItem.Text = "Install Critical Only"
+    $hpInstallCriticalItem.Add_Click({
+        $logCallback = {
+            param([string]$Message)
+            $ts = Get-Date -Format "HH:mm:ss"
+            $script:diagLogBox.AppendText("[$ts] $Message`r`n")
+            $script:diagLogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
+        if ($cred) {
+            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred -Selection "Critical"
+        }
+    })
+    $hpMenu.Items.Add($hpInstallCriticalItem) | Out-Null
+
+    # Install Critical + Recommended
+    $hpInstallRecItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $hpInstallRecItem.Text = "Install Critical + Recommended"
+    $hpInstallRecItem.Add_Click({
+        $logCallback = {
+            param([string]$Message)
+            $ts = Get-Date -Format "HH:mm:ss"
+            $script:diagLogBox.AppendText("[$ts] $Message`r`n")
+            $script:diagLogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
+        if ($cred) {
+            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred -Selection "Recommended"
+        }
+    })
+    $hpMenu.Items.Add($hpInstallRecItem) | Out-Null
 
     $hpBtn.Add_Click({
         $hpMenu.Show($hpBtn, [System.Drawing.Point]::new(0, $hpBtn.Height))
