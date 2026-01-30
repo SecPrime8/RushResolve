@@ -101,6 +101,47 @@ $script:RunTraceroute = {
     $LogBox.ScrollToCaret()
 }
 
+# Run NSLookup (reverse DNS - IP to hostname)
+$script:RunNslookup = {
+    param([string]$Target, [System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] NSLookup for $Target...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        # Use nslookup.exe for reliable results
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo.FileName = "nslookup.exe"
+        $process.StartInfo.Arguments = $Target
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        $process.StartInfo.CreateNoWindow = $true
+
+        $process.Start() | Out-Null
+
+        while (-not $process.StandardOutput.EndOfStream) {
+            $line = $process.StandardOutput.ReadLine()
+            if ($line -and $line.Trim()) {
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $LogBox.AppendText("[$timestamp] $line`r`n")
+                $LogBox.ScrollToCaret()
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+
+        $process.WaitForExit()
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $LogBox.AppendText("[$timestamp] NSLookup complete.`r`n")
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
 # Flush DNS
 $script:FlushDns = {
     param([System.Windows.Forms.TextBox]$LogBox)
@@ -441,6 +482,7 @@ function Initialize-Module {
     $getAdaptersRef = $script:GetAdapters
     $runPingRef = $script:RunPing
     $runTracerouteRef = $script:RunTraceroute
+    $runNslookupRef = $script:RunNslookup
     $flushDnsRef = $script:FlushDns
     $releaseRenewRef = $script:ReleaseRenewIP
     $setupLldpRef = $script:SetupLldp
@@ -628,6 +670,30 @@ function Initialize-Module {
         }
     }.GetNewClosure())
     $targetPanel.Controls.Add($traceBtn)
+
+    $nslookupBtn = New-Object System.Windows.Forms.Button
+    $nslookupBtn.Text = "NSLookup"
+    $nslookupBtn.Width = 70
+    $nslookupBtn.Add_Click({
+        $target = $targetTextBoxRef.Text.Trim()
+        if ($target) {
+            & $runNslookupRef -Target $target -LogBox $diagLogBoxRef
+        }
+    }.GetNewClosure())
+    $targetPanel.Controls.Add($nslookupBtn)
+
+    $allBtn = New-Object System.Windows.Forms.Button
+    $allBtn.Text = "All"
+    $allBtn.Width = 40
+    $allBtn.Add_Click({
+        $target = $targetTextBoxRef.Text.Trim()
+        if ($target) {
+            & $runPingRef -Target $target -Count 4 -LogBox $diagLogBoxRef
+            & $runTracerouteRef -Target $target -LogBox $diagLogBoxRef
+            & $runNslookupRef -Target $target -LogBox $diagLogBoxRef
+        }
+    }.GetNewClosure())
+    $targetPanel.Controls.Add($allBtn)
 
     # Copy results button
     $diagBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
