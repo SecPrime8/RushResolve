@@ -521,16 +521,26 @@ $script:GetOldProfiles = {
     $results = @()
 
     try {
+        # Get all non-system profiles (filter Loaded and LastUseTime separately for better handling)
         $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
             -not $_.Special -and
             $_.LocalPath -notmatch '\\(Default|Public|Default User|All Users)$' -and
-            $_.LocalPath -notmatch "\\$currentUser$" -and
-            $_.Loaded -eq $false -and
-            $_.LastUseTime -and
-            $_.LastUseTime -lt $cutoffDate
+            $_.LocalPath -notmatch "\\$currentUser$"
         }
 
         foreach ($profile in $profiles) {
+            # Skip loaded profiles (user has active session)
+            if ($profile.Loaded) { continue }
+
+            # Determine last use: prefer LastUseTime, fallback to folder modification date
+            $lastUsed = $profile.LastUseTime
+            if (-not $lastUsed -and $profile.LocalPath -and (Test-Path $profile.LocalPath)) {
+                $lastUsed = (Get-Item $profile.LocalPath -Force).LastWriteTime
+            }
+
+            # Skip if we can't determine age or profile is too recent
+            if (-not $lastUsed -or $lastUsed -ge $cutoffDate) { continue }
+
             $username = Split-Path $profile.LocalPath -Leaf
             $profileSize = 0
 
@@ -546,10 +556,10 @@ $script:GetOldProfiles = {
                 Username = $username
                 Path = $profile.LocalPath
                 SID = $profile.SID
-                LastUsed = $profile.LastUseTime
+                LastUsed = $lastUsed
                 Size = $profileSize
                 SizeFormatted = & $script:FormatFileSize -Bytes $profileSize
-                DaysOld = [math]::Floor(((Get-Date) - $profile.LastUseTime).TotalDays)
+                DaysOld = [math]::Floor(((Get-Date) - $lastUsed).TotalDays)
             }
         }
     }
