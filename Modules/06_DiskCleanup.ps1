@@ -1,17 +1,16 @@
 <#
 .SYNOPSIS
-    Disk Cleanup Module - Clean temp files, find large unused files, and remove old user profiles
+    Disk Cleanup Module - Clean temp files and remove old user profiles
 .DESCRIPTION
-    Three-tab module:
+    Two-tab module:
     1. Safe Cleanup - Automated cleanup of known-safe temp/cache locations
-    2. Unused Files - Find and delete large files not accessed in 90+ days
-    3. Profile Cleanup - Remove old user profiles (30/90 day threshold) via WMI
+    2. Profile Cleanup - Remove old user profiles with bulk selection options
 .NOTES
     Requires elevation for system folder cleanup and profile deletion
 #>
 
 $script:ModuleName = "Disk Cleanup"
-$script:ModuleDescription = "Clean temp files, find large unused files, and remove old user profiles"
+$script:ModuleDescription = "Clean temp files and remove old user profiles"
 
 #region Cleanup Category Definitions
 $script:CleanupCategories = @(
@@ -119,16 +118,6 @@ $script:CleanupCategories = @(
     }
 )
 
-# Paths to exclude from unused file scan
-$script:ExcludedPaths = @(
-    "C:\Windows",
-    "C:\Program Files",
-    "C:\Program Files (x86)",
-    "C:\ProgramData",
-    "C:\`$Recycle.Bin",
-    "C:\System Volume Information",
-    "C:\Recovery"
-)
 #endregion
 
 #region Helper Functions
@@ -378,150 +367,13 @@ $script:ClearCategory = {
     return $result
 }
 
-$script:FindUnusedFiles = {
-    param(
-        [int]$MinSizeMB = 100,
-        [int]$DaysUnused = 90,
-        [scriptblock]$ProgressCallback
-    )
-
-    $results = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $minBytes = $MinSizeMB * 1MB
-
-    if ($ProgressCallback) {
-        & $ProgressCallback -Message "Starting scan: files >= ${MinSizeMB}MB, not modified in ${DaysUnused}+ days"
-        & $ProgressCallback -Message "Using native forfiles.exe for reliability..."
-    }
-
-    # Search user-accessible locations (skip system folders)
-    $searchPaths = @(
-        "$env:USERPROFILE",
-        "C:\Users\Public"
-    )
-
-    # Also check for other user profiles if accessible
-    $usersDir = "C:\Users"
-    if (Test-Path $usersDir) {
-        Get-ChildItem -Path $usersDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_.Name -notin @("Public", "Default", "Default User", "All Users", $env:USERNAME)) {
-                $searchPaths += $_.FullName
-            }
-        }
-    }
-
-    foreach ($searchPath in $searchPaths) {
-        if (-not (Test-Path $searchPath)) { continue }
-
-        if ($ProgressCallback) {
-            & $ProgressCallback -Message "Scanning: $searchPath"
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        try {
-            # Use forfiles.exe - native Windows tool, works in restricted environments
-            # /D -N means files modified more than N days ago
-            # Note: @fsize returns bytes as plain number
-            $forfilesArgs = "/P `"$searchPath`" /S /D -$DaysUnused /C `"cmd /c echo @path^|@fsize^|@fdate`""
-
-            if ($ProgressCallback) {
-                & $ProgressCallback -Message "Running: forfiles $forfilesArgs"
-                [System.Windows.Forms.Application]::DoEvents()
-            }
-
-            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-            $pinfo.FileName = "forfiles.exe"
-            $pinfo.Arguments = $forfilesArgs
-            $pinfo.RedirectStandardOutput = $true
-            $pinfo.RedirectStandardError = $true
-            $pinfo.UseShellExecute = $false
-            $pinfo.CreateNoWindow = $true
-
-            $proc = New-Object System.Diagnostics.Process
-            $proc.StartInfo = $pinfo
-            $proc.Start() | Out-Null
-
-            $stdout = $proc.StandardOutput.ReadToEnd()
-            $stderr = $proc.StandardError.ReadToEnd()
-            $proc.WaitForExit()
-
-            if ($stderr -and $stderr -notmatch "No files found") {
-                if ($ProgressCallback) {
-                    & $ProgressCallback -Message "forfiles error: $stderr"
-                }
-            }
-
-            $lines = $stdout -split "`r?`n"
-            $lineCount = 0
-
-            foreach ($line in $lines) {
-                $lineCount++
-                if (-not $line.Trim()) { continue }
-
-                try {
-                    # Parse: "C:\path\file.ext"|12345678|01/15/2025
-                    $parts = $line -split '\|'
-                    if ($parts.Count -ge 2) {
-                        $filePath = $parts[0].Trim('"')
-                        $sizeStr = $parts[1].Trim()
-                        $fileDate = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "Unknown" }
-
-                        # Parse size (forfiles returns bytes as number)
-                        $fileSize = 0
-                        if ([long]::TryParse($sizeStr, [ref]$fileSize)) {
-                            # Size filter
-                            if ($fileSize -ge $minBytes) {
-                                $results.Add([PSCustomObject]@{
-                                    Path = $filePath
-                                    Size = $fileSize
-                                    SizeFormatted = & $script:FormatFileSize -Bytes $fileSize
-                                    LastAccessed = $fileDate
-                                    Extension = [System.IO.Path]::GetExtension($filePath)
-                                })
-
-                                if ($ProgressCallback -and ($results.Count % 5 -eq 0)) {
-                                    & $ProgressCallback -Message "Found $($results.Count) large files so far..."
-                                    [System.Windows.Forms.Application]::DoEvents()
-                                }
-                            }
-                        }
-                    }
-                }
-                catch {
-                    # Skip unparseable lines
-                }
-            }
-
-            if ($ProgressCallback) {
-                & $ProgressCallback -Message "Processed $lineCount lines from $searchPath, found $($results.Count) large files"
-                [System.Windows.Forms.Application]::DoEvents()
-            }
-        }
-        catch {
-            if ($ProgressCallback) {
-                & $ProgressCallback -Message "Warning: Could not scan $searchPath - $($_.Exception.Message)"
-            }
-        }
-    }
-
-    if ($ProgressCallback) {
-        & $ProgressCallback -Message "Scan complete: Found $($results.Count) large unused files"
-    }
-
-    # Sort by size descending
-    return $results | Sort-Object -Property Size -Descending
-}
-
-$script:GetOldProfiles = {
-    param(
-        [int]$DaysOld = 90
-    )
-
-    $cutoffDate = (Get-Date).AddDays(-$DaysOld)
+$script:GetAllProfiles = {
+    # Returns ALL non-system, non-current-user profiles (no age filtering)
     $currentUser = $env:USERNAME
     $results = @()
 
     try {
-        # Get all non-system profiles (filter Loaded and LastUseTime separately for better handling)
+        # Get all non-system profiles
         $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
             -not $_.Special -and
             $_.LocalPath -notmatch '\\(Default|Public|Default User|All Users)$' -and
@@ -538,8 +390,10 @@ $script:GetOldProfiles = {
                 $lastUsed = (Get-Item $profile.LocalPath -Force).LastWriteTime
             }
 
-            # Skip if we can't determine age or profile is too recent
-            if (-not $lastUsed -or $lastUsed -ge $cutoffDate) { continue }
+            # If we still can't determine, use a very old date
+            if (-not $lastUsed) {
+                $lastUsed = [datetime]::MinValue
+            }
 
             $username = Split-Path $profile.LocalPath -Leaf
             $profileSize = 0
@@ -552,6 +406,8 @@ $script:GetOldProfiles = {
                 } catch { }
             }
 
+            $daysOld = if ($lastUsed -eq [datetime]::MinValue) { 9999 } else { [math]::Floor(((Get-Date) - $lastUsed).TotalDays) }
+
             $results += [PSCustomObject]@{
                 Username = $username
                 Path = $profile.LocalPath
@@ -559,7 +415,7 @@ $script:GetOldProfiles = {
                 LastUsed = $lastUsed
                 Size = $profileSize
                 SizeFormatted = & $script:FormatFileSize -Bytes $profileSize
-                DaysOld = [math]::Floor(((Get-Date) - $lastUsed).TotalDays)
+                DaysOld = $daysOld
             }
         }
     }
@@ -567,7 +423,7 @@ $script:GetOldProfiles = {
         Write-Warning "Failed to query profiles: $($_.Exception.Message)"
     }
 
-    return $results | Sort-Object -Property LastUsed
+    return $results | Sort-Object -Property DaysOld -Descending
 }
 
 $script:RemoveUserProfile = {
@@ -620,18 +476,6 @@ $script:UpdateSafeCleanupTotal = {
     $script:safeTotalLabel.Text = "Selected: $totalFiles files ($(& $script:FormatFileSize -Bytes $totalBytes))"
 }
 
-$script:UpdateUnusedFilesTotal = {
-    $totalBytes = 0
-    $count = 0
-
-    foreach ($item in $script:unusedListView.CheckedItems) {
-        $totalBytes += $item.Tag.Size
-        $count++
-    }
-
-    $script:unusedTotalLabel.Text = "Selected: $count files ($(& $script:FormatFileSize -Bytes $totalBytes))"
-}
-
 $script:UpdateProfileTotal = {
     $totalBytes = 0
     $count = 0
@@ -642,6 +486,15 @@ $script:UpdateProfileTotal = {
     }
 
     $script:profileTotalLabel.Text = "Selected: $count profiles ($(& $script:FormatFileSize -Bytes $totalBytes))"
+
+    # Update delete button text with count
+    if ($script:deleteProfilesBtn) {
+        if ($count -gt 0) {
+            $script:deleteProfilesBtn.Text = "Delete Selected ($count)"
+        } else {
+            $script:deleteProfilesBtn.Text = "Delete Selected"
+        }
+    }
 }
 
 #endregion
@@ -921,286 +774,6 @@ function Initialize-Module {
     $script:subTabControl.TabPages.Add($safeTab)
     #endregion
 
-    #region Unused Files Tab
-    $unusedTab = New-Object System.Windows.Forms.TabPage
-    $unusedTab.Text = "Large Unused Files"
-    $unusedTab.Padding = New-Object System.Windows.Forms.Padding(10)
-
-    $unusedLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $unusedLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $unusedLayout.RowCount = 4
-    $unusedLayout.ColumnCount = 1
-    $unusedLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null
-    $unusedLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
-    $unusedLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null
-    $unusedLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
-
-    # Filter controls
-    $filterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $filterPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $filterPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-    $filterPanel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
-
-    $minSizeLabel = New-Object System.Windows.Forms.Label
-    $minSizeLabel.Text = "Min Size (MB):"
-    $minSizeLabel.AutoSize = $true
-    $minSizeLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
-    $filterPanel.Controls.Add($minSizeLabel)
-
-    $script:minSizeBox = New-Object System.Windows.Forms.NumericUpDown
-    $script:minSizeBox.Width = 80
-    $script:minSizeBox.Minimum = 1
-    $script:minSizeBox.Maximum = 10000
-    $script:minSizeBox.Value = 100
-    $filterPanel.Controls.Add($script:minSizeBox)
-
-    $daysLabel = New-Object System.Windows.Forms.Label
-    $daysLabel.Text = "    Days Unused:"
-    $daysLabel.AutoSize = $true
-    $daysLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
-    $filterPanel.Controls.Add($daysLabel)
-
-    $script:daysBox = New-Object System.Windows.Forms.NumericUpDown
-    $script:daysBox.Width = 80
-    $script:daysBox.Minimum = 1
-    $script:daysBox.Maximum = 3650
-    $script:daysBox.Value = 90
-    $filterPanel.Controls.Add($script:daysBox)
-
-    $scanUnusedBtn = New-Object System.Windows.Forms.Button
-    $scanUnusedBtn.Text = "Scan C: Drive"
-    $scanUnusedBtn.Width = 120
-    $scanUnusedBtn.Height = 30
-    $scanUnusedBtn.Margin = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
-    $scanUnusedBtn.Add_Click({
-        Start-AppActivity "Scanning for unused files... This may take a while."
-        $script:unusedLogBox.Clear()
-        $script:unusedListView.Items.Clear()
-
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:unusedLogBox.AppendText("[$timestamp] Scanning C: drive for files larger than $($script:minSizeBox.Value) MB not accessed in $($script:daysBox.Value) days...`r`n")
-        $script:unusedLogBox.AppendText("[$timestamp] Excluding system folders (Windows, Program Files, ProgramData)...`r`n")
-        [System.Windows.Forms.Application]::DoEvents()
-
-        # Progress callback to update log in real-time
-        $progressCallback = {
-            param([string]$Message)
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:unusedLogBox.AppendText("[$ts] $Message`r`n")
-            $script:unusedLogBox.ScrollToCaret()
-        }
-
-        $files = & $script:FindUnusedFiles -MinSizeMB $script:minSizeBox.Value -DaysUnused $script:daysBox.Value -ProgressCallback $progressCallback
-
-        # Populate ListView with results
-        $script:unusedListView.BeginUpdate()
-        foreach ($file in $files) {
-            $item = New-Object System.Windows.Forms.ListViewItem("")
-            $item.SubItems.Add($file.Path) | Out-Null
-            $item.SubItems.Add($file.SizeFormatted) | Out-Null
-            $item.SubItems.Add($file.LastAccessed.ToString("yyyy-MM-dd")) | Out-Null
-            $item.SubItems.Add($file.Extension) | Out-Null
-            $item.Tag = $file
-            $script:unusedListView.Items.Add($item) | Out-Null
-        }
-        $script:unusedListView.EndUpdate()
-
-        Clear-AppStatus
-        & $script:UpdateUnusedFilesTotal
-
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:unusedLogBox.AppendText("[$timestamp] Found $($files.Count) files matching criteria.`r`n")
-    })
-    $filterPanel.Controls.Add($scanUnusedBtn)
-
-    $unusedLayout.Controls.Add($filterPanel, 0, 0)
-
-    # Unused files ListView
-    $unusedListGroup = New-Object System.Windows.Forms.GroupBox
-    $unusedListGroup.Text = "Files Not Modified in 90+ Days"
-    $unusedListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-
-    $script:unusedListView = New-Object System.Windows.Forms.ListView
-    $script:unusedListView.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $script:unusedListView.View = [System.Windows.Forms.View]::Details
-    $script:unusedListView.CheckBoxes = $true
-    $script:unusedListView.FullRowSelect = $true
-    $script:unusedListView.GridLines = $true
-    $script:unusedListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-
-    $script:unusedListView.Columns.Add("", 30) | Out-Null  # Checkbox column
-    $script:unusedListView.Columns.Add("Path", 400) | Out-Null
-    $script:unusedListView.Columns.Add("Size", 100) | Out-Null
-    $script:unusedListView.Columns.Add("Last Modified", 100) | Out-Null
-    $script:unusedListView.Columns.Add("Type", 80) | Out-Null
-
-    # Enable column sorting
-    $script:unusedListView.Add_ColumnClick({
-        param($sender, $e)
-
-        $col = $e.Column
-        $items = @($script:unusedListView.Items)
-
-        # Sort based on column
-        switch ($col) {
-            2 { # Size - sort by actual bytes
-                $sorted = $items | Sort-Object { $_.Tag.Size } -Descending
-            }
-            3 { # Last Modified
-                $sorted = $items | Sort-Object { $_.Tag.LastAccessed }
-            }
-            default {
-                $sorted = $items | Sort-Object { $_.SubItems[$col].Text }
-            }
-        }
-
-        $script:unusedListView.BeginUpdate()
-        $script:unusedListView.Items.Clear()
-        foreach ($item in $sorted) {
-            $script:unusedListView.Items.Add($item) | Out-Null
-        }
-        $script:unusedListView.EndUpdate()
-    })
-
-    $script:unusedListView.Add_ItemChecked({
-        & $script:UpdateUnusedFilesTotal
-    })
-
-    $unusedListGroup.Controls.Add($script:unusedListView)
-    $unusedLayout.Controls.Add($unusedListGroup, 0, 1)
-
-    # Buttons and total
-    $unusedButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $unusedButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $unusedButtonPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-    $unusedButtonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 5)
-
-    $script:unusedTotalLabel = New-Object System.Windows.Forms.Label
-    $script:unusedTotalLabel.Text = "Selected: 0 files (0 B)"
-    $script:unusedTotalLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $script:unusedTotalLabel.AutoSize = $true
-    $script:unusedTotalLabel.Padding = New-Object System.Windows.Forms.Padding(0, 7, 20, 0)
-    $unusedButtonPanel.Controls.Add($script:unusedTotalLabel)
-
-    $selectAllBtn = New-Object System.Windows.Forms.Button
-    $selectAllBtn.Text = "Select All"
-    $selectAllBtn.Width = 90
-    $selectAllBtn.Height = 30
-    $selectAllBtn.Add_Click({
-        foreach ($item in $script:unusedListView.Items) {
-            $item.Checked = $true
-        }
-    })
-    $unusedButtonPanel.Controls.Add($selectAllBtn)
-
-    $selectNoneBtn = New-Object System.Windows.Forms.Button
-    $selectNoneBtn.Text = "Select None"
-    $selectNoneBtn.Width = 90
-    $selectNoneBtn.Height = 30
-    $selectNoneBtn.Add_Click({
-        foreach ($item in $script:unusedListView.Items) {
-            $item.Checked = $false
-        }
-    })
-    $unusedButtonPanel.Controls.Add($selectNoneBtn)
-
-    $deleteBtn = New-Object System.Windows.Forms.Button
-    $deleteBtn.Text = "Delete Selected"
-    $deleteBtn.Width = 120
-    $deleteBtn.Height = 30
-    $deleteBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
-    $deleteBtn.Add_Click({
-        $checkedItems = @($script:unusedListView.CheckedItems)
-
-        if ($checkedItems.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "No files selected.",
-                "Nothing to Delete",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information
-            )
-            return
-        }
-
-        $totalSize = 0
-        foreach ($item in $checkedItems) {
-            $totalSize += $item.Tag.Size
-        }
-
-        $confirm = [System.Windows.Forms.MessageBox]::Show(
-            "Permanently delete $($checkedItems.Count) files ($(& $script:FormatFileSize -Bytes $totalSize))?`n`nThis cannot be undone!",
-            "Confirm Delete",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        )
-
-        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-
-        Start-AppActivity "Deleting files..."
-        $deleted = 0
-        $freed = 0
-        $errors = @()
-
-        foreach ($item in $checkedItems) {
-            $file = $item.Tag
-            try {
-                Remove-Item -Path $file.Path -Force -ErrorAction Stop
-                $deleted++
-                $freed += $file.Size
-                $script:unusedListView.Items.Remove($item)
-
-                $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:unusedLogBox.AppendText("[$timestamp] Deleted: $($file.Path)`r`n")
-            }
-            catch {
-                $errors += $file.Path
-                $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:unusedLogBox.AppendText("[$timestamp] ERROR: Could not delete $($file.Path) - $($_.Exception.Message)`r`n")
-            }
-        }
-
-        Clear-AppStatus
-        & $script:UpdateUnusedFilesTotal
-
-        Write-SessionLog -Message "Unused Files: Deleted $deleted files, freed $(& $script:FormatFileSize -Bytes $freed)" -Category "Disk Cleanup"
-
-        $msg = "Deleted $deleted files, freed $(& $script:FormatFileSize -Bytes $freed)"
-        if ($errors.Count -gt 0) {
-            $msg += "`n`n$($errors.Count) files could not be deleted (may be in use)."
-        }
-
-        [System.Windows.Forms.MessageBox]::Show(
-            $msg,
-            "Delete Complete",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        )
-    })
-    $unusedButtonPanel.Controls.Add($deleteBtn)
-
-    $unusedLayout.Controls.Add($unusedButtonPanel, 0, 2)
-
-    # Log output
-    $unusedLogGroup = New-Object System.Windows.Forms.GroupBox
-    $unusedLogGroup.Text = "Log"
-    $unusedLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-
-    $script:unusedLogBox = New-Object System.Windows.Forms.TextBox
-    $script:unusedLogBox.Multiline = $true
-    $script:unusedLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:unusedLogBox.ReadOnly = $true
-    $script:unusedLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:unusedLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    $script:unusedLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
-    $script:unusedLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-
-    $unusedLogGroup.Controls.Add($script:unusedLogBox)
-    $unusedLayout.Controls.Add($unusedLogGroup, 0, 3)
-
-    $unusedTab.Controls.Add($unusedLayout)
-    $script:subTabControl.TabPages.Add($unusedTab)
-    #endregion
-
     #region Profile Cleanup Tab
     $profileTab = New-Object System.Windows.Forms.TabPage
     $profileTab.Text = "Profile Cleanup"
@@ -1215,57 +788,35 @@ function Initialize-Module {
     $profileLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null
     $profileLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
 
-    # Options panel with radio buttons
-    $profileOptionsPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $profileOptionsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $profileOptionsPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-    $profileOptionsPanel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
-
-    $ageLabel = New-Object System.Windows.Forms.Label
-    $ageLabel.Text = "Show profiles not used in:"
-    $ageLabel.AutoSize = $true
-    $ageLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 10, 0)
-    $profileOptionsPanel.Controls.Add($ageLabel)
-
-    $script:profile30Radio = New-Object System.Windows.Forms.RadioButton
-    $script:profile30Radio.Text = "30+ days"
-    $script:profile30Radio.AutoSize = $true
-    $script:profile30Radio.Padding = New-Object System.Windows.Forms.Padding(0, 3, 15, 0)
-    $profileOptionsPanel.Controls.Add($script:profile30Radio)
-
-    $script:profile90Radio = New-Object System.Windows.Forms.RadioButton
-    $script:profile90Radio.Text = "90+ days"
-    $script:profile90Radio.AutoSize = $true
-    $script:profile90Radio.Checked = $true  # Default
-    $script:profile90Radio.Padding = New-Object System.Windows.Forms.Padding(0, 3, 15, 0)
-    $profileOptionsPanel.Controls.Add($script:profile90Radio)
+    # Top button panel with selection buttons
+    $profileTopPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $profileTopPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $profileTopPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+    $profileTopPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
 
     $scanProfilesBtn = New-Object System.Windows.Forms.Button
     $scanProfilesBtn.Text = "Scan Profiles"
-    $scanProfilesBtn.Width = 120
+    $scanProfilesBtn.Width = 110
     $scanProfilesBtn.Height = 30
-    $scanProfilesBtn.Margin = New-Object System.Windows.Forms.Padding(20, 0, 0, 0)
     $scanProfilesBtn.Add_Click({
         Start-AppActivity "Scanning user profiles..."
         $script:profileLogBox.Clear()
         $script:profileListView.Items.Clear()
 
-        $threshold = if ($script:profile30Radio.Checked) { 30 } else { 90 }
-
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:profileLogBox.AppendText("[$timestamp] Scanning for user profiles not used in $threshold+ days...`r`n")
+        $script:profileLogBox.AppendText("[$timestamp] Scanning for all non-system user profiles...`r`n")
         $script:profileLogBox.AppendText("[$timestamp] Excluding: current user ($env:USERNAME), system profiles, loaded profiles`r`n")
         [System.Windows.Forms.Application]::DoEvents()
 
-        $profiles = & $script:GetOldProfiles -DaysOld $threshold
+        $profiles = & $script:GetAllProfiles
 
-        # Populate ListView
+        # Populate ListView with ALL profiles
         $script:profileListView.BeginUpdate()
         foreach ($profile in $profiles) {
             $item = New-Object System.Windows.Forms.ListViewItem("")
             $item.SubItems.Add($profile.Username) | Out-Null
-            $item.SubItems.Add($profile.SizeFormatted) | Out-Null
             $item.SubItems.Add($profile.LastUsed.ToString("yyyy-MM-dd")) | Out-Null
+            $item.SubItems.Add($profile.SizeFormatted) | Out-Null
             $item.SubItems.Add($profile.DaysOld.ToString()) | Out-Null
             $item.Tag = $profile
             $script:profileListView.Items.Add($item) | Out-Null
@@ -1276,19 +827,59 @@ function Initialize-Module {
         & $script:UpdateProfileTotal
 
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:profileLogBox.AppendText("[$timestamp] Found $($profiles.Count) old user profiles.`r`n")
+        $script:profileLogBox.AppendText("[$timestamp] Found $($profiles.Count) user profiles.`r`n")
 
         if ($profiles.Count -eq 0) {
-            $script:profileLogBox.AppendText("[$timestamp] No profiles matching criteria found.`r`n")
+            $script:profileLogBox.AppendText("[$timestamp] No profiles found (only current user exists).`r`n")
         }
     })
-    $profileOptionsPanel.Controls.Add($scanProfilesBtn)
+    $profileTopPanel.Controls.Add($scanProfilesBtn)
 
-    $profileLayout.Controls.Add($profileOptionsPanel, 0, 0)
+    # Separator label
+    $separatorLabel = New-Object System.Windows.Forms.Label
+    $separatorLabel.Text = "  |  "
+    $separatorLabel.AutoSize = $true
+    $separatorLabel.Padding = New-Object System.Windows.Forms.Padding(5, 8, 5, 0)
+    $profileTopPanel.Controls.Add($separatorLabel)
+
+    $select30Btn = New-Object System.Windows.Forms.Button
+    $select30Btn.Text = "Select 30+ Days"
+    $select30Btn.Width = 110
+    $select30Btn.Height = 30
+    $select30Btn.Add_Click({
+        foreach ($item in $script:profileListView.Items) {
+            $item.Checked = ($item.Tag.DaysOld -ge 30)
+        }
+    })
+    $profileTopPanel.Controls.Add($select30Btn)
+
+    $select90Btn = New-Object System.Windows.Forms.Button
+    $select90Btn.Text = "Select 90+ Days"
+    $select90Btn.Width = 110
+    $select90Btn.Height = 30
+    $select90Btn.Add_Click({
+        foreach ($item in $script:profileListView.Items) {
+            $item.Checked = ($item.Tag.DaysOld -ge 90)
+        }
+    })
+    $profileTopPanel.Controls.Add($select90Btn)
+
+    $clearAllBtn = New-Object System.Windows.Forms.Button
+    $clearAllBtn.Text = "Clear All"
+    $clearAllBtn.Width = 90
+    $clearAllBtn.Height = 30
+    $clearAllBtn.Add_Click({
+        foreach ($item in $script:profileListView.Items) {
+            $item.Checked = $false
+        }
+    })
+    $profileTopPanel.Controls.Add($clearAllBtn)
+
+    $profileLayout.Controls.Add($profileTopPanel, 0, 0)
 
     # Profile ListView
     $profileListGroup = New-Object System.Windows.Forms.GroupBox
-    $profileListGroup.Text = "Old User Profiles"
+    $profileListGroup.Text = "User Profiles"
     $profileListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 
     $script:profileListView = New-Object System.Windows.Forms.ListView
@@ -1300,10 +891,41 @@ function Initialize-Module {
     $script:profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
     $script:profileListView.Columns.Add("", 30) | Out-Null  # Checkbox column
-    $script:profileListView.Columns.Add("Username", 200) | Out-Null
-    $script:profileListView.Columns.Add("Size", 100) | Out-Null
-    $script:profileListView.Columns.Add("Last Used", 120) | Out-Null
+    $script:profileListView.Columns.Add("Username", 180) | Out-Null
+    $script:profileListView.Columns.Add("Last Used", 100) | Out-Null
+    $script:profileListView.Columns.Add("Size", 90) | Out-Null
     $script:profileListView.Columns.Add("Days Old", 80) | Out-Null
+
+    # Enable column sorting
+    $script:profileListView.Add_ColumnClick({
+        param($sender, $e)
+
+        $col = $e.Column
+        $items = @($script:profileListView.Items)
+
+        # Sort based on column
+        switch ($col) {
+            2 { # Last Used - sort by date
+                $sorted = $items | Sort-Object { $_.Tag.LastUsed }
+            }
+            3 { # Size - sort by actual bytes
+                $sorted = $items | Sort-Object { $_.Tag.Size } -Descending
+            }
+            4 { # Days Old - sort numerically
+                $sorted = $items | Sort-Object { $_.Tag.DaysOld } -Descending
+            }
+            default {
+                $sorted = $items | Sort-Object { $_.SubItems[$col].Text }
+            }
+        }
+
+        $script:profileListView.BeginUpdate()
+        $script:profileListView.Items.Clear()
+        foreach ($item in $sorted) {
+            $script:profileListView.Items.Add($item) | Out-Null
+        }
+        $script:profileListView.EndUpdate()
+    })
 
     $script:profileListView.Add_ItemChecked({
         & $script:UpdateProfileTotal
@@ -1312,7 +934,7 @@ function Initialize-Module {
     $profileListGroup.Controls.Add($script:profileListView)
     $profileLayout.Controls.Add($profileListGroup, 0, 1)
 
-    # Buttons and total
+    # Bottom panel with total and delete button
     $profileButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $profileButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $profileButtonPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
@@ -1325,12 +947,12 @@ function Initialize-Module {
     $script:profileTotalLabel.Padding = New-Object System.Windows.Forms.Padding(0, 7, 20, 0)
     $profileButtonPanel.Controls.Add($script:profileTotalLabel)
 
-    $deleteProfilesBtn = New-Object System.Windows.Forms.Button
-    $deleteProfilesBtn.Text = "Delete Selected"
-    $deleteProfilesBtn.Width = 120
-    $deleteProfilesBtn.Height = 30
-    $deleteProfilesBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
-    $deleteProfilesBtn.Add_Click({
+    $script:deleteProfilesBtn = New-Object System.Windows.Forms.Button
+    $script:deleteProfilesBtn.Text = "Delete Selected"
+    $script:deleteProfilesBtn.Width = 130
+    $script:deleteProfilesBtn.Height = 30
+    $script:deleteProfilesBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
+    $script:deleteProfilesBtn.Add_Click({
         $checkedItems = @($script:profileListView.CheckedItems)
 
         if ($checkedItems.Count -eq 0) {
@@ -1428,7 +1050,7 @@ function Initialize-Module {
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
     })
-    $profileButtonPanel.Controls.Add($deleteProfilesBtn)
+    $profileButtonPanel.Controls.Add($script:deleteProfilesBtn)
 
     $profileLayout.Controls.Add($profileButtonPanel, 0, 2)
 
