@@ -413,7 +413,7 @@ To facilitate review, please provide feedback on:
 
 ## 7. Contact & Resources
 
-**Owner:** Luis Amador (Field Services, RUMC IT)
+**Owner:** Luis Arauz (Field Services, RUMC IT)
 
 **Resources Available:**
 - Full source code repository

@@ -7,7 +7,7 @@
 **RushResolve: Field Services Toolkit**
 Standardizing and Accelerating IT Support at RUMC
 
-*Luis Amador | Field Services*
+*Luis Arauz | Field Services*
 
 ---
 
@@ -268,14 +268,14 @@ A unified PowerShell toolkit that consolidates field service workflows into one 
 
 3. **Future Partnership** with End-User Technologies, Networking, and Telecoms to identify automation opportunities
 
-**Ownership:** Luis Amador (Field Services) - open to departmental ownership transition
+**Ownership:** Luis Arauz (Field Services) - open to departmental ownership transition
 
 ---
 
 ## Slide 16: Questions & Discussion
 
 **Contact Information:**
-Luis Amador | Field Services | RUMC IT
+Luis Arauz | Field Services | RUMC IT
 
 **Resources Available:**
 - Full source code for review

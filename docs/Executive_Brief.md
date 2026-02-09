@@ -74,7 +74,7 @@ RushResolve provides a **platform for automation requests** from other IT depart
 
 ## Ownership & Support
 
-- **Current Owner:** Luis Amador (Field Services)
+- **Current Owner:** Luis Arauz (Field Services)
 - **Support Model:** Internal maintenance and feature development
 - **Transition Plan:** Open to departmental ownership if IT leadership prefers
 
@@ -89,5 +89,5 @@ RushResolve provides a **platform for automation requests** from other IT depart
 
 ---
 
-**Contact:** Luis Amador | Field Services | RUMC IT
+**Contact:** Luis Arauz | Field Services | RUMC IT
 **Documentation:** Full technical documentation and source code available for review
