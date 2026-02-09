@@ -206,7 +206,7 @@ function Initialize-Module {
     # Device Manager (elevated - uses cached credentials)
     $devMgrBtn = New-Object System.Windows.Forms.Button
     $devMgrBtn.Text = "Device Mgr"
-    $devMgrBtn.Width = 85
+    $devMgrBtn.Width = 105
     $devMgrBtn.Height = 30
     $devMgrBtn.Add_Click({
         Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "devmgmt.msc" -OperationName "open Device Manager"
@@ -293,7 +293,7 @@ function Initialize-Module {
     # Memory Diagnostic
     $memDiagBtn = New-Object System.Windows.Forms.Button
     $memDiagBtn.Text = "Memory Test"
-    $memDiagBtn.Width = 85
+    $memDiagBtn.Width = 110
     $memDiagBtn.Height = 30
     $memDiagBtn.Add_Click({
         $msg = "Windows Memory Diagnostic will check your RAM for errors.`n`nThe computer must restart to run the test.`n`nSchedule memory test?"

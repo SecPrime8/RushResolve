@@ -559,7 +559,7 @@ function Initialize-Module {
 
     $releaseBtn = New-Object System.Windows.Forms.Button
     $releaseBtn.Text = "IP Release"
-    $releaseBtn.Width = 85
+    $releaseBtn.Width = 100
     $releaseBtn.Add_Click({
         if ($adapterListViewRef.SelectedItems.Count -gt 0) {
             $adapter = $adapterListViewRef.SelectedItems[0].Tag
@@ -728,23 +728,27 @@ function Initialize-Module {
     $lldpGroup = New-Object System.Windows.Forms.GroupBox
     $lldpGroup.Text = "Link Discovery (LLDP)"
     $lldpGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $lldpGroup.Padding = New-Object System.Windows.Forms.Padding(10)
 
-    $lldpPanel = New-Object System.Windows.Forms.Panel
-    $lldpPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $lldpPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+    $lldpTablePanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $lldpTablePanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $lldpTablePanel.RowCount = 3
+    $lldpTablePanel.ColumnCount = 1
+    $lldpTablePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
+    $lldpTablePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $lldpTablePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
 
-    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
-    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
-    $script:lldpInfoLabel.AutoSize = $true
-    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
-    $script:lldpInfoLabel.Location = New-Object System.Drawing.Point(10, 50)
+    # Top button panel
+    $lldpTopBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $lldpTopBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $lldpTopBtnPanel.WrapContents = $false
 
     $lldpInfoLabelRef = $script:lldpInfoLabel
 
     $getLldpBtn = New-Object System.Windows.Forms.Button
     $getLldpBtn.Text = "Get Switch Info"
-    $getLldpBtn.Width = 120
-    $getLldpBtn.Location = New-Object System.Drawing.Point(10, 15)
+    $getLldpBtn.Width = 135
+    $getLldpBtn.Height = 30
     $getLldpBtn.Add_Click({
         if ($adapterListViewRef.SelectedItems.Count -gt 0) {
             $adapter = $adapterListViewRef.SelectedItems[0].Tag
@@ -762,40 +766,54 @@ function Initialize-Module {
             [System.Windows.Forms.MessageBox]::Show("Select an adapter first", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
         }
     }.GetNewClosure())
-    $lldpPanel.Controls.Add($getLldpBtn)
+    $lldpTopBtnPanel.Controls.Add($getLldpBtn)
 
     $copyLldpBtn = New-Object System.Windows.Forms.Button
     $copyLldpBtn.Text = "Copy"
     $copyLldpBtn.Width = 50
-    $copyLldpBtn.Location = New-Object System.Drawing.Point(135, 15)
+    $copyLldpBtn.Height = 30
     $copyLldpBtn.Add_Click({
         [System.Windows.Forms.Clipboard]::SetText($lldpInfoLabelRef.Text)
         [System.Windows.Forms.MessageBox]::Show("Copied!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
     }.GetNewClosure())
-    $lldpPanel.Controls.Add($copyLldpBtn)
+    $lldpTopBtnPanel.Controls.Add($copyLldpBtn)
 
-    # Setup LLDP button (one-time on tech laptop)
+    $lldpTablePanel.Controls.Add($lldpTopBtnPanel, 0, 0)
+
+    # Info label
+    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
+    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
+    $script:lldpInfoLabel.AutoSize = $true
+    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
+    $script:lldpInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Top
+    $lldpTablePanel.Controls.Add($script:lldpInfoLabel, 0, 1)
+
+    # Bottom setup panel
+    $lldpSetupPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $lldpSetupPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $lldpSetupPanel.WrapContents = $false
+
     $setupLldpBtn = New-Object System.Windows.Forms.Button
     $setupLldpBtn.Text = "Setup LLDP"
     $setupLldpBtn.Width = 90
-    $setupLldpBtn.Location = New-Object System.Drawing.Point(10, 140)
+    $setupLldpBtn.Height = 30
     $setupLldpBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
     $setupLldpBtn.Add_Click({
         & $setupLldpRef -LogBox $diagLogBoxRef
     }.GetNewClosure())
-    $lldpPanel.Controls.Add($setupLldpBtn)
+    $lldpSetupPanel.Controls.Add($setupLldpBtn)
 
-    # Help label
     $lldpHelpLabel = New-Object System.Windows.Forms.Label
     $lldpHelpLabel.Text = "(One-time setup for tech laptop)"
     $lldpHelpLabel.AutoSize = $true
     $lldpHelpLabel.ForeColor = [System.Drawing.Color]::Gray
     $lldpHelpLabel.Font = New-Object System.Drawing.Font("Segoe UI", 7)
-    $lldpHelpLabel.Location = New-Object System.Drawing.Point(105, 145)
-    $lldpPanel.Controls.Add($lldpHelpLabel)
+    $lldpHelpLabel.Padding = New-Object System.Windows.Forms.Padding(5, 8, 0, 0)
+    $lldpSetupPanel.Controls.Add($lldpHelpLabel)
 
-    $lldpPanel.Controls.Add($script:lldpInfoLabel)
-    $lldpGroup.Controls.Add($lldpPanel)
+    $lldpTablePanel.Controls.Add($lldpSetupPanel, 0, 2)
+
+    $lldpGroup.Controls.Add($lldpTablePanel)
 
     $middlePanel.Controls.Add($diagGroup, 0, 0)
     $middlePanel.Controls.Add($lldpGroup, 1, 0)
@@ -903,7 +921,7 @@ function Initialize-Module {
 
     $scanBtn = New-Object System.Windows.Forms.Button
     $scanBtn.Text = "Scan Networks"
-    $scanBtn.Width = 115
+    $scanBtn.Width = 130
     $scanBtn.Add_Click({
         $networksListViewRef.Items.Clear()
         $networks = & $scanNetworksRef

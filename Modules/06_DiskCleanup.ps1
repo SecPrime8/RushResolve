@@ -589,11 +589,11 @@ function Initialize-Module {
     $safeButtonPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
     $safeButtonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 5)
 
-    $scanBtn = New-Object System.Windows.Forms.Button
-    $scanBtn.Text = "Scan"
-    $scanBtn.Width = 100
-    $scanBtn.Height = 30
-    $scanBtn.Add_Click({
+    $script:safeScanBtn = New-Object System.Windows.Forms.Button
+    $script:safeScanBtn.Text = "Scan"
+    $script:safeScanBtn.Width = 100
+    $script:safeScanBtn.Height = 30
+    $script:safeScanBtn.Add_Click({
         Start-AppActivity "Scanning cleanup categories..."
         $script:safeLogBox.Clear()
 
@@ -603,7 +603,7 @@ function Initialize-Module {
 
         foreach ($item in $script:categoryListView.Items) {
             $index++
-            $cat = $item.Tag
+            $cat = if ($item.Tag.Category) { $item.Tag.Category } else { $item.Tag }
             Set-AppProgress -Value $index -Maximum $script:categoryListView.Items.Count -Message "Scanning: $($cat.Name)"
 
             $timestamp = Get-Date -Format "HH:mm:ss"
@@ -641,7 +641,7 @@ function Initialize-Module {
         $script:safeLogBox.AppendText("[$timestamp] Scan complete.`r`n")
         Write-SessionLog -Message "Safe Cleanup scan completed" -Category "Disk Cleanup"
     })
-    $safeButtonPanel.Controls.Add($scanBtn)
+    $safeButtonPanel.Controls.Add($script:safeScanBtn)
 
     $cleanBtn = New-Object System.Windows.Forms.Button
     $cleanBtn.Text = "Clean Selected"
@@ -747,7 +747,7 @@ function Initialize-Module {
         )
 
         # Re-scan to update sizes
-        $scanBtn.PerformClick()
+        $script:safeScanBtn.PerformClick()
     })
     $safeButtonPanel.Controls.Add($cleanBtn)
 
@@ -844,7 +844,7 @@ function Initialize-Module {
 
     $select30Btn = New-Object System.Windows.Forms.Button
     $select30Btn.Text = "Select 30+ Days"
-    $select30Btn.Width = 110
+    $select30Btn.Width = 135
     $select30Btn.Height = 30
     $select30Btn.Add_Click({
         foreach ($item in $script:profileListView.Items) {
@@ -855,7 +855,7 @@ function Initialize-Module {
 
     $select90Btn = New-Object System.Windows.Forms.Button
     $select90Btn.Text = "Select 90+ Days"
-    $select90Btn.Width = 110
+    $select90Btn.Width = 135
     $select90Btn.Height = 30
     $select90Btn.Add_Click({
         foreach ($item in $script:profileListView.Items) {

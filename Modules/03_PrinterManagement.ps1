@@ -350,7 +350,7 @@ function Initialize-Module {
 
     $setDefaultBtn = New-Object System.Windows.Forms.Button
     $setDefaultBtn.Text = "Set Default"
-    $setDefaultBtn.Width = 90
+    $setDefaultBtn.Width = 105
     $setDefaultBtn.Height = 30
     $installedBtnPanel.Controls.Add($setDefaultBtn)
 
@@ -363,7 +363,7 @@ function Initialize-Module {
 
     $clearQueueBtn = New-Object System.Windows.Forms.Button
     $clearQueueBtn.Text = "Clear Queue"
-    $clearQueueBtn.Width = 95
+    $clearQueueBtn.Width = 110
     $clearQueueBtn.Height = 30
     $installedBtnPanel.Controls.Add($clearQueueBtn)
 

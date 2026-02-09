@@ -545,22 +545,23 @@ function Initialize-Module {
     $dcGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
     $dcGroup.Padding = New-Object System.Windows.Forms.Padding(10, 3, 10, 3)
 
-    $dcPanel = New-Object System.Windows.Forms.Panel
+    $dcPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $dcPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $dcPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+    $dcPanel.WrapContents = $false
 
     # DC info labels
     $script:dcInfoLabel = New-Object System.Windows.Forms.Label
     $script:dcInfoLabel.Text = "DC: N/A    IP: N/A`r`nPing: N/A    LDAP: N/A    DNS: N/A"
     $script:dcInfoLabel.AutoSize = $true
     $script:dcInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:dcInfoLabel.Location = New-Object System.Drawing.Point(10, 5)
+    $script:dcInfoLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 5)
     $dcPanel.Controls.Add($script:dcInfoLabel)
 
     $testConnBtn = New-Object System.Windows.Forms.Button
     $testConnBtn.Text = "Test Connectivity"
     $testConnBtn.Width = 140
     $testConnBtn.Height = 30
-    $testConnBtn.Location = New-Object System.Drawing.Point(10, 40)
     $dcPanel.Controls.Add($testConnBtn)
 
     $dcGroup.Controls.Add($dcPanel)
