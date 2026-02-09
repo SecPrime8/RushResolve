@@ -115,6 +115,21 @@ $script:GetServerPrinters = {
     $printers = @()
     $serverName = $Server.TrimStart('\')
 
+    # Quick connectivity check (fail fast if server unreachable)
+    Start-AppActivity "Testing connection to $serverName..."
+    try {
+        # Use WMI ping with 2-second timeout (compatible with PowerShell 5.1)
+        $pingResult = Get-WmiObject -Class Win32_PingStatus -Filter "Address='$serverName' AND Timeout=2000" -ErrorAction Stop
+        if ($pingResult.StatusCode -ne 0) {
+            Write-SessionLog -Message "Print server $serverName is unreachable (ping failed)" -Category "Printer Management"
+            return @()
+        }
+    }
+    catch {
+        Write-SessionLog -Message "Cannot reach print server $serverName - $($_.Exception.Message)" -Category "Printer Management"
+        return @()
+    }
+
     # Method 1: Try Get-Printer cmdlet (requires Print Management)
     Start-AppActivity "Trying Get-Printer cmdlet..."
     try {
@@ -315,7 +330,7 @@ function Initialize-Module {
     $leftPanel.ColumnCount = 1
     $leftPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
     $leftPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
-    $leftPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
+    $leftPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 70))) | Out-Null
 
     # Header
     $installedLabel = New-Object System.Windows.Forms.Label
@@ -354,12 +369,11 @@ function Initialize-Module {
     $setDefaultBtn.Height = 30
     $installedBtnPanel.Controls.Add($setDefaultBtn)
 
-    $removeBtn = New-Object System.Windows.Forms.Button
-    $removeBtn.Text = "Remove"
-    $removeBtn.Width = 75
-    $removeBtn.Height = 30
-    $removeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
-    $installedBtnPanel.Controls.Add($removeBtn)
+    $testPrintBtn = New-Object System.Windows.Forms.Button
+    $testPrintBtn.Text = "Test Page"
+    $testPrintBtn.Width = 85
+    $testPrintBtn.Height = 30
+    $installedBtnPanel.Controls.Add($testPrintBtn)
 
     $clearQueueBtn = New-Object System.Windows.Forms.Button
     $clearQueueBtn.Text = "Clear Queue"
@@ -367,11 +381,12 @@ function Initialize-Module {
     $clearQueueBtn.Height = 30
     $installedBtnPanel.Controls.Add($clearQueueBtn)
 
-    $testPrintBtn = New-Object System.Windows.Forms.Button
-    $testPrintBtn.Text = "Test Page"
-    $testPrintBtn.Width = 75
-    $testPrintBtn.Height = 30
-    $installedBtnPanel.Controls.Add($testPrintBtn)
+    $removeBtn = New-Object System.Windows.Forms.Button
+    $removeBtn.Text = "Remove"
+    $removeBtn.Width = 75
+    $removeBtn.Height = 30
+    $removeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
+    $installedBtnPanel.Controls.Add($removeBtn)
 
     $leftPanel.Controls.Add($installedBtnPanel, 0, 2)
     $script:splitContainer.Panel1.Controls.Add($leftPanel)
@@ -385,7 +400,7 @@ function Initialize-Module {
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 85))) | Out-Null
     $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
-    $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null
+    $rightPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
 
     # Header
     $serverLabel = New-Object System.Windows.Forms.Label
@@ -477,14 +492,6 @@ function Initialize-Module {
     $manualAddBtn.Width = 95
     $manualAddBtn.Height = 30
     $serverBtnPanel.Controls.Add($manualAddBtn)
-
-    # All users checkbox
-    $script:allUsersCheckbox = New-Object System.Windows.Forms.CheckBox
-    $script:allUsersCheckbox.Text = "All Users"
-    $script:allUsersCheckbox.AutoSize = $true
-    $script:allUsersCheckbox.Padding = New-Object System.Windows.Forms.Padding(10, 5, 0, 0)
-    $script:allUsersCheckbox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $serverBtnPanel.Controls.Add($script:allUsersCheckbox)
 
     $rightPanel.Controls.Add($serverBtnPanel, 0, 3)
     $script:splitContainer.Panel2.Controls.Add($rightPanel)
@@ -774,19 +781,13 @@ function Initialize-Module {
 
         $successCount = 0
         $failedPrinters = @()
-        $allUsers = $script:allUsersCheckbox.Checked
-        $modeText = if ($allUsers) { "all users" } else { "current user" }
+        $modeText = "all users"
 
         foreach ($printer in $checkedItems) {
-            if ($allUsers) {
-                $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
-                # Also add for current user so it shows immediately
-                if ($result.Success) {
-                    & $script:AddNetworkPrinter -PrinterPath $printer.FullPath | Out-Null
-                }
-            }
-            else {
-                $result = & $script:AddNetworkPrinter -PrinterPath $printer.FullPath
+            $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
+            # Also add for current user so it shows immediately
+            if ($result.Success) {
+                & $script:AddNetworkPrinter -PrinterPath $printer.FullPath | Out-Null
             }
 
             if ($result.Success) {
@@ -934,18 +935,12 @@ function Initialize-Module {
             # Build the full path from validated components
             $printerPath = "$selectedServer\$printerName"
 
-            $allUsers = $script:allUsersCheckbox.Checked
-            $modeText = if ($allUsers) { "all users" } else { "current user" }
+            $modeText = "all users"
 
-            if ($allUsers) {
-                $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
-                # Also add for current user so it shows immediately
-                if ($result.Success) {
-                    & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
-                }
-            }
-            else {
-                $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
+            $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
+            # Also add for current user so it shows immediately
+            if ($result.Success) {
+                & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
             }
 
             if ($result.Success) {
@@ -974,8 +969,12 @@ function Initialize-Module {
     # Add to tab
     $tab.Controls.Add($script:splitContainer)
 
-    # Set splitter position after adding (avoids size conflicts)
-    $script:splitContainer.SplitterDistance = 400
+    # Set splitter position to 50/50 after form is sized
+    $tab.Add_SizeChanged({
+        if ($script:splitContainer.Width -gt 0) {
+            $script:splitContainer.SplitterDistance = [int]($script:splitContainer.Width / 2)
+        }
+    })
 
     # Initial load - installed printers
     & $script:RefreshInstalledPrinters
