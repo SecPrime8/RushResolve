@@ -49,6 +49,105 @@ RushResolve/
 
 ---
 
+### WinGet Integration (Module 02 - Software Updates)
+
+**What Is WinGet?**
+
+WinGet (Windows Package Manager) is **Microsoft's official command-line package manager** for Windows - functionally equivalent to `apt-get` on Debian/Ubuntu or `yum` on Red Hat.
+
+**Analogy for Linux Admins:**
+```bash
+# Linux
+apt-get update && apt-get upgrade
+
+# Windows (WinGet equivalent)
+winget upgrade --all
+```
+
+**Official Details:**
+- **Developer:** Microsoft Corporation (Windows Developer Platform team)
+- **Maintained By:** Microsoft (not community-maintained)
+- **Source:** https://github.com/microsoft/winget-cli (open source, MIT license)
+- **Status:** Built into Windows 11 by default, available for Windows 10 1809+
+- **Documentation:** https://learn.microsoft.com/en-us/windows/package-manager/ (Microsoft Learn official docs)
+- **Support:** Supported by Microsoft as part of Windows ecosystem
+
+**Maintenance & Updates:**
+- Microsoft employees are primary code maintainers
+- Regular updates released through Microsoft Store (automatic)
+- Security patches handled by Microsoft's security response team
+- Part of Microsoft's "Windows Terminal Family" of tools (alongside PowerShell, Windows Terminal)
+
+**How RushResolve Uses It:**
+
+Module 02 (Software Installer) includes a "Check for Updates" feature that:
+1. Detects if WinGet is installed on the machine
+2. If missing, auto-installs from bundled files in `Tools/WinGet/` (per-user, no admin)
+3. Scans for outdated software using `winget upgrade --include-unknown`
+4. Displays list of available updates in UI
+5. (Future) One-click updates via `winget upgrade --id <AppId> --silent`
+
+**Security Considerations:**
+
+✅ **Microsoft Official Tool** - Not third-party, developed by Microsoft
+✅ **Package Verification** - All packages cryptographically signed
+✅ **Official Sources Only** - Downloads from vendor sites (google.com/chrome, adobe.com, etc.), not mirrors
+✅ **No Malware Risk** - Microsoft validates publishers, packages undergo security review
+✅ **Audit Logging** - RushResolve logs all WinGet commands executed
+✅ **Reduces Attack Surface** - Eliminates techs Googling "download software" and clicking malicious sites
+
+**Portable Deployment:**
+
+WinGet installer is bundled in `Tools/WinGet/` folder:
+- `Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle` (~200MB)
+- `Microsoft.VCLibs.x64.14.00.Desktop.appx` (~6MB)
+- `Microsoft.UI.Xaml.2.8.x64.appx` (~5MB)
+
+**Installation:**
+- Per-user AppX package (no admin required)
+- Installs to `%LOCALAPPDATA%\Microsoft\WindowsApps\`
+- One-time install per user (persists after USB removed)
+- No system-wide changes
+
+**Why This Is Safer Than Current Process:**
+
+**Current State (RUSH):**
+1. Tech Googles "download chrome" → Risk of fake/malicious download sites
+2. Clicks random link → Risk of bundled malware
+3. Downloads .exe from unknown source → Risk of trojan
+4. Runs installer → Malware could install
+
+**With WinGet (RushResolve):**
+1. Tech clicks "Check for Updates" in RushResolve
+2. WinGet queries Microsoft's package repository
+3. WinGet downloads from official vendor site (google.com/chrome)
+4. WinGet verifies SHA256 hash before installation
+5. Malicious package cannot be installed
+
+**Group Policy Consideration:**
+
+If RUSH Group Policy blocks AppX package installation:
+- WinGet feature will gracefully fail (log message shown)
+- Core RushResolve functionality unaffected (printers, domain, diagnostics still work)
+- Can disable WinGet feature entirely if needed
+
+**Alternative (If WinGet Blocked):**
+
+If Cybersecurity team cannot approve WinGet:
+- Remove "Check for Updates" feature from Module 02
+- RushResolve's core value (printer management, domain tools, diagnostics) remains intact
+- Document limitation in deployment guide
+
+**Recommendation:**
+
+WinGet addresses a real security problem at RUSH: techs manually downloading software from potentially malicious websites. Approving WinGet actually **improves** security posture by:
+1. Eliminating fake download sites
+2. Verifying package integrity (SHA256)
+3. Providing audit trail of installations
+4. Standardizing software sources
+
+---
+
 ## 2. Security Controls
 
 ### 2.1 Code Integrity Verification
