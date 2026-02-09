@@ -48,40 +48,48 @@ Training a new field tech currently requires:
 
 ---
 
-## The Solution: One Tool, One Workflow
+## The Solution: One Tool, One Place
 
-**RushResolve** consolidates the most common field service tasks into a single, standardized application.
+**RushResolve** consolidates the most common field service tasks into a single, unified application.
 
-Instead of opening five different tools, our techs open one. Instead of 17 different approaches, everyone follows the same proven workflow.
+Instead of opening five different tools, our techs open one. Instead of hunting for the right application, everything they need is in one place.
 
 ### What It Does (In Plain English)
-RushResolve handles the routine tasks that consume 80% of field service time:
-- Installing and troubleshooting printers
-- Diagnosing computer health issues
-- Reconnecting computers to the network
-- Checking system status and performance
-- Cleaning up disk space safely
+RushResolve puts all the essential field service tools in one place:
+- Printer management (install, troubleshoot, test)
+- System diagnostics and health checks
+- Domain and network connectivity tools
+- System information and performance monitoring
+- Disk cleanup and maintenance utilities
 
-Everything runs through **one interface** with **step-by-step workflows** that guide techs through the right process, every time.
+Everything is accessible through **one interface** instead of juggling five different applications. No more hunting for the right tool—it's all there when you need it.
 
 ### Why It Matters
-**For Field Techs:** Less frustration, faster ticket resolution, clear guidance on what to do next
+**For Field Techs:** Less frustration, faster ticket resolution, everything they need in one place
 
-**For Managers:** Predictable service quality, easier performance tracking, faster onboarding
+**For Managers:** Better visibility, easier performance tracking, faster onboarding
 
-**For IT Leadership:** Standardized processes, audit trails, and a platform for future automation
+**For IT Leadership:** Foundation for standardized processes, audit trails, and a platform for future automation
 
 ---
 
 ## The Business Case: What We Gain
 
-### Immediate Impact (Months 1-3)
+### Immediate Impact (Phase 1 - Today)
 - **Faster Ticket Resolution** - Estimated 15-20% reduction in time per ticket by eliminating tool-switching
-- **Consistent Service Quality** - Every tech follows the same process, reducing repeat visits and escalations
-- **Onboarding Acceleration** - New techs productive in 2-3 weeks instead of 3-4 months
+- **Easier Access** - All essential tools in one place means less time hunting for the right application
+- **Onboarding Acceleration** - New techs learn one tool instead of five separate applications
 - **Full Audit Trail** - Every action logged automatically for accountability and troubleshooting
 
-### Strategic Value (Months 4+)
+### Enhanced Value (Phase 2 - Next)
+Once techs are comfortable with the consolidated tools, we can add guided workflows:
+- **Step-by-step processes** for common scenarios (printer issues, domain connectivity, etc.)
+- **Consistent service delivery** - Every tech follows the same proven approach
+- **Built-in best practices** - New techs get guidance, experienced techs work faster
+
+**Example:** When a printer issue comes in, RushResolve walks the tech through: check printer status → verify network connectivity → reinstall if needed → test. Same process, every time, every tech.
+
+### Strategic Value (Long-term)
 RushResolve becomes a **platform for IT-wide efficiency**:
 
 When Cybersecurity needs to ensure every computer has encryption enabled, we don't have to train 17 techs on a new manual process. We build the check directly into RushResolve—one update, instant deployment, consistent execution.
@@ -127,17 +135,19 @@ I'd like to deploy RushResolve to our field service team after a security review
 
 ## The Path Forward
 
-### Phase 1: Security Review (1-2 weeks)
+### Deployment Roadmap
+
+**Step 1: Security Review** (1-2 weeks)
 Cybersecurity team reviews code, validates security model, provides feedback
 
-### Phase 2: Pilot (2 weeks)
+**Step 2: Pilot** (2 weeks)
 5 field techs use RushResolve in production, gather feedback, measure impact
 
-### Phase 3: Full Rollout (1 week)
+**Step 3: Full Rollout** (1 week)
 Deploy to all 17 techs, monitor adoption, refine based on real-world use
 
-### Phase 4: Future Enhancement (Ongoing)
-Partner with other IT departments to identify automation opportunities
+**Step 4: Workflow Enhancement** (Ongoing)
+Add guided workflows based on tech feedback, partner with other IT departments to identify automation opportunities
 
 ---
 
