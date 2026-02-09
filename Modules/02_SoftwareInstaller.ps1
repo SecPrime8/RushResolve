@@ -7,7 +7,7 @@
 #>
 
 $script:ModuleName = "Software Installer"
-$script:ModuleDescription = "Install applications from network share or local directory"
+$script:ModuleDescription = "Install applications from network share or check for updates"
 
 #region Script Blocks (defined first to avoid scope issues)
 
@@ -410,6 +410,141 @@ $script:InstallApp = {
     $LogBox.ScrollToCaret()
 }
 
+# Scan for available updates using WinGet
+$script:ScanForUpdates = {
+    param(
+        [System.Windows.Forms.TextBox]$LogBox = $null
+    )
+
+    $updates = @()
+
+    $logMsg = {
+        param([string]$Msg)
+        if ($LogBox) {
+            $ts = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$ts]   $Msg`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+    }
+
+    # Check if WinGet is available
+    try {
+        $wingetPath = (Get-Command winget -ErrorAction Stop).Source
+        & $logMsg "Found WinGet at: $wingetPath"
+    }
+    catch {
+        & $logMsg "ERROR: WinGet not found. Install from Microsoft Store (App Installer)."
+        return $updates
+    }
+
+    & $logMsg "Scanning for available updates..."
+    & $logMsg "This may take 30-60 seconds..."
+
+    try {
+        # Run winget upgrade and parse output
+        $output = winget upgrade --include-unknown 2>&1 | Out-String
+
+        # Parse the table output
+        $lines = $output -split "`n"
+        $inTable = $false
+        $headerProcessed = $false
+
+        foreach ($line in $lines) {
+            # Detect start of results table
+            if ($line -match "^Name\s+Id\s+Version\s+Available") {
+                $inTable = $true
+                $headerProcessed = $true
+                continue
+            }
+
+            # Detect separator line (dashes)
+            if ($inTable -and $line -match "^-+") {
+                continue
+            }
+
+            # Detect end of table
+            if ($inTable -and ($line.Trim() -eq "" -or $line -match "^\d+ upgrades available")) {
+                break
+            }
+
+            # Parse data rows
+            if ($inTable -and $headerProcessed -and $line.Trim() -ne "") {
+                # WinGet output format: Name  Id  Version  Available  Source
+                # Use regex to extract fields (handles spaces in names)
+                if ($line -match "^(.+?)\s{2,}([\w\.\-]+)\s+(\S+)\s+(\S+)\s*(\S*)") {
+                    $name = $matches[1].Trim()
+                    $id = $matches[2].Trim()
+                    $currentVersion = $matches[3].Trim()
+                    $availableVersion = $matches[4].Trim()
+                    $source = if ($matches[5]) { $matches[5].Trim() } else { "winget" }
+
+                    # Skip if versions are the same or unknown
+                    if ($currentVersion -ne $availableVersion -and $currentVersion -ne "Unknown") {
+                        $updates += @{
+                            Name = $name
+                            Id = $id
+                            CurrentVersion = $currentVersion
+                            AvailableVersion = $availableVersion
+                            Source = $source
+                        }
+                    }
+                }
+            }
+        }
+
+        & $logMsg "Found $($updates.Count) application(s) with available updates"
+    }
+    catch {
+        & $logMsg "ERROR scanning for updates: $_"
+    }
+
+    return $updates
+}
+
+# Update selected applications using WinGet
+$script:UpdateApp = {
+    param(
+        [hashtable]$App,
+        [System.Windows.Forms.TextBox]$LogBox
+    )
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Updating $($App.Name) ($($App.CurrentVersion) → $($App.AvailableVersion))...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        # Run winget upgrade for this specific app
+        $LogBox.AppendText("[$timestamp] Running: winget upgrade --id $($App.Id) --silent --accept-source-agreements --accept-package-agreements`r`n")
+        $LogBox.ScrollToCaret()
+
+        $result = winget upgrade --id $App.Id --silent --accept-source-agreements --accept-package-agreements 2>&1
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+
+        # Check if successful (WinGet returns 0 on success)
+        if ($LASTEXITCODE -eq 0) {
+            $LogBox.AppendText("[$timestamp] SUCCESS: $($App.Name) updated to $($App.AvailableVersion)`r`n")
+        }
+        else {
+            $LogBox.AppendText("[$timestamp] WARNING: Update completed with exit code $LASTEXITCODE`r`n")
+            # Show relevant output lines
+            $outputLines = $result | Select-Object -Last 5
+            foreach ($line in $outputLines) {
+                $LogBox.AppendText("    $line`r`n")
+            }
+        }
+    }
+    catch {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $LogBox.AppendText("[$timestamp] ERROR: $($App.Name) - $_`r`n")
+    }
+
+    $LogBox.AppendText("`r`n")
+    $LogBox.ScrollToCaret()
+}
+
 #endregion
 
 function Initialize-Module {
@@ -420,6 +555,25 @@ function Initialize-Module {
 
     # Store apps list at script level
     $script:AppsList = @()
+    $script:UpdatesList = @()
+
+    # Create TabControl to house Install and Updates tabs
+    $tabControl = New-Object System.Windows.Forms.TabControl
+    $tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    # Tab 1: Install Software
+    $installTab = New-Object System.Windows.Forms.TabPage
+    $installTab.Text = "Install Software"
+    $installTab.UseVisualStyleBackColor = $true
+    $tabControl.TabPages.Add($installTab)
+
+    # Tab 2: Check for Updates
+    $updatesTab = New-Object System.Windows.Forms.TabPage
+    $updatesTab.Text = "Check for Updates"
+    $updatesTab.UseVisualStyleBackColor = $true
+    $tabControl.TabPages.Add($updatesTab)
+
+    #region Install Software Tab (existing functionality)
 
     # Main layout - TableLayoutPanel for structured layout
     $mainPanel = New-Object System.Windows.Forms.TableLayoutPanel
@@ -932,7 +1086,7 @@ Requires Elevation: $elevText
 
     #endregion
 
-    $tab.Controls.Add($mainPanel)
+    $installTab.Controls.Add($mainPanel)
 
     # Initialize textbox with saved path (Local/USB is default, index 1)
     $script:pathTextBox.Text = $script:localPath
@@ -949,4 +1103,247 @@ Requires Elevation: $elevText
     else {
         $script:installerLogBox.AppendText("[$timestamp] Enter a path or Browse, then click Refresh.`r`n")
     }
+
+    #endregion Install Software Tab
+
+    #region Check for Updates Tab
+
+    # Updates panel layout
+    $updatesPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $updatesPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $updatesPanel.RowCount = 4
+    $updatesPanel.ColumnCount = 1
+    $updatesPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
+    $updatesPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
+    $updatesPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
+    $updatesPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
+
+    # Row 0: Scan button
+    $scanPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $scanPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $scanPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $scanBtn = New-Object System.Windows.Forms.Button
+    $scanBtn.Text = "Check for Updates"
+    $scanBtn.Width = 150
+    $scanBtn.Height = 35
+    $scanBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
+    $scanPanel.Controls.Add($scanBtn)
+
+    $scanInfoLabel = New-Object System.Windows.Forms.Label
+    $scanInfoLabel.Text = "Scan for application updates using Windows Package Manager (WinGet)"
+    $scanInfoLabel.AutoSize = $true
+    $scanInfoLabel.Padding = New-Object System.Windows.Forms.Padding(10, 10, 0, 0)
+    $scanInfoLabel.ForeColor = [System.Drawing.Color]::Gray
+    $scanPanel.Controls.Add($scanInfoLabel)
+
+    $updatesPanel.Controls.Add($scanPanel, 0, 0)
+
+    # Row 1: Updates ListView
+    $updatesListGroup = New-Object System.Windows.Forms.GroupBox
+    $updatesListGroup.Text = "Available Updates"
+    $updatesListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $updatesListGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:updatesListView = New-Object System.Windows.Forms.ListView
+    $script:updatesListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:updatesListView.View = [System.Windows.Forms.View]::Details
+    $script:updatesListView.CheckBoxes = $true
+    $script:updatesListView.FullRowSelect = $true
+    $script:updatesListView.GridLines = $true
+    $script:updatesListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    $script:updatesListView.Columns.Add("Application", 250) | Out-Null
+    $script:updatesListView.Columns.Add("Current Version", 120) | Out-Null
+    $script:updatesListView.Columns.Add("Available Version", 120) | Out-Null
+    $script:updatesListView.Columns.Add("Source", 80) | Out-Null
+
+    $updatesListGroup.Controls.Add($script:updatesListView)
+    $updatesPanel.Controls.Add($updatesListGroup, 0, 1)
+
+    # Row 2: Action buttons
+    $updateButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $updateButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $updateButtonPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $updateSelectedBtn = New-Object System.Windows.Forms.Button
+    $updateSelectedBtn.Text = "Update Selected"
+    $updateSelectedBtn.Width = 135
+    $updateSelectedBtn.Height = 30
+    $updateSelectedBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
+    $updateButtonPanel.Controls.Add($updateSelectedBtn)
+
+    $updateAllBtn = New-Object System.Windows.Forms.Button
+    $updateAllBtn.Text = "Update All"
+    $updateAllBtn.Width = 100
+    $updateAllBtn.Height = 30
+    $updateAllBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
+    $updateButtonPanel.Controls.Add($updateAllBtn)
+
+    $selectAllUpdatesBtn = New-Object System.Windows.Forms.Button
+    $selectAllUpdatesBtn.Text = "Select All"
+    $selectAllUpdatesBtn.Width = 80
+    $selectAllUpdatesBtn.Height = 30
+    $updateButtonPanel.Controls.Add($selectAllUpdatesBtn)
+
+    $clearUpdatesBtn = New-Object System.Windows.Forms.Button
+    $clearUpdatesBtn.Text = "Clear"
+    $clearUpdatesBtn.Width = 60
+    $clearUpdatesBtn.Height = 30
+    $updateButtonPanel.Controls.Add($clearUpdatesBtn)
+
+    $updatesPanel.Controls.Add($updateButtonPanel, 0, 2)
+
+    # Row 3: Update log
+    $updateLogGroup = New-Object System.Windows.Forms.GroupBox
+    $updateLogGroup.Text = "Update Log"
+    $updateLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $updateLogGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:updateLogBox = New-Object System.Windows.Forms.TextBox
+    $script:updateLogBox.Multiline = $true
+    $script:updateLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:updateLogBox.ReadOnly = $true
+    $script:updateLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:updateLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:updateLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:updateLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $updateLogGroup.Controls.Add($script:updateLogBox)
+    $updatesPanel.Controls.Add($updateLogGroup, 0, 3)
+
+    # Event handlers for Updates tab
+
+    # Scan button
+    $scanBtn.Add_Click({
+        $script:updatesListView.Items.Clear()
+        $script:UpdatesList = @()
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:updateLogBox.AppendText("[$timestamp] Checking for updates...`r`n")
+        Start-AppActivity "Scanning for updates..."
+
+        $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
+        $script:UpdatesList = $updates
+        Clear-AppStatus
+
+        # Populate ListView
+        foreach ($update in $updates) {
+            $item = New-Object System.Windows.Forms.ListViewItem($update.Name)
+            $item.SubItems.Add($update.CurrentVersion) | Out-Null
+            $item.SubItems.Add($update.AvailableVersion) | Out-Null
+            $item.SubItems.Add($update.Source) | Out-Null
+            $item.Tag = $update
+            $script:updatesListView.Items.Add($item) | Out-Null
+        }
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:updateLogBox.AppendText("[$timestamp] Scan complete. Found $($updates.Count) update(s).`r`n")
+        $script:updateLogBox.ScrollToCaret()
+    })
+
+    # Select All button
+    $selectAllUpdatesBtn.Add_Click({
+        foreach ($item in $script:updatesListView.Items) {
+            $item.Checked = $true
+        }
+    })
+
+    # Clear button
+    $clearUpdatesBtn.Add_Click({
+        foreach ($item in $script:updatesListView.Items) {
+            $item.Checked = $false
+        }
+    })
+
+    # Update Selected button
+    $updateSelectedBtn.Add_Click({
+        $selectedItems = @()
+        foreach ($item in $script:updatesListView.CheckedItems) {
+            $selectedItems += $item.Tag
+        }
+
+        if ($selectedItems.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Please select at least one application to update.",
+                "No Selection",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Update $($selectedItems.Count) application(s)?`n`nThis will download and install updates in the background.",
+            "Confirm Updates",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $total = $selectedItems.Count
+            $current = 0
+
+            foreach ($app in $selectedItems) {
+                $current++
+                Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
+                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+            }
+
+            Clear-AppStatus
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:updateLogBox.AppendText("[$timestamp] --- Update batch complete ---`r`n")
+            $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to refresh the list.`r`n")
+            $script:updateLogBox.ScrollToCaret()
+        }
+    })
+
+    # Update All button
+    $updateAllBtn.Add_Click({
+        if ($script:UpdatesList.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "No updates available. Click 'Check for Updates' first.",
+                "No Updates",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Update all $($script:UpdatesList.Count) application(s)?`n`nThis will download and install all available updates.",
+            "Confirm Update All",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $total = $script:UpdatesList.Count
+            $current = 0
+
+            foreach ($app in $script:UpdatesList) {
+                $current++
+                Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
+                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+            }
+
+            Clear-AppStatus
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:updateLogBox.AppendText("[$timestamp] --- Update all complete ---`r`n")
+            $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to refresh the list.`r`n")
+            $script:updateLogBox.ScrollToCaret()
+        }
+    })
+
+    $updatesTab.Controls.Add($updatesPanel)
+
+    # Initial log
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $script:updateLogBox.AppendText("[$timestamp] Software Updates ready.`r`n")
+    $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to scan for available updates.`r`n")
+
+    #endregion Check for Updates Tab
+
+    # Add TabControl to main tab
+    $tab.Controls.Add($tabControl)
 }

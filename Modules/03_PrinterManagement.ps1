@@ -85,24 +85,33 @@ $script:GetInstalledPrinters = {
         }
     }
     catch {
-        # Fallback to Get-Printer if WMI fails
-        try {
-            $getPrinters = Get-Printer -ErrorAction Stop
-            foreach ($p in $getPrinters) {
-                $isDefault = ($p.Name -eq (Get-WmiObject -Query "SELECT * FROM Win32_Printer WHERE Default=TRUE" -ErrorAction SilentlyContinue).Name)
-                $printers += @{
-                    Name = $p.Name
-                    IsDefault = $isDefault
-                    IsNetwork = ($p.Type -eq "Connection")
-                    Status = $p.PrinterStatus
-                    PortName = $p.PortName
-                    Location = $p.Location
-                    Comment = $p.Comment
+        # Fallback to Get-Printer if WMI fails (only if PrintManagement available)
+        if ($script:HasPrintManagement) {
+            try {
+                $getPrinters = Get-Printer -ErrorAction Stop
+                foreach ($p in $getPrinters) {
+                    $isDefault = $false
+                    try {
+                        $defaultPrinter = Get-WmiObject -Query "SELECT * FROM Win32_Printer WHERE Default=TRUE" -ErrorAction SilentlyContinue
+                        $isDefault = ($p.Name -eq $defaultPrinter.Name)
+                    }
+                    catch {
+                        # Ignore error checking default status
+                    }
+                    $printers += @{
+                        Name = $p.Name
+                        IsDefault = $isDefault
+                        IsNetwork = ($p.Type -eq "Connection")
+                        Status = $p.PrinterStatus
+                        PortName = $p.PortName
+                        Location = $p.Location
+                        Comment = $p.Comment
+                    }
                 }
             }
-        }
-        catch {
-            # Return empty if both fail
+            catch {
+                # Return empty if both fail
+            }
         }
     }
     return $printers
@@ -130,29 +139,31 @@ $script:GetServerPrinters = {
         return @()
     }
 
-    # Method 1: Try Get-Printer cmdlet (requires Print Management)
-    Start-AppActivity "Trying Get-Printer cmdlet..."
-    try {
-        $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
-        foreach ($p in $serverPrinters) {
-            if ($p.Shared) {
-                $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
-                $printers += @{
-                    Name = $p.Name
-                    ShareName = $shareName
-                    FullPath = "\\$serverName\$shareName"
-                    Location = $p.Location
-                    Comment = $p.Comment
-                    DriverName = $p.DriverName
+    # Method 1: Try Get-Printer cmdlet (requires Print Management) - Skip if not available
+    if ($script:HasPrintManagement) {
+        Start-AppActivity "Trying Get-Printer cmdlet..."
+        try {
+            $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
+            foreach ($p in $serverPrinters) {
+                if ($p.Shared) {
+                    $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
+                    $printers += @{
+                        Name = $p.Name
+                        ShareName = $shareName
+                        FullPath = "\\$serverName\$shareName"
+                        Location = $p.Location
+                        Comment = $p.Comment
+                        DriverName = $p.DriverName
+                    }
                 }
             }
+            if ($printers.Count -gt 0) {
+                return $printers | Sort-Object { $_.Name }
+            }
         }
-        if ($printers.Count -gt 0) {
-            return $printers | Sort-Object { $_.Name }
+        catch {
+            # Method 1 failed, try next
         }
-    }
-    catch {
-        # Method 1 failed, try next
     }
 
     # Method 2: Try WMI (older but often works)
@@ -216,8 +227,21 @@ $script:GetServerPrinters = {
 $script:AddNetworkPrinter = {
     param([string]$PrinterPath)
 
+    # Method 1: Try Add-Printer cmdlet (if available)
+    if ($script:HasPrintManagement) {
+        try {
+            Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
+            return @{ Success = $true; Error = $null }
+        }
+        catch {
+            # Fall through to WMI method
+        }
+    }
+
+    # Method 2: Use WScript.Network COM object (Windows 10 compatible)
     try {
-        Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
+        $wscript = New-Object -ComObject WScript.Network
+        $wscript.AddWindowsPrinterConnection($PrinterPath)
         return @{ Success = $true; Error = $null }
     }
     catch {
@@ -252,8 +276,21 @@ $script:AddNetworkPrinterAllUsers = {
 $script:RemovePrinterByName = {
     param([string]$PrinterName)
 
+    # Method 1: Try Remove-Printer cmdlet (if available)
+    if ($script:HasPrintManagement) {
+        try {
+            Remove-Printer -Name $PrinterName -ErrorAction Stop
+            return @{ Success = $true; Error = $null }
+        }
+        catch {
+            # Fall through to WMI method
+        }
+    }
+
+    # Method 2: Use WScript.Network COM object (Windows 10 compatible)
     try {
-        Remove-Printer -Name $PrinterName -ErrorAction Stop
+        $wscript = New-Object -ComObject WScript.Network
+        $wscript.RemovePrinterConnection($PrinterName, $true, $true)
         return @{ Success = $true; Error = $null }
     }
     catch {
@@ -314,6 +351,12 @@ function Initialize-Module {
         [Parameter(Mandatory)]
         [System.Windows.Forms.TabPage]$tab
     )
+
+    # Windows 10 compatibility check - verify PrintManagement module availability
+    $script:HasPrintManagement = $null -ne (Get-Command "Get-Printer" -ErrorAction SilentlyContinue)
+    if (-not $script:HasPrintManagement) {
+        Write-SessionLog -Message "PrintManagement module not available - using WMI fallback mode" -Category "Printer Management"
+    }
 
     # Main layout - split panel (left: installed, right: server browser)
     $script:splitContainer = New-Object System.Windows.Forms.SplitContainer
@@ -976,11 +1019,28 @@ function Initialize-Module {
         }
     })
 
-    # Initial load - installed printers
-    & $script:RefreshInstalledPrinters
+    # Initial load - installed printers (with error handling for Windows 10 compatibility)
+    try {
+        & $script:RefreshInstalledPrinters
+    }
+    catch {
+        Write-SessionLog -Message "Failed to load installed printers during module init: $($_.Exception.Message)" -Category "Printer Management"
+        # UI will still load, user can manually refresh
+    }
 
-    # Auto-load server printers if default server is configured
+    # Auto-load server printers if default server is configured (with error handling)
     if ($script:PrintServer) {
-        & $script:RefreshServerPrinters
+        try {
+            & $script:RefreshServerPrinters
+        }
+        catch {
+            Write-SessionLog -Message "Failed to auto-load server printers during module init: $($_.Exception.Message)" -Category "Printer Management"
+            # UI will still load, user can manually browse
+        }
+    }
+
+    # Show compatibility note if PrintManagement module not available
+    if (-not $script:HasPrintManagement) {
+        Set-AppStatus "Note: Using Windows 10 compatibility mode (WMI-based printer management)"
     }
 }
