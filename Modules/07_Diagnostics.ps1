@@ -847,6 +847,99 @@ $script:CollectResourceUsage = {
 
 #endregion
 
+#region Battery Health Collector
+
+$script:CollectBatteryHealth = {
+    param([scriptblock]$Log)
+
+    $findings = @()
+
+    # Check if battery exists
+    $battery = Get-WmiObject -Class Win32_Battery -ErrorAction SilentlyContinue
+    if (-not $battery) {
+        if ($Log) { & $Log "No battery detected (desktop or removed)" }
+        $findings += & $script:NewFinding -Category "Battery" `
+            -Issue "No battery detected" `
+            -Severity "Info" `
+            -Recommendation "Desktop system or battery removed"
+        return $findings
+    }
+
+    if ($Log) { & $Log "Checking battery health..." }
+
+    # Get battery status
+    $statusText = switch ($battery.BatteryStatus) {
+        1 { "Discharging" }
+        2 { "AC Power" }
+        3 { "Fully Charged" }
+        4 { "Low" }
+        5 { "Critical" }
+        default { "Unknown" }
+    }
+
+    if ($Log) { & $Log "  Status: $statusText, Charge: $($battery.EstimatedChargeRemaining)%" }
+
+    # Get design vs full charge capacity (requires WMI root\WMI namespace)
+    try {
+        $fullCharge = Get-WmiObject -Namespace root\WMI -Class BatteryFullChargedCapacity -ErrorAction Stop
+        $design = Get-WmiObject -Namespace root\WMI -Class BatteryStaticData -ErrorAction Stop
+
+        if ($fullCharge -and $design -and $design.DesignedCapacity -gt 0) {
+            $healthPercent = [math]::Round(($fullCharge.FullChargedCapacity / $design.DesignedCapacity) * 100)
+
+            if ($Log) { & $Log "  Health: $healthPercent% (Full: $($fullCharge.FullChargedCapacity) mWh / Design: $($design.DesignedCapacity) mWh)" }
+
+            # Determine severity based on health
+            if ($healthPercent -lt 40) {
+                $findings += & $script:NewFinding -Category "Battery" `
+                    -Issue "Battery critically degraded ($healthPercent%)" `
+                    -Severity "Critical" `
+                    -Recommendation "Battery replacement recommended - capacity severely reduced" `
+                    -Details "Full charge capacity is only $healthPercent% of original design capacity"
+            }
+            elseif ($healthPercent -lt 60) {
+                $findings += & $script:NewFinding -Category "Battery" `
+                    -Issue "Battery degraded ($healthPercent% health)" `
+                    -Severity "Warning" `
+                    -Recommendation "Consider battery replacement soon" `
+                    -Details "Battery holds $healthPercent% of original capacity"
+            }
+            else {
+                $findings += & $script:NewFinding -Category "Battery" `
+                    -Issue "Battery health: $healthPercent%" `
+                    -Severity "OK" `
+                    -Recommendation "-" `
+                    -Details "Status: $statusText, Charge: $($battery.EstimatedChargeRemaining)%"
+            }
+
+            # Get cycle count if available
+            $cycleCount = $design.CycleCount
+            if ($cycleCount -and $cycleCount -gt 0) {
+                if ($Log) { & $Log "  Cycle count: $cycleCount" }
+                if ($cycleCount -gt 500) {
+                    $findings += & $script:NewFinding -Category "Battery" `
+                        -Issue "High cycle count ($cycleCount)" `
+                        -Severity "Warning" `
+                        -Recommendation "Battery has exceeded typical lifespan cycles"
+                }
+            }
+        }
+    }
+    catch {
+        if ($Log) { & $Log "  Could not read detailed battery info: $($_.Exception.Message)" }
+        # Fallback to basic info only
+        $findings += & $script:NewFinding -Category "Battery" `
+            -Issue "Battery present - $statusText" `
+            -Severity "Info" `
+            -Recommendation "Run powercfg /batteryreport for detailed health" `
+            -Details "Charge: $($battery.EstimatedChargeRemaining)%"
+    }
+
+    return $findings
+}
+
+#endregion
+
 #region HP HPIA Integration
 
 $script:RunHPIAAnalysis = {
@@ -1240,7 +1333,8 @@ function Initialize-Module {
             @{ Name = "Drivers"; Script = $script:CollectDriverIssues },
             @{ Name = "Thermal"; Script = $script:CollectThermalData },
             @{ Name = "Stability"; Script = $script:CollectSystemStability },
-            @{ Name = "Resources"; Script = $script:CollectResourceUsage }
+            @{ Name = "Resources"; Script = $script:CollectResourceUsage },
+            @{ Name = "Battery"; Script = $script:CollectBatteryHealth }
         )
 
         # Add HP check if HP machine
