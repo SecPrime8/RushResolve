@@ -114,14 +114,14 @@ Three questions executives always ask:
 
 ---
 
-## The Ask
+## What I'm Proposing
 
-I'm requesting approval to deploy RushResolve to all 17 field service technicians after a security review and pilot phase.
+I'd like to deploy RushResolve to our field service team after a security review and pilot phase.
 
-**What I need from you:**
-1. **Green light** to proceed with pilot deployment (5 techs, 2 weeks)
+**What this needs:**
+1. **Approval** to proceed with pilot deployment (5 techs, 2 weeks)
 2. **Cybersecurity coordination** for code review and security validation
-3. **Future support** for cross-department collaboration as this evolves into a broader efficiency platform
+3. **Support for future collaboration** with other IT departments as this evolves into a broader efficiency platform
 
 ---
 
@@ -145,10 +145,10 @@ Partner with other IT departments to identify automation opportunities
 
 Our field services team is functioning, but not optimally. Every day we delay is another day we lose hours to inefficient workflows, inconsistent service, and training overhead.
 
-RushResolve is ready. It's been built, tested, and refined based on real field tech needs. The only question is: do we want to keep doing things the hard way, or do we want to give our techs the tools they need to work smarter?
+RushResolve is ready—built, tested, and refined based on real field tech needs. I believe this is an opportunity to give our team the tools they need to work smarter, and I'm ready to demonstrate how it works in practice.
 
 ---
 
-**Contact:** Luis Arauz | Field Services | RUMC IT
-**Next Step:** Schedule a 30-minute walkthrough demo
+**Prepared by:** Luis Arauz | Field Services | RUMC IT
+**Ready to discuss:** Live demo available at your convenience
 
