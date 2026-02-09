@@ -600,6 +600,189 @@ $script:UpdateApp = {
     $LogBox.ScrollToCaret()
 }
 
+# Query GPO Software Assignments
+$script:QueryGPOSoftware = {
+    param(
+        [System.Windows.Forms.TextBox]$LogBox = $null
+    )
+
+    $packages = @()
+
+    $logMsg = {
+        param([string]$Msg)
+        if ($LogBox) {
+            $ts = Get-Date -Format "HH:mm:ss"
+            $LogBox.AppendText("[$ts]   $Msg`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+    }
+
+    & $logMsg "Querying Group Policy software assignments..."
+
+    try {
+        # Get GPO Resultant Set of Policy
+        & $logMsg "Running Get-GPResultantSetOfPolicy..."
+        $rsopReport = gpresult /Scope Computer /R 2>&1 | Out-String
+
+        # Alternative: Try Get-GPResultantSetOfPolicy if available
+        try {
+            & $logMsg "Attempting detailed GPO query..."
+            $rsop = Get-GPResultantSetOfPolicy -ReportType Xml -Computer $env:COMPUTERNAME -ErrorAction Stop
+            [xml]$xml = $rsop
+
+            # Define namespace
+            $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+            $ns.AddNamespace("q1", "http://www.microsoft.com/GroupPolicy/Rsop")
+
+            # Find software packages
+            $softwareNodes = $xml.SelectNodes("//q1:Software", $ns)
+
+            if ($softwareNodes) {
+                & $logMsg "Found $($softwareNodes.Count) software assignment(s) in GPO"
+
+                foreach ($node in $softwareNodes) {
+                    $pkgs = $node.SelectNodes("q1:Package", $ns)
+                    foreach ($pkg in $pkgs) {
+                        $name = $pkg.Name
+                        $state = $pkg.State  # "Installed" or "Available"
+                        $path = $pkg.Path    # Network share path
+
+                        if ($name -and $path) {
+                            $packages += @{
+                                Name = $name
+                                State = $state
+                                Path = $path
+                                Source = "GPO"
+                            }
+                            & $logMsg "  Found: $name ($state)"
+                        }
+                    }
+                }
+            }
+            else {
+                & $logMsg "No software assignments found in GPO XML"
+            }
+        }
+        catch {
+            & $logMsg "Get-GPResultantSetOfPolicy failed: $($_.Exception.Message)"
+            & $logMsg "This is normal if you don't have ActiveDirectory module or aren't on domain."
+        }
+
+        # Fallback: Parse gpresult output (less reliable but doesn't need AD module)
+        if ($packages.Count -eq 0) {
+            & $logMsg "Attempting to parse gpresult output..."
+
+            # Look for "Software Installations" section in gpresult
+            if ($rsopReport -match "(?s)Software Installations.*?(?=\r?\n\r?\n[A-Z]|\z)") {
+                $softwareSection = $matches[0]
+                & $logMsg "Found Software Installations section in gpresult"
+
+                # This is a simplified parser - actual format may vary
+                # Real implementation would need testing on RUSH machines
+                & $logMsg "Note: gpresult parsing requires testing on actual GPO environment"
+            }
+        }
+
+        if ($packages.Count -eq 0) {
+            & $logMsg ""
+            & $logMsg "No GPO software packages found."
+            & $logMsg "Possible reasons:"
+            & $logMsg "  - No software deployed via Group Policy"
+            & $logMsg "  - Computer not on domain"
+            & $logMsg "  - Insufficient permissions to query GPO"
+        }
+    }
+    catch {
+        & $logMsg "ERROR querying GPO: $_"
+    }
+
+    return $packages
+}
+
+# Install package from GPO network share
+$script:InstallGPOPackage = {
+    param(
+        [hashtable]$Package,
+        [System.Windows.Forms.TextBox]$LogBox
+    )
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Installing $($Package.Name) from GPO share...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        $msiPath = $Package.Path
+
+        # Verify network path accessible
+        if (-not (Test-Path $msiPath)) {
+            $LogBox.AppendText("[$timestamp] ERROR: Cannot access $msiPath`r`n")
+            $LogBox.AppendText("[$timestamp] Check network connectivity and share permissions.`r`n")
+            $LogBox.ScrollToCaret()
+            return
+        }
+
+        $LogBox.AppendText("[$timestamp] Source: $msiPath`r`n")
+        $LogBox.ScrollToCaret()
+
+        # Create log path
+        $logPath = "$env:TEMP\RushResolve_GPO_Install_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+
+        # Build msiexec arguments
+        $arguments = @(
+            "/i"
+            "`"$msiPath`""
+            "/quiet"
+            "/norestart"
+            "/l*v"
+            "`"$logPath`""
+        )
+
+        $LogBox.AppendText("[$timestamp] Running msiexec (silent install)...`r`n")
+        $LogBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+
+        # Run elevated install
+        $result = Start-ElevatedProcess -FilePath "msiexec.exe" `
+            -ArgumentList ($arguments -join " ") `
+            -Wait -Hidden:$true `
+            -OperationName "install $($Package.Name)"
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+
+        if ($result.Success) {
+            if ($result.ExitCode -eq 0) {
+                $LogBox.AppendText("[$timestamp] SUCCESS: $($Package.Name) installed`r`n")
+                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
+            }
+            elseif ($result.ExitCode -eq 3010) {
+                $LogBox.AppendText("[$timestamp] SUCCESS: $($Package.Name) installed (reboot required)`r`n")
+                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
+            }
+            elseif ($result.ExitCode -eq 1641) {
+                $LogBox.AppendText("[$timestamp] SUCCESS: $($Package.Name) installed (restart initiated)`r`n")
+                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
+            }
+            else {
+                $LogBox.AppendText("[$timestamp] WARNING: Install completed with exit code $($result.ExitCode)`r`n")
+                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
+            }
+        }
+        else {
+            $LogBox.AppendText("[$timestamp] FAILED: $($Package.Name) - $($result.Error)`r`n")
+            $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
+        }
+    }
+    catch {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $LogBox.AppendText("[$timestamp] ERROR: $($Package.Name) - $_`r`n")
+    }
+
+    $LogBox.AppendText("`r`n")
+    $LogBox.ScrollToCaret()
+}
+
 #endregion
 
 function Initialize-Module {
@@ -622,7 +805,13 @@ function Initialize-Module {
     $installTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($installTab)
 
-    # Tab 2: Check for Updates
+    # Tab 2: GPO Software Packages
+    $gpoTab = New-Object System.Windows.Forms.TabPage
+    $gpoTab.Text = "GPO Software Packages"
+    $gpoTab.UseVisualStyleBackColor = $true
+    $tabControl.TabPages.Add($gpoTab)
+
+    # Tab 3: Check for Updates
     $updatesTab = New-Object System.Windows.Forms.TabPage
     $updatesTab.Text = "Check for Updates"
     $updatesTab.UseVisualStyleBackColor = $true
@@ -1160,6 +1349,275 @@ Requires Elevation: $elevText
     }
 
     #endregion Install Software Tab
+
+    #region GPO Software Packages Tab
+
+    $script:GPOPackagesList = @()
+
+    # GPO panel layout
+    $gpoPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $gpoPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $gpoPanel.RowCount = 4
+    $gpoPanel.ColumnCount = 1
+    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80))) | Out-Null
+    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
+    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
+    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
+
+    # Row 0: Info and Query button
+    $gpoHeaderPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $gpoHeaderPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $gpoHeaderPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+    $gpoHeaderPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+
+    $gpoInfoLabel = New-Object System.Windows.Forms.Label
+    $gpoInfoLabel.Text = "Query software packages assigned to this computer via Group Policy"
+    $gpoInfoLabel.AutoSize = $true
+    $gpoInfoLabel.ForeColor = [System.Drawing.Color]::Gray
+    $gpoHeaderPanel.Controls.Add($gpoInfoLabel)
+
+    $gpoButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
+    $gpoButtonRow.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+    $gpoButtonRow.AutoSize = $true
+
+    $queryGPOBtn = New-Object System.Windows.Forms.Button
+    $queryGPOBtn.Text = "Query GPO Packages"
+    $queryGPOBtn.Width = 150
+    $queryGPOBtn.Height = 35
+    $queryGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
+    $gpoButtonRow.Controls.Add($queryGPOBtn)
+
+    $forceGPOBtn = New-Object System.Windows.Forms.Button
+    $forceGPOBtn.Text = "Force GPO Update"
+    $forceGPOBtn.Width = 140
+    $forceGPOBtn.Height = 35
+    $forceGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
+    $gpoButtonRow.Controls.Add($forceGPOBtn)
+
+    $gpoHeaderPanel.Controls.Add($gpoButtonRow)
+    $gpoPanel.Controls.Add($gpoHeaderPanel, 0, 0)
+
+    # Row 1: GPO Packages ListView
+    $gpoListGroup = New-Object System.Windows.Forms.GroupBox
+    $gpoListGroup.Text = "GPO Software Packages"
+    $gpoListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $gpoListGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:gpoListView = New-Object System.Windows.Forms.ListView
+    $script:gpoListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:gpoListView.View = [System.Windows.Forms.View]::Details
+    $script:gpoListView.CheckBoxes = $true
+    $script:gpoListView.FullRowSelect = $true
+    $script:gpoListView.GridLines = $true
+    $script:gpoListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    $script:gpoListView.Columns.Add("Package Name", 250) | Out-Null
+    $script:gpoListView.Columns.Add("State", 100) | Out-Null
+    $script:gpoListView.Columns.Add("Network Path", 350) | Out-Null
+
+    $gpoListGroup.Controls.Add($script:gpoListView)
+    $gpoPanel.Controls.Add($gpoListGroup, 0, 1)
+
+    # Row 2: Action buttons
+    $gpoActionPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $gpoActionPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $gpoActionPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $installGPOBtn = New-Object System.Windows.Forms.Button
+    $installGPOBtn.Text = "Install Selected"
+    $installGPOBtn.Width = 135
+    $installGPOBtn.Height = 30
+    $installGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
+    $gpoActionPanel.Controls.Add($installGPOBtn)
+
+    $selectAllGPOBtn = New-Object System.Windows.Forms.Button
+    $selectAllGPOBtn.Text = "Select All Available"
+    $selectAllGPOBtn.Width = 130
+    $selectAllGPOBtn.Height = 30
+    $gpoActionPanel.Controls.Add($selectAllGPOBtn)
+
+    $clearGPOBtn = New-Object System.Windows.Forms.Button
+    $clearGPOBtn.Text = "Clear"
+    $clearGPOBtn.Width = 60
+    $clearGPOBtn.Height = 30
+    $gpoActionPanel.Controls.Add($clearGPOBtn)
+
+    $gpoPanel.Controls.Add($gpoActionPanel, 0, 2)
+
+    # Row 3: GPO log
+    $gpoLogGroup = New-Object System.Windows.Forms.GroupBox
+    $gpoLogGroup.Text = "GPO Log"
+    $gpoLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $gpoLogGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:gpoLogBox = New-Object System.Windows.Forms.TextBox
+    $script:gpoLogBox.Multiline = $true
+    $script:gpoLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:gpoLogBox.ReadOnly = $true
+    $script:gpoLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:gpoLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:gpoLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:gpoLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $gpoLogGroup.Controls.Add($script:gpoLogBox)
+    $gpoPanel.Controls.Add($gpoLogGroup, 0, 3)
+
+    # Event handlers for GPO tab
+
+    # Query GPO button
+    $queryGPOBtn.Add_Click({
+        $script:gpoListView.Items.Clear()
+        $script:GPOPackagesList = @()
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:gpoLogBox.AppendText("[$timestamp] Querying Group Policy software assignments...`r`n")
+        Start-AppActivity "Querying GPO..."
+
+        $packages = & $script:QueryGPOSoftware -LogBox $script:gpoLogBox
+        $script:GPOPackagesList = $packages
+        Clear-AppStatus
+
+        # Populate ListView
+        foreach ($pkg in $packages) {
+            $item = New-Object System.Windows.Forms.ListViewItem($pkg.Name)
+            $item.SubItems.Add($pkg.State) | Out-Null
+            $item.SubItems.Add($pkg.Path) | Out-Null
+            $item.Tag = $pkg
+            $script:gpoListView.Items.Add($item) | Out-Null
+
+            # Auto-check if state is "Available" (not already installed)
+            if ($pkg.State -eq "Available") {
+                $item.Checked = $true
+            }
+        }
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:gpoLogBox.AppendText("[$timestamp] Query complete. Found $($packages.Count) package(s).`r`n")
+        $script:gpoLogBox.ScrollToCaret()
+    })
+
+    # Force GPO Update button
+    $forceGPOBtn.Add_Click({
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Force Group Policy update?`n`nThis will apply all GPO settings immediately, including software installations assigned via GPO.`n`nThis may take several minutes.",
+            "Force GPO Update",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:gpoLogBox.AppendText("[$timestamp] Running gpupdate /force...`r`n")
+            $script:gpoLogBox.ScrollToCaret()
+            Start-AppActivity "Running GPO update..."
+
+            try {
+                # Run gpupdate with timeout
+                $result = Start-Process -FilePath "gpupdate.exe" -ArgumentList "/force", "/target:computer", "/wait:0" -Wait -PassThru -NoNewWindow
+
+                $timestamp = Get-Date -Format "HH:mm:ss"
+
+                if ($result.ExitCode -eq 0) {
+                    $script:gpoLogBox.AppendText("[$timestamp] SUCCESS: Group Policy updated`r`n")
+                    $script:gpoLogBox.AppendText("[$timestamp] Software installations should apply shortly.`r`n")
+                }
+                else {
+                    $script:gpoLogBox.AppendText("[$timestamp] WARNING: gpupdate completed with exit code $($result.ExitCode)`r`n")
+                }
+            }
+            catch {
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:gpoLogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+            }
+
+            Clear-AppStatus
+            $script:gpoLogBox.ScrollToCaret()
+        }
+    })
+
+    # Install Selected button
+    $installGPOBtn.Add_Click({
+        $selectedItems = @()
+        foreach ($item in $script:gpoListView.CheckedItems) {
+            $selectedItems += $item.Tag
+        }
+
+        if ($selectedItems.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Please select at least one package to install.",
+                "No Selection",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+
+        # Check if any are already installed
+        $toInstall = @($selectedItems | Where-Object { $_.State -ne "Installed" })
+        if ($toInstall.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "All selected packages are already installed.",
+                "Already Installed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Install $($toInstall.Count) package(s) directly from GPO network share?`n`nThis bypasses GPO deployment but uses the same approved packages.",
+            "Confirm GPO Install",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $total = $toInstall.Count
+            $current = 0
+
+            foreach ($pkg in $toInstall) {
+                $current++
+                Set-AppProgress -Value $current -Maximum $total -Message "Installing $current of $total`: $($pkg.Name)"
+                & $script:InstallGPOPackage -Package $pkg -LogBox $script:gpoLogBox
+            }
+
+            Clear-AppStatus
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:gpoLogBox.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
+            $script:gpoLogBox.AppendText("[$timestamp] Click 'Query GPO Packages' to refresh status.`r`n")
+            $script:gpoLogBox.ScrollToCaret()
+        }
+    })
+
+    # Select All Available button
+    $selectAllGPOBtn.Add_Click({
+        foreach ($item in $script:gpoListView.Items) {
+            $pkg = $item.Tag
+            # Only check if not already installed
+            if ($pkg.State -ne "Installed") {
+                $item.Checked = $true
+            }
+        }
+    })
+
+    # Clear button
+    $clearGPOBtn.Add_Click({
+        foreach ($item in $script:gpoListView.Items) {
+            $item.Checked = $false
+        }
+    })
+
+    $gpoTab.Controls.Add($gpoPanel)
+
+    # Initial log
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $script:gpoLogBox.AppendText("[$timestamp] GPO Software Packages ready.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] Click 'Query GPO Packages' to scan for software assigned via Group Policy.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp]`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] NOTE: This feature pulls from RUSH's existing GPO infrastructure.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] It installs the same approved packages that GPO would deploy.`r`n")
+
+    #endregion GPO Software Packages Tab
 
     #region Check for Updates Tab
 
