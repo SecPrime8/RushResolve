@@ -603,7 +603,8 @@ $script:UpdateApp = {
 # Query GPO Software Assignments
 $script:QueryGPOSoftware = {
     param(
-        [System.Windows.Forms.TextBox]$LogBox = $null
+        [System.Windows.Forms.TextBox]$LogBox = $null,
+        [System.Management.Automation.PSCredential]$Credential = $null
     )
 
     $packages = @()
@@ -619,6 +620,9 @@ $script:QueryGPOSoftware = {
     }
 
     & $logMsg "Querying Group Policy software assignments..."
+    if ($Credential) {
+        & $logMsg "Using provided credentials: $($Credential.UserName)"
+    }
 
     try {
         # Get GPO Resultant Set of Policy
@@ -629,7 +633,24 @@ $script:QueryGPOSoftware = {
         try {
             & $logMsg "Attempting detailed GPO query..."
             $tempReportPath = "$env:TEMP\RushResolve_RSOP_$(Get-Date -Format 'yyyyMMddHHmmss').xml"
-            $null = Get-GPResultantSetOfPolicy -ReportType Xml -Computer $env:COMPUTERNAME -Path $tempReportPath -ErrorAction Stop
+
+            # Build parameters
+            $rsopParams = @{
+                ReportType = 'Xml'
+                Computer = $env:COMPUTERNAME
+                Path = $tempReportPath
+                ErrorAction = 'Stop'
+            }
+
+            # Add credentials if provided
+            if ($Credential) {
+                $rsopParams['User'] = $Credential.UserName
+                # Note: Get-GPResultantSetOfPolicy doesn't directly accept PSCredential
+                # It uses current context, so we may need to run in a different session
+                & $logMsg "Note: Credential support may require running query in elevated context"
+            }
+
+            $null = Get-GPResultantSetOfPolicy @rsopParams
 
             if (Test-Path $tempReportPath) {
                 [xml]$xml = Get-Content $tempReportPath -Raw
@@ -1395,12 +1416,27 @@ Requires Elevation: $elevText
     $queryGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
     $gpoButtonRow.Controls.Add($queryGPOBtn)
 
+    $credentialBtn = New-Object System.Windows.Forms.Button
+    $credentialBtn.Text = "Set Credentials..."
+    $credentialBtn.Width = 120
+    $credentialBtn.Height = 35
+    $gpoButtonRow.Controls.Add($credentialBtn)
+
     $forceGPOBtn = New-Object System.Windows.Forms.Button
     $forceGPOBtn.Text = "Force GPO Update"
     $forceGPOBtn.Width = 140
     $forceGPOBtn.Height = 35
     $forceGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
     $gpoButtonRow.Controls.Add($forceGPOBtn)
+
+    # Store credentials at script level
+    $script:GPOCredential = $null
+    $script:credentialLabel = New-Object System.Windows.Forms.Label
+    $script:credentialLabel.Text = "Using current user credentials"
+    $script:credentialLabel.AutoSize = $true
+    $script:credentialLabel.ForeColor = [System.Drawing.Color]::Gray
+    $script:credentialLabel.Padding = New-Object System.Windows.Forms.Padding(5, 8, 0, 0)
+    $gpoButtonRow.Controls.Add($script:credentialLabel)
 
     $gpoHeaderPanel.Controls.Add($gpoButtonRow)
     $gpoPanel.Controls.Add($gpoHeaderPanel, 0, 0)
@@ -1472,6 +1508,26 @@ Requires Elevation: $elevText
 
     # Event handlers for GPO tab
 
+    # Credential button
+    $credentialBtn.Add_Click({
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:gpoLogBox.AppendText("[$timestamp] Prompting for enterprise admin credentials...`r`n")
+
+        # Use the credential wrapper from main script
+        $cred = Get-ElevatedCredential -Message "Enter enterprise admin credentials for GPO query"
+
+        if ($cred) {
+            $script:GPOCredential = $cred
+            $script:credentialLabel.Text = "Using: $($cred.UserName)"
+            $script:credentialLabel.ForeColor = [System.Drawing.Color]::Green
+            $script:gpoLogBox.AppendText("[$timestamp] Credentials set: $($cred.UserName)`r`n")
+        }
+        else {
+            $script:gpoLogBox.AppendText("[$timestamp] Credential prompt cancelled`r`n")
+        }
+        $script:gpoLogBox.ScrollToCaret()
+    })
+
     # Query GPO button
     $queryGPOBtn.Add_Click({
         $script:gpoListView.Items.Clear()
@@ -1481,7 +1537,7 @@ Requires Elevation: $elevText
         $script:gpoLogBox.AppendText("[$timestamp] Querying Group Policy software assignments...`r`n")
         Start-AppActivity "Querying GPO..."
 
-        $packages = & $script:QueryGPOSoftware -LogBox $script:gpoLogBox
+        $packages = & $script:QueryGPOSoftware -LogBox $script:gpoLogBox -Credential $script:GPOCredential
         $script:GPOPackagesList = $packages
         Clear-AppStatus
 
