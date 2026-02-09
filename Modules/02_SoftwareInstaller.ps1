@@ -628,8 +628,16 @@ $script:QueryGPOSoftware = {
         # Alternative: Try Get-GPResultantSetOfPolicy if available
         try {
             & $logMsg "Attempting detailed GPO query..."
-            $rsop = Get-GPResultantSetOfPolicy -ReportType Xml -Computer $env:COMPUTERNAME -ErrorAction Stop
-            [xml]$xml = $rsop
+            $tempReportPath = "$env:TEMP\RushResolve_RSOP_$(Get-Date -Format 'yyyyMMddHHmmss').xml"
+            $null = Get-GPResultantSetOfPolicy -ReportType Xml -Computer $env:COMPUTERNAME -Path $tempReportPath -ErrorAction Stop
+
+            if (Test-Path $tempReportPath) {
+                [xml]$xml = Get-Content $tempReportPath -Raw
+                Remove-Item $tempReportPath -Force -ErrorAction SilentlyContinue
+            }
+            else {
+                throw "RSOP report file not created"
+            }
 
             # Define namespace
             $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
