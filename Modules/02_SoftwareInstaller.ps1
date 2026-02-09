@@ -600,7 +600,7 @@ $script:UpdateApp = {
     $LogBox.ScrollToCaret()
 }
 
-# Query GPO Software Assignments
+# Query All Available GPO Software Packages from Active Directory
 $script:QueryGPOSoftware = {
     param(
         [System.Windows.Forms.TextBox]$LogBox = $null,
@@ -619,111 +619,104 @@ $script:QueryGPOSoftware = {
         }
     }
 
-    & $logMsg "Querying Group Policy software assignments..."
+    & $logMsg "Querying Active Directory for all available GPO software packages..."
     if ($Credential) {
         & $logMsg "Using provided credentials: $($Credential.UserName)"
     }
 
     try {
-        # Get GPO Resultant Set of Policy
-        & $logMsg "Running Get-GPResultantSetOfPolicy..."
-        $rsopReport = gpresult /Scope Computer /R 2>&1 | Out-String
+        # Check if ActiveDirectory module is available
+        if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+            & $logMsg "ERROR: ActiveDirectory PowerShell module not installed"
+            & $logMsg "This feature requires the Active Directory module."
+            & $logMsg "Install with: Add-WindowsFeature RSAT-AD-PowerShell"
+            return $packages
+        }
 
-        # Alternative: Try Get-GPResultantSetOfPolicy if available
-        try {
-            & $logMsg "Attempting detailed GPO query..."
-            $tempReportPath = "$env:TEMP\RushResolve_RSOP_$(Get-Date -Format 'yyyyMMddHHmmss').xml"
+        # Import AD module
+        Import-Module ActiveDirectory -ErrorAction Stop
 
-            # Build parameters
-            $rsopParams = @{
-                ReportType = 'Xml'
-                Computer = $env:COMPUTERNAME
-                Path = $tempReportPath
-                ErrorAction = 'Stop'
-            }
+        # Get domain info
+        & $logMsg "Connecting to Active Directory domain..."
 
-            # Add credentials if provided
-            if ($Credential) {
-                $rsopParams['User'] = $Credential.UserName
-                # Note: Get-GPResultantSetOfPolicy doesn't directly accept PSCredential
-                # It uses current context, so we may need to run in a different session
-                & $logMsg "Note: Credential support may require running query in elevated context"
-            }
+        # Build AD cmdlet parameters with credentials if provided
+        $adParams = @{}
+        if ($Credential) {
+            $adParams['Credential'] = $Credential
+        }
 
-            $null = Get-GPResultantSetOfPolicy @rsopParams
+        # Get all GPOs in the domain
+        & $logMsg "Retrieving all Group Policy Objects..."
+        $allGPOs = Get-GPO -All @adParams -ErrorAction Stop
+        & $logMsg "Found $($allGPOs.Count) GPO(s) in domain"
 
-            if (Test-Path $tempReportPath) {
-                [xml]$xml = Get-Content $tempReportPath -Raw
-                Remove-Item $tempReportPath -Force -ErrorAction SilentlyContinue
-            }
-            else {
-                throw "RSOP report file not created"
-            }
+        # Parse each GPO for software installation policies
+        foreach ($gpo in $allGPOs) {
+            try {
+                & $logMsg "Scanning GPO: $($gpo.DisplayName)"
 
-            # Define namespace
-            $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
-            $ns.AddNamespace("q1", "http://www.microsoft.com/GroupPolicy/Rsop")
+                # Get GPO report in XML format
+                $gpoReport = Get-GPOReport -Guid $gpo.Id -ReportType Xml @adParams -ErrorAction Stop
+                [xml]$xml = $gpoReport
 
-            # Find software packages
-            $softwareNodes = $xml.SelectNodes("//q1:Software", $ns)
+                # Define namespace for GPO XML
+                $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+                $ns.AddNamespace("gpo", "http://www.microsoft.com/GroupPolicy/Settings")
+                $ns.AddNamespace("q1", "http://www.microsoft.com/GroupPolicy/Settings/SoftwareInstallation")
 
-            if ($softwareNodes) {
-                & $logMsg "Found $($softwareNodes.Count) software assignment(s) in GPO"
+                # Find software installation extensions
+                $softwareNodes = $xml.SelectNodes("//q1:MsiApplication", $ns)
 
-                foreach ($node in $softwareNodes) {
-                    $pkgs = $node.SelectNodes("q1:Package", $ns)
-                    foreach ($pkg in $pkgs) {
-                        $name = $pkg.Name
-                        $state = $pkg.State  # "Installed" or "Available"
-                        $path = $pkg.Path    # Network share path
+                if ($softwareNodes -and $softwareNodes.Count -gt 0) {
+                    & $logMsg "  Found $($softwareNodes.Count) package(s) in this GPO"
 
-                        if ($name -and $path) {
-                            $packages += @{
-                                Name = $name
-                                State = $state
-                                Path = $path
-                                Source = "GPO"
+                    foreach ($msi in $softwareNodes) {
+                        $name = $msi.Name
+                        $packagePath = $msi.Path
+                        $deploymentType = $msi.DeploymentType  # "Assigned" or "Published"
+
+                        if ($name -and $packagePath) {
+                            # Check if we already have this package (avoid duplicates)
+                            $exists = $packages | Where-Object { $_.Path -eq $packagePath }
+                            if (-not $exists) {
+                                $packages += @{
+                                    Name = $name
+                                    Path = $packagePath
+                                    DeploymentType = $deploymentType
+                                    GPOName = $gpo.DisplayName
+                                    Source = "AD-GPO"
+                                }
+                                & $logMsg "    -> $name ($deploymentType)"
                             }
-                            & $logMsg "  Found: $name ($state)"
                         }
                     }
                 }
             }
-            else {
-                & $logMsg "No software assignments found in GPO XML"
-            }
-        }
-        catch {
-            & $logMsg "Get-GPResultantSetOfPolicy failed: $($_.Exception.Message)"
-            & $logMsg "This is normal if you don't have ActiveDirectory module or aren't on domain."
-        }
-
-        # Fallback: Parse gpresult output (less reliable but doesn't need AD module)
-        if ($packages.Count -eq 0) {
-            & $logMsg "Attempting to parse gpresult output..."
-
-            # Look for "Software Installations" section in gpresult
-            if ($rsopReport -match "(?s)Software Installations.*?(?=\r?\n\r?\n[A-Z]|\z)") {
-                $softwareSection = $matches[0]
-                & $logMsg "Found Software Installations section in gpresult"
-
-                # This is a simplified parser - actual format may vary
-                # Real implementation would need testing on RUSH machines
-                & $logMsg "Note: gpresult parsing requires testing on actual GPO environment"
+            catch {
+                # Skip GPOs that fail to parse
+                & $logMsg "  Warning: Could not parse GPO '$($gpo.DisplayName)': $($_.Exception.Message)"
             }
         }
 
         if ($packages.Count -eq 0) {
             & $logMsg ""
-            & $logMsg "No GPO software packages found."
+            & $logMsg "No software packages found in any GPO."
             & $logMsg "Possible reasons:"
-            & $logMsg "  - No software deployed via Group Policy"
-            & $logMsg "  - Computer not on domain"
-            & $logMsg "  - Insufficient permissions to query GPO"
+            & $logMsg "  - No software deployment policies configured in domain GPOs"
+            & $logMsg "  - Insufficient permissions to read GPO settings"
+            & $logMsg "  - Software packages stored in different location"
+        }
+        else {
+            & $logMsg ""
+            & $logMsg "Total unique packages found: $($packages.Count)"
         }
     }
     catch {
-        & $logMsg "ERROR querying GPO: $_"
+        & $logMsg "ERROR querying Active Directory: $($_.Exception.Message)"
+        & $logMsg "Make sure you have:"
+        & $logMsg "  - Active Directory PowerShell module installed"
+        & $logMsg "  - Network connectivity to domain controller"
+        & $logMsg "  - Sufficient AD permissions (enterprise admin credentials)"
     }
 
     return $packages
@@ -1400,7 +1393,7 @@ Requires Elevation: $elevText
     $gpoHeaderPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
 
     $gpoInfoLabel = New-Object System.Windows.Forms.Label
-    $gpoInfoLabel.Text = "Query software packages assigned to this computer via Group Policy"
+    $gpoInfoLabel.Text = "Query all software packages available in Active Directory Group Policies"
     $gpoInfoLabel.AutoSize = $true
     $gpoInfoLabel.ForeColor = [System.Drawing.Color]::Gray
     $gpoHeaderPanel.Controls.Add($gpoInfoLabel)
@@ -1456,8 +1449,9 @@ Requires Elevation: $elevText
     $script:gpoListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
     $script:gpoListView.Columns.Add("Package Name", 250) | Out-Null
-    $script:gpoListView.Columns.Add("State", 100) | Out-Null
-    $script:gpoListView.Columns.Add("Network Path", 350) | Out-Null
+    $script:gpoListView.Columns.Add("Deployment", 100) | Out-Null
+    $script:gpoListView.Columns.Add("GPO Name", 200) | Out-Null
+    $script:gpoListView.Columns.Add("Network Path", 300) | Out-Null
 
     $gpoListGroup.Controls.Add($script:gpoListView)
     $gpoPanel.Controls.Add($gpoListGroup, 0, 1)
@@ -1475,8 +1469,8 @@ Requires Elevation: $elevText
     $gpoActionPanel.Controls.Add($installGPOBtn)
 
     $selectAllGPOBtn = New-Object System.Windows.Forms.Button
-    $selectAllGPOBtn.Text = "Select All Available"
-    $selectAllGPOBtn.Width = 130
+    $selectAllGPOBtn.Text = "Select All"
+    $selectAllGPOBtn.Width = 80
     $selectAllGPOBtn.Height = 30
     $gpoActionPanel.Controls.Add($selectAllGPOBtn)
 
@@ -1544,15 +1538,11 @@ Requires Elevation: $elevText
         # Populate ListView
         foreach ($pkg in $packages) {
             $item = New-Object System.Windows.Forms.ListViewItem($pkg.Name)
-            $item.SubItems.Add($pkg.State) | Out-Null
+            $item.SubItems.Add($pkg.DeploymentType) | Out-Null
+            $item.SubItems.Add($pkg.GPOName) | Out-Null
             $item.SubItems.Add($pkg.Path) | Out-Null
             $item.Tag = $pkg
             $script:gpoListView.Items.Add($item) | Out-Null
-
-            # Auto-check if state is "Available" (not already installed)
-            if ($pkg.State -eq "Available") {
-                $item.Checked = $true
-            }
         }
 
         $timestamp = Get-Date -Format "HH:mm:ss"
@@ -1616,30 +1606,18 @@ Requires Elevation: $elevText
             return
         }
 
-        # Check if any are already installed
-        $toInstall = @($selectedItems | Where-Object { $_.State -ne "Installed" })
-        if ($toInstall.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "All selected packages are already installed.",
-                "Already Installed",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Information
-            )
-            return
-        }
-
         $confirm = [System.Windows.Forms.MessageBox]::Show(
-            "Install $($toInstall.Count) package(s) directly from GPO network share?`n`nThis bypasses GPO deployment but uses the same approved packages.",
+            "Install $($selectedItems.Count) package(s) directly from GPO network share?`n`nThis bypasses GPO deployment but uses the same approved packages.",
             "Confirm GPO Install",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Question
         )
 
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            $total = $toInstall.Count
+            $total = $selectedItems.Count
             $current = 0
 
-            foreach ($pkg in $toInstall) {
+            foreach ($pkg in $selectedItems) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Installing $current of $total`: $($pkg.Name)"
                 & $script:InstallGPOPackage -Package $pkg -LogBox $script:gpoLogBox
@@ -1653,14 +1631,10 @@ Requires Elevation: $elevText
         }
     })
 
-    # Select All Available button
+    # Select All button
     $selectAllGPOBtn.Add_Click({
         foreach ($item in $script:gpoListView.Items) {
-            $pkg = $item.Tag
-            # Only check if not already installed
-            if ($pkg.State -ne "Installed") {
-                $item.Checked = $true
-            }
+            $item.Checked = $true
         }
     })
 
@@ -1676,10 +1650,11 @@ Requires Elevation: $elevText
     # Initial log
     $timestamp = Get-Date -Format "HH:mm:ss"
     $script:gpoLogBox.AppendText("[$timestamp] GPO Software Packages ready.`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] Click 'Query GPO Packages' to scan for software assigned via Group Policy.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] Click 'Set Credentials...' to provide enterprise admin credentials.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] Click 'Query GPO Packages' to scan all software in Active Directory GPOs.`r`n")
     $script:gpoLogBox.AppendText("[$timestamp]`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] NOTE: This feature pulls from RUSH's existing GPO infrastructure.`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] It installs the same approved packages that GPO would deploy.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] NOTE: This feature queries ALL software packages in AD GPOs.`r`n")
+    $script:gpoLogBox.AppendText("[$timestamp] You can install any RUSH-approved package from the catalog.`r`n")
 
     #endregion GPO Software Packages Tab
 
