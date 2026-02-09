@@ -429,12 +429,52 @@ $script:ScanForUpdates = {
     }
 
     # Check if WinGet is available
+    $wingetFound = $false
     try {
         $wingetPath = (Get-Command winget -ErrorAction Stop).Source
         & $logMsg "Found WinGet at: $wingetPath"
+        $wingetFound = $true
     }
     catch {
-        & $logMsg "ERROR: WinGet not found. Install from Microsoft Store (App Installer)."
+        & $logMsg "WinGet not found. Attempting to install from USB..."
+
+        # Try to install from Tools/WinGet folder
+        $installerPath = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\WinGet\Install-WinGet.ps1"
+
+        if (Test-Path $installerPath) {
+            try {
+                & $logMsg "Running WinGet installer..."
+                $installOutput = & powershell -ExecutionPolicy Bypass -File $installerPath 2>&1
+
+                # Log installer output
+                foreach ($line in $installOutput) {
+                    & $logMsg "  $line"
+                }
+
+                # Check if WinGet now available
+                try {
+                    $null = Get-Command winget -ErrorAction Stop
+                    & $logMsg "WinGet installed successfully!"
+                    $wingetFound = $true
+                }
+                catch {
+                    & $logMsg "ERROR: WinGet installation completed but command not found."
+                    & $logMsg "You may need to restart PowerShell. Close and reopen RushResolve."
+                }
+            }
+            catch {
+                & $logMsg "ERROR: WinGet installation failed: $($_.Exception.Message)"
+            }
+        }
+        else {
+            & $logMsg "ERROR: WinGet installer not found at Tools\WinGet\"
+            & $logMsg "See Tools\WinGet\README.md for setup instructions."
+        }
+    }
+
+    if (-not $wingetFound) {
+        & $logMsg ""
+        & $logMsg "Cannot scan for updates without WinGet."
         return $updates
     }
 

@@ -8,12 +8,12 @@
                     {
                         "name":  "02_SoftwareInstaller.ps1",
                         "added":  "2026-02-07",
-                        "hash":  "SEQX6879SgR+gy++IZxBs6f52390qNWLDFv0vh03DBc="
+                        "hash":  "l8JCEh2Zs5N6u477lbOCJl+Kx/8W/ZIW9l9PDpycApM="
                     },
                     {
                         "name":  "03_PrinterManagement.ps1",
                         "added":  "2026-02-07",
-                        "hash":  "A+2Ui0x9sMktHm4Juw5yUrXJo9Iwt/QBYr5hEg5RgIo="
+                        "hash":  "CDpOHWTAqQSi2A0nlHot/7ptrEoOQfqH894BFsx9JnQ="
                     },
                     {
                         "name":  "04_DomainTools.ps1",
