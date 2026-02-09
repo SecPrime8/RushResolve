@@ -71,17 +71,50 @@ if ($missingFiles.Count -gt 0) {
 
 # Install dependencies and WinGet
 try {
+    # Install VCLibs (skip if already present or higher version exists)
     Write-Log "Installing VCLibs dependency..." -Level Info
-    Add-AppxPackage -Path $vcLibsPath -ErrorAction Stop
-    Write-Log "  VCLibs installed successfully" -Level Success
+    try {
+        Add-AppxPackage -Path $vcLibsPath -ErrorAction Stop
+        Write-Log "  VCLibs installed successfully" -Level Success
+    }
+    catch {
+        if ($_.Exception.Message -match "higher version.*already installed") {
+            Write-Log "  VCLibs already installed (higher version present)" -Level Success
+        }
+        else {
+            throw $_
+        }
+    }
 
+    # Install UI.Xaml (skip if already present)
     Write-Log "Installing UI.Xaml dependency..." -Level Info
-    Add-AppxPackage -Path $uiXamlPath -ErrorAction Stop
-    Write-Log "  UI.Xaml installed successfully" -Level Success
+    try {
+        Add-AppxPackage -Path $uiXamlPath -ErrorAction Stop
+        Write-Log "  UI.Xaml installed successfully" -Level Success
+    }
+    catch {
+        if ($_.Exception.Message -match "higher version.*already installed") {
+            Write-Log "  UI.Xaml already installed (higher version present)" -Level Success
+        }
+        else {
+            throw $_
+        }
+    }
 
+    # Install WinGet
     Write-Log "Installing WinGet..." -Level Info
-    Add-AppxPackage -Path $wingetPath -ErrorAction Stop
-    Write-Log "  WinGet installed successfully" -Level Success
+    try {
+        Add-AppxPackage -Path $wingetPath -ErrorAction Stop
+        Write-Log "  WinGet installed successfully" -Level Success
+    }
+    catch {
+        if ($_.Exception.Message -match "higher version.*already installed") {
+            Write-Log "  WinGet already installed (higher version present)" -Level Success
+        }
+        else {
+            throw $_
+        }
+    }
 
     # Verify installation
     Start-Sleep -Seconds 2  # Give it a moment to register

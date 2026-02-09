@@ -430,13 +430,28 @@ $script:ScanForUpdates = {
 
     # Check if WinGet is available
     $wingetFound = $false
+    $script:wingetPath = $null
+
+    # Try Get-Command first (checks PATH)
     try {
-        $wingetPath = (Get-Command winget -ErrorAction Stop).Source
-        & $logMsg "Found WinGet at: $wingetPath"
+        $script:wingetPath = (Get-Command winget -ErrorAction Stop).Source
+        & $logMsg "Found WinGet at: $($script:wingetPath)"
         $wingetFound = $true
     }
     catch {
-        & $logMsg "WinGet not found. Attempting to install from USB..."
+        # Try known location (WindowsApps folder)
+        $knownPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
+        if (Test-Path $knownPath) {
+            $script:wingetPath = $knownPath
+            & $logMsg "Found WinGet at: $($script:wingetPath)"
+            $wingetFound = $true
+        }
+        else {
+            & $logMsg "WinGet not found. Attempting to install from USB..."
+        }
+    }
+
+    if (-not $wingetFound) {
 
         # Try to install from Tools/WinGet folder
         $installerPath = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\WinGet\Install-WinGet.ps1"
@@ -483,7 +498,7 @@ $script:ScanForUpdates = {
 
     try {
         # Run winget upgrade and parse output
-        $output = winget upgrade --include-unknown 2>&1 | Out-String
+        $output = & $script:wingetPath upgrade --include-unknown 2>&1 | Out-String
 
         # Parse the table output
         $lines = $output -split "`n"
@@ -559,7 +574,7 @@ $script:UpdateApp = {
         $LogBox.AppendText("[$timestamp] Running: winget upgrade --id $($App.Id) --silent --accept-source-agreements --accept-package-agreements`r`n")
         $LogBox.ScrollToCaret()
 
-        $result = winget upgrade --id $App.Id --silent --accept-source-agreements --accept-package-agreements 2>&1
+        $result = & $script:wingetPath upgrade --id $App.Id --silent --accept-source-agreements --accept-package-agreements 2>&1
 
         $timestamp = Get-Date -Format "HH:mm:ss"
 
