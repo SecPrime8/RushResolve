@@ -202,9 +202,11 @@ function Initialize-SessionLog {
             New-Item -Path $script:LogsPath -ItemType Directory -Force | Out-Null
         }
 
-        # Generate filename with timestamp
+        # Generate filename with computer name and timestamp
+        # Format: SESSION-COMPUTERNAME-2026-02-09_143522.log
         $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-        $script:SessionLogFile = Join-Path $script:LogsPath "session_$timestamp.log"
+        $computerName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'UNKNOWN' }
+        $script:SessionLogFile = Join-Path $script:LogsPath "SESSION-$computerName-$timestamp.log"
 
         # Write header
         $header = @"
