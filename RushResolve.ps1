@@ -96,6 +96,8 @@ catch {
 $script:SplashForm = $null
 $script:SplashLabel = $null
 $script:SplashProgress = $null
+$script:SplashTimer = $null
+$script:SplashPulseDirection = 1  # 1 = brighten, -1 = dim
 
 function Show-SplashScreen {
     $script:SplashForm = New-Object System.Windows.Forms.Form
@@ -159,6 +161,30 @@ function Show-SplashScreen {
     $script:SplashProgress.MarqueeAnimationSpeed = 30
     $script:SplashForm.Controls.Add($script:SplashProgress)
 
+    # Pulse animation timer
+    $script:SplashTimer = New-Object System.Windows.Forms.Timer
+    $script:SplashTimer.Interval = 100  # 100ms for smooth animation
+    $script:SplashTimer.Add_Tick({
+        # Pulse effect by changing form opacity
+        $currentOpacity = $script:SplashForm.Opacity
+
+        if ($script:SplashPulseDirection -eq 1) {
+            # Brighten
+            $script:SplashForm.Opacity = [Math]::Min(1.0, $currentOpacity + 0.05)
+            if ($script:SplashForm.Opacity -ge 1.0) {
+                $script:SplashPulseDirection = -1
+            }
+        }
+        else {
+            # Dim
+            $script:SplashForm.Opacity = [Math]::Max(0.7, $currentOpacity - 0.05)
+            if ($script:SplashForm.Opacity -le 0.7) {
+                $script:SplashPulseDirection = 1
+            }
+        }
+    })
+    $script:SplashTimer.Start()
+
     $script:SplashForm.Show()
     $script:SplashForm.Refresh()
 }
@@ -173,6 +199,11 @@ function Update-SplashStatus {
 }
 
 function Close-SplashScreen {
+    if ($script:SplashTimer) {
+        $script:SplashTimer.Stop()
+        $script:SplashTimer.Dispose()
+        $script:SplashTimer = $null
+    }
     if ($script:SplashForm) {
         $script:SplashForm.Close()
         $script:SplashForm.Dispose()
