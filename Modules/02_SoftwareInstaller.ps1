@@ -602,15 +602,14 @@ function Initialize-Module {
     $installTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($installTab)
 
-    <#
     # Tab 2: Check for Updates (DISABLED - WinGet blocked by hospital)
     # Hospital blocks Microsoft Store, preventing WinGet from working
-    # This tab and all WinGet functionality moved to development branch
+    # This entire tab and all WinGet functionality moved to development branch
+    <#
     $updatesTab = New-Object System.Windows.Forms.TabPage
     $updatesTab.Text = "Check for Updates"
     $updatesTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($updatesTab)
-    #>
 
     #region Install Software Tab (existing functionality)
 
@@ -1544,7 +1543,7 @@ Requires Elevation: $elevText
     $timestamp = Get-Date -Format "HH:mm:ss"
     $script:updateLogBox.AppendText("[$timestamp] Software Updates ready.`r`n")
     $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to scan for available updates.`r`n")
-
+    #>
     #endregion Check for Updates Tab
 
     # Add TabControl to main tab
