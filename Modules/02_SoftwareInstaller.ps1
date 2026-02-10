@@ -410,6 +410,20 @@ $script:InstallApp = {
     $LogBox.ScrollToCaret()
 }
 
+# ==============================================================================
+# WINGET FUNCTIONALITY DISABLED FOR STABLE BRANCH
+# ==============================================================================
+# WinGet (Windows Package Manager) is blocked in hospital environments.
+# This functionality is preserved in comments for reference and is available
+# in the development branch for environments that support WinGet.
+#
+# To re-enable in dev branch:
+#  1. Uncomment the two script blocks below (ScanForUpdates and UpdateApp)
+#  2. Uncomment the UI label at line ~1286
+#  3. Uncomment the function calls at lines ~1378, ~1442, ~1479
+# ==============================================================================
+
+<#
 # Scan for available updates using WinGet
 $script:ScanForUpdates = {
     param(
@@ -544,6 +558,10 @@ $script:UpdateApp = {
     $LogBox.AppendText("`r`n")
     $LogBox.ScrollToCaret()
 }
+#>
+
+# WinGet functions above are commented out for stable branch
+# Use manual installer scanning (folder browse) instead
 
 #endregion
 
@@ -1283,7 +1301,9 @@ Requires Elevation: $elevText
     $scanPanel.Controls.Add($scanBtn)
 
     $scanInfoLabel = New-Object System.Windows.Forms.Label
-    $scanInfoLabel.Text = "Scan for application updates using Windows Package Manager (WinGet)"
+    # WinGet disabled for stable branch - hospital environment blocks it
+    # $scanInfoLabel.Text = "Scan for application updates using Windows Package Manager (WinGet)"
+    $scanInfoLabel.Text = "Note: Automatic updates disabled. Use manual installer scanning (Browse Folder tab)"
     $scanInfoLabel.AutoSize = $true
     $scanInfoLabel.Padding = New-Object System.Windows.Forms.Padding(10, 10, 0, 0)
     $scanInfoLabel.ForeColor = [System.Drawing.Color]::Gray
@@ -1375,7 +1395,11 @@ Requires Elevation: $elevText
         $script:updateLogBox.AppendText("[$timestamp] Checking for updates...`r`n")
         Start-AppActivity "Scanning for updates..."
 
-        $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
+        # WinGet disabled for stable branch
+        # $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
+        $updates = @()
+        $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled for stable branch`r`n")
+        $script:updateLogBox.AppendText("[$timestamp] Use 'Browse Folder' tab to install software manually`r`n")
         $script:UpdatesList = $updates
         Clear-AppStatus
 
@@ -1439,7 +1463,10 @@ Requires Elevation: $elevText
             foreach ($app in $selectedItems) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
-                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                # WinGet disabled for stable branch
+                # & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled - cannot update $($app.Name)`r`n")
             }
 
             Clear-AppStatus
@@ -1476,7 +1503,10 @@ Requires Elevation: $elevText
             foreach ($app in $script:UpdatesList) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
-                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                # WinGet disabled for stable branch
+                # & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled - cannot update $($app.Name)`r`n")
             }
 
             Clear-AppStatus
