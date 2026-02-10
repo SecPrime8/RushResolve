@@ -602,11 +602,15 @@ function Initialize-Module {
     $installTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($installTab)
 
-    # Tab 2: Check for Updates
+    <#
+    # Tab 2: Check for Updates (DISABLED - WinGet blocked by hospital)
+    # Hospital blocks Microsoft Store, preventing WinGet from working
+    # This tab and all WinGet functionality moved to development branch
     $updatesTab = New-Object System.Windows.Forms.TabPage
     $updatesTab.Text = "Check for Updates"
     $updatesTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($updatesTab)
+    #>
 
     #region Install Software Tab (existing functionality)
 
