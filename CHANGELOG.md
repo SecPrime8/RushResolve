@@ -1,5 +1,13 @@
 # Rush Resolve Changelog
 
+## v2.5.1 (2026-02-10)
+### 🐛 Bug Fixes
+- **Module 2 (Software Installer)**
+  - Fixed critical bug where Install Software tab appeared blank
+  - Block comment structure incorrectly commented out entire UI implementation (lines 614-1299)
+  - Restructured block comments to properly isolate WinGet/Updates tab code
+  - Updated module security hash in manifest
+
 ## v2.5.0 (2026-02-10)
 ### 🐛 Bug Fixes & Stability Improvements
 - **Session Logging Enhancements**
