@@ -317,7 +317,7 @@ function Initialize-Module {
 
     $searchBtn = New-Object System.Windows.Forms.Button
     $searchBtn.Text = "Search"
-    $searchBtn.Width = 80
+    $searchBtn.Width = 100
     $searchBtn.Height = 28
     $searchPanel.Controls.Add($searchBtn)
 
@@ -404,12 +404,12 @@ function Initialize-Module {
 
     $copyLogBtn = New-Object System.Windows.Forms.Button
     $copyLogBtn.Text = "Copy Log"
-    $copyLogBtn.Width = 85
+    $copyLogBtn.Width = 100
     $logBtnPanel.Controls.Add($copyLogBtn)
 
     $clearLogBtn = New-Object System.Windows.Forms.Button
     $clearLogBtn.Text = "Clear"
-    $clearLogBtn.Width = 55
+    $clearLogBtn.Width = 100
     $logBtnPanel.Controls.Add($clearLogBtn)
 
     $logPanel.Controls.Add($script:adLogBox)
@@ -593,7 +593,7 @@ $($userResult.DN)
         $cancelBtn = New-Object System.Windows.Forms.Button
         $cancelBtn.Text = "Cancel"
         $cancelBtn.Location = New-Object System.Drawing.Point(240, 150)
-        $cancelBtn.Width = 75
+        $cancelBtn.Width = 100
         $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
         $pwdForm.Controls.Add($cancelBtn)
 
