@@ -109,7 +109,7 @@ $script:ProcessFolder = {
     return $null
 }
 
-# Scan directory for installable applications (2 levels deep)
+# Scan directory for installable applications (recursive, up to 5 levels deep)
 $script:ScanForApps = {
     param(
         [string]$Path,
@@ -167,45 +167,41 @@ $script:ScanForApps = {
         }
     }
 
-    # Scan subfolders (level 1) for apps
-    & $logMsg "Scanning level 1 subfolders..."
+    # Scan subfolders recursively (up to 5 levels deep)
+    & $logMsg "Scanning subfolders (recursive, up to 5 levels)..."
     try {
-        $level1Folders = Get-ChildItem -Path $Path -Directory -ErrorAction Stop
-        & $logMsg "Found $($level1Folders.Count) subfolder(s) at level 1"
+        # Use Get-ChildItem with -Recurse and -Depth for deep scanning
+        $allFolders = Get-ChildItem -Path $Path -Directory -Recurse -Depth 5 -ErrorAction Stop
+        & $logMsg "Found $($allFolders.Count) total subfolder(s)"
     }
     catch {
-        & $logMsg "ERROR reading level 1 folders: $($_.Exception.Message)"
-        $level1Folders = @()
+        & $logMsg "ERROR reading subdirectories: $($_.Exception.Message)"
+        $allFolders = @()
     }
 
-    foreach ($folder in $level1Folders) {
-        & $logMsg "  Checking: $($folder.Name)"
+    # Process each folder for installers
+    $foldersProcessed = 0
+    foreach ($folder in $allFolders) {
+        $foldersProcessed++
+
+        # Show progress every 10 folders or for first few
+        if ($foldersProcessed -le 3 -or $foldersProcessed % 10 -eq 0) {
+            & $logMsg "  Checking folder $foldersProcessed of $($allFolders.Count): $($folder.Name)"
+        }
+
         $result = & $script:ProcessFolder -Folder $folder
         if ($result) {
+            # Calculate relative path from root for better naming
+            $relativePath = $folder.FullName.Replace($Path, "").TrimStart('\', '/')
+            $pathParts = $relativePath -split '[\\/]' | Where-Object { $_ }
+
+            # Use relative path for name (e.g., "Parent / Child / App")
+            if ($pathParts.Count -gt 1) {
+                $result.Name = ($pathParts -join " / ")
+            }
+
             & $logMsg "    -> Found installer: $($result.Name)"
             $apps += $result
-        }
-        else {
-            # No installer at level 1, check level 2 subfolders
-            try {
-                $level2Folders = Get-ChildItem -Path $folder.FullName -Directory -ErrorAction Stop
-                if ($level2Folders.Count -gt 0) {
-                    & $logMsg "    -> No installer, checking $($level2Folders.Count) level 2 subfolder(s)"
-                }
-            }
-            catch {
-                & $logMsg "    -> ERROR reading level 2: $($_.Exception.Message)"
-                $level2Folders = @()
-            }
-            foreach ($subfolder in $level2Folders) {
-                $subResult = & $script:ProcessFolder -Folder $subfolder
-                if ($subResult) {
-                    # Prefix name with parent folder for clarity
-                    $subResult.Name = "$($folder.Name) / $($subResult.Name)"
-                    & $logMsg "      -> Found installer: $($subResult.Name)"
-                    $apps += $subResult
-                }
-            }
         }
     }
 
