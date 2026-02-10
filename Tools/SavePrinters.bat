@@ -1,0 +1,1 @@
+powershell.exe -ExecutionPolicy Bypass "C:\Temp\SavePrinters.ps1"

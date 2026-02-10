@@ -1,0 +1,15 @@
+{
+    "global":  {
+                   "cacheCredentials":  true,
+                   "defaultDomain":  "RUSH",
+                   "windowWidth":  900,
+                   "windowHeight":  700,
+                   "lastTab":  "Software Info"
+               },
+    "modules":  {
+                    "SoftwareInstaller":  {
+                                              "localPath":  "D:\\RushResolveApp\\Repo",
+                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software"
+                                          }
+                }
+}
