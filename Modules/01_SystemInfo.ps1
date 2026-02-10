@@ -364,15 +364,6 @@ function Initialize-Module {
     })
     $buttonPanel.Controls.Add($shutdownBtn)
 
-    # Note label
-    $noteLabel = New-Object System.Windows.Forms.Label
-    $noteLabel.Text = "Battery Report moved to dedicated module"
-    $noteLabel.AutoSize = $true
-    $noteLabel.ForeColor = [System.Drawing.Color]::Gray
-    $noteLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $noteLabel.Padding = New-Object System.Windows.Forms.Padding(20, 10, 0, 0)
-    $buttonPanel.Controls.Add($noteLabel)
-
     $bottomPanel.Controls.Add($buttonPanel)
 
     $mainPanel.Controls.Add($topPanel, 0, 0)
