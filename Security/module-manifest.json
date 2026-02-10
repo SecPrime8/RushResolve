@@ -2,46 +2,46 @@
     "modules":  [
                     {
                         "name":  "01_SystemInfo.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "xjP1jWqiOavOG1WLmbewEEXBY9hmnfNTao0lGD8AUo8="
+                        "added":  "2026-02-10",
+                        "hash":  "qmbowOgEk1y9QP8xjUEn3spjjH/QSMluGyecmKv2vPA="
                     },
                     {
                         "name":  "02_SoftwareInstaller.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "SEQX6879SgR+gy++IZxBs6f52390qNWLDFv0vh03DBc="
+                        "added":  "2026-02-10",
+                        "hash":  "wTXwMzxjtRvr73KuxQpGNOG3X+qKJ3FBshqwrtYTu1k="
                     },
                     {
                         "name":  "03_PrinterManagement.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "A+2Ui0x9sMktHm4Juw5yUrXJo9Iwt/QBYr5hEg5RgIo="
+                        "added":  "2026-02-10",
+                        "hash":  "N7UuEdVUpl+EW0nO+G4/I7sZeX6+qEBLv1pZDtljCfk="
                     },
                     {
                         "name":  "04_DomainTools.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "69SOFKHujQuYCVrHb7GgzJPFWTEjzxHwz5FBIn3JSIM="
+                        "added":  "2026-02-10",
+                        "hash":  "vGazwxlDRzGUVKUxtiilDe251ZJZtqOj12sl6fLrQJY="
                     },
                     {
                         "name":  "05_NetworkTools.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "aylO+NrZLBI68Zyedn+tgRr1odjgIFwgFqIwSoGSQQE="
+                        "added":  "2026-02-10",
+                        "hash":  "fyuxwQei+ihx8CqifJYwuQCjNLt7wG3nzOV/1Blnjos="
                     },
                     {
                         "name":  "06_DiskCleanup.ps1",
-                        "added":  "2026-02-07",
+                        "added":  "2026-02-10",
                         "hash":  "mWPB63BM52vLyf9RErOtKcqnuxyV1qP3gU3zy26VJSE="
                     },
                     {
                         "name":  "07_Diagnostics.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "Csqg8r5TB6PDQFICUHYsUELk3Bc6ZMrySNiW1ZZOM6o="
+                        "added":  "2026-02-10",
+                        "hash":  "zgI9HZzZrc3dDzX6I4PuITPDCs7HnYTg+qUFSoL/Y+0="
                     },
                     {
                         "name":  "08_ADTools.ps1",
-                        "added":  "2026-02-07",
-                        "hash":  "KFgQtX8mq3Gi+UvDL4G10LGdUnPMgHOwzGbEU3bPoGM="
+                        "added":  "2026-02-10",
+                        "hash":  "6dI/HTOoQR15KlsH9ZpFxNO4P61pdf21UqLCoOwLa10="
                     }
                 ],
     "description":  "Whitelist of authorized modules with SHA256 hashes",
     "generated_by":  "DESKTOP-HT1H56L\\luisa",
-    "generated":  "2026-02-07 21:42:51"
+    "generated":  "2026-02-10 12:29:15"
 }

@@ -610,6 +610,7 @@ function Initialize-Module {
     $updatesTab.Text = "Check for Updates"
     $updatesTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($updatesTab)
+    #>
 
     #region Install Software Tab (existing functionality)
 
@@ -1296,6 +1297,7 @@ Requires Elevation: $elevText
 
     #endregion Install Software Tab
 
+    <#
     #region Check for Updates Tab
 
     # Updates panel layout
