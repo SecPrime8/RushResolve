@@ -2,7 +2,7 @@
 
 **Portable IT Technician Toolkit for Rush University Medical Center**
 
-Version: 2.4.0 | License: Internal Use
+Version: 2.5.0 | License: Internal Use
 
 ---
 
