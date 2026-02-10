@@ -529,6 +529,11 @@ function Initialize-Module {
     $gpupdateBtn.Height = 30
     $trustPanel.Controls.Add($gpupdateBtn)
 
+    # Sync checkbox - Controls the /sync flag for gpupdate
+    # When checked: Forces synchronous (foreground) Group Policy processing
+    # - gpupdate waits for policy processing to complete before returning
+    # - Useful for verifying policies apply immediately
+    # When unchecked: Asynchronous (background) processing (default behavior)
     $script:syncCheckbox = New-Object System.Windows.Forms.CheckBox
     $script:syncCheckbox.Text = "Sync"
     $script:syncCheckbox.AutoSize = $true
