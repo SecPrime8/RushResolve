@@ -256,7 +256,29 @@ function Initialize-Module {
     $adBtn.Width = 75
     $adBtn.Height = 30
     $adBtn.Add_Click({
-        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "dsa.msc" -OperationName "open Active Directory Users and Computers"
+        # Check if RSAT (Remote Server Administration Tools) is installed
+        $dsaPath = Join-Path $env:SystemRoot "System32\dsa.msc"
+
+        if (Test-Path $dsaPath) {
+            Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "dsa.msc" -OperationName "open Active Directory Users and Computers"
+        }
+        else {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Active Directory Users and Computers (dsa.msc) not found.`n`n" +
+                "RSAT (Remote Server Administration Tools) must be installed.`n`n" +
+                "To install RSAT:`n" +
+                "1. Open Settings > Apps > Optional Features`n" +
+                "2. Click 'Add a feature'`n" +
+                "3. Search for 'RSAT: Active Directory'`n" +
+                "4. Install 'RSAT: Active Directory Domain Services and Lightweight Directory Services Tools'`n`n" +
+                "Or use PowerShell (as Administrator):`n" +
+                "Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0",
+                "RSAT Not Installed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            Write-SessionLog -Message "AD Users button clicked but RSAT not installed" -Category "System Info" -Result "Error: dsa.msc not found"
+        }
     })
     $buttonPanel.Controls.Add($adBtn)
 
