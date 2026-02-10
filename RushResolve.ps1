@@ -191,6 +191,72 @@ $script:SessionLogFile = $null
 #endregion
 
 #region Session Logging
+
+<#
+.SYNOPSIS
+    Collects essential system information for session log header.
+.DESCRIPTION
+    Gathers OS, CPU, RAM, and domain information to be logged at session start.
+.OUTPUTS
+    Hashtable with system information
+#>
+function Get-SessionStartInfo {
+    try {
+        $info = @{}
+
+        # Get CIM instances
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+        $cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+
+        # Computer info
+        $info['ComputerName'] = $env:COMPUTERNAME
+
+        # OS info
+        if ($os) {
+            $info['OS'] = $os.Caption
+            $info['OSVersion'] = $os.Version
+            $info['Build'] = $os.BuildNumber
+            $info['Architecture'] = $os.OSArchitecture
+        }
+
+        # CPU info
+        if ($cpu) {
+            $info['CPU'] = $cpu.Name.Trim()
+            $info['Cores'] = $cpu.NumberOfCores
+            $info['Threads'] = $cpu.NumberOfLogicalProcessors
+        }
+
+        # RAM info
+        if ($cs) {
+            $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+            $info['RAM'] = "$ramGB GB"
+
+            # Domain info
+            if ($cs.PartOfDomain) {
+                $info['Domain'] = $cs.Domain
+                $info['DomainJoined'] = $true
+            } else {
+                $info['Workgroup'] = $cs.Workgroup
+                $info['DomainJoined'] = $false
+            }
+        }
+
+        # Network adapters (basic count)
+        $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
+        $info['ActiveAdapters'] = $adapters.Count
+
+        return $info
+    }
+    catch {
+        # Return minimal info if gathering fails
+        return @{
+            ComputerName = $env:COMPUTERNAME
+            Error = $_.Exception.Message
+        }
+    }
+}
+
 function Initialize-SessionLog {
     <#
     .SYNOPSIS
@@ -208,19 +274,57 @@ function Initialize-SessionLog {
         $computerName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'UNKNOWN' }
         $script:SessionLogFile = Join-Path $script:LogsPath "SESSION-$computerName-$timestamp.log"
 
-        # Write header
-        $header = @"
-================================================================================
-RUSH RESOLVE SESSION LOG
-================================================================================
-Started: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-User: $env:USERDOMAIN\$env:USERNAME
-Computer: $env:COMPUTERNAME
-Version: $($script:AppVersion)
-================================================================================
+        # Gather system information
+        $sysInfo = Get-SessionStartInfo
 
-"@
-        Set-Content -Path $script:SessionLogFile -Value $header -Force
+        # Build header with system information
+        $headerBuilder = [System.Text.StringBuilder]::new()
+        [void]$headerBuilder.AppendLine("=" * 80)
+        [void]$headerBuilder.AppendLine("RUSH RESOLVE SESSION LOG")
+        [void]$headerBuilder.AppendLine("=" * 80)
+        [void]$headerBuilder.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        [void]$headerBuilder.AppendLine("User: $env:USERDOMAIN\$env:USERNAME")
+        [void]$headerBuilder.AppendLine("Computer: $env:COMPUTERNAME")
+        [void]$headerBuilder.AppendLine("Version: $($script:AppVersion)")
+        [void]$headerBuilder.AppendLine("")
+
+        [void]$headerBuilder.AppendLine("SYSTEM INFORMATION:")
+        [void]$headerBuilder.AppendLine("-" * 80)
+
+        if ($sysInfo.ContainsKey('Error')) {
+            [void]$headerBuilder.AppendLine("Error gathering system info: $($sysInfo.Error)")
+        } else {
+            if ($sysInfo.OS) {
+                [void]$headerBuilder.AppendLine("OS: $($sysInfo.OS)")
+                [void]$headerBuilder.AppendLine("Version: $($sysInfo.OSVersion)")
+                [void]$headerBuilder.AppendLine("Build: $($sysInfo.Build)")
+                [void]$headerBuilder.AppendLine("Architecture: $($sysInfo.Architecture)")
+            }
+
+            if ($sysInfo.CPU) {
+                [void]$headerBuilder.AppendLine("CPU: $($sysInfo.CPU)")
+                [void]$headerBuilder.AppendLine("Cores: $($sysInfo.Cores) cores, $($sysInfo.Threads) threads")
+            }
+
+            if ($sysInfo.RAM) {
+                [void]$headerBuilder.AppendLine("RAM: $($sysInfo.RAM)")
+            }
+
+            if ($sysInfo.DomainJoined) {
+                [void]$headerBuilder.AppendLine("Domain: $($sysInfo.Domain)")
+            } elseif ($sysInfo.Workgroup) {
+                [void]$headerBuilder.AppendLine("Workgroup: $($sysInfo.Workgroup)")
+            }
+
+            if ($sysInfo.ActiveAdapters) {
+                [void]$headerBuilder.AppendLine("Active Network Adapters: $($sysInfo.ActiveAdapters)")
+            }
+        }
+
+        [void]$headerBuilder.AppendLine("=" * 80)
+        [void]$headerBuilder.AppendLine("")
+
+        Set-Content -Path $script:SessionLogFile -Value $headerBuilder.ToString() -Force
         Write-SessionLog "Application started"
     }
     catch {
