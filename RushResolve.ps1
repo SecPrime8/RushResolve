@@ -106,7 +106,25 @@ function Show-SplashScreen {
     $script:SplashForm.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
     $script:SplashForm.TopMost = $true
 
-    # App name
+    # Rush Logo (top-left corner)
+    $logoPath = Join-Path $script:AppPath "Assets/Rush-logo.png"
+    if (Test-Path $logoPath) {
+        try {
+            $logoPictureBox = New-Object System.Windows.Forms.PictureBox
+            $logoPictureBox.Image = [System.Drawing.Image]::FromFile($logoPath)
+            $logoPictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+            $logoPictureBox.Size = New-Object System.Drawing.Size(60, 60)
+            $logoPictureBox.Location = New-Object System.Drawing.Point(20, 20)
+            $logoPictureBox.BackColor = [System.Drawing.Color]::Transparent
+            $script:SplashForm.Controls.Add($logoPictureBox)
+        }
+        catch {
+            # If logo fails to load, continue without it
+            Write-Verbose "Failed to load Rush logo: $_"
+        }
+    }
+
+    # App name (adjusted position to accommodate logo)
     $titleLabel = New-Object System.Windows.Forms.Label
     $titleLabel.Text = "Rush Resolve"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
