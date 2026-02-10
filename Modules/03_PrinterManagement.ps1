@@ -393,6 +393,29 @@ function Initialize-Module {
     $script:installedListView.Columns.Add("Printer Name", 220) | Out-Null
     $script:installedListView.Columns.Add("Default", 55) | Out-Null
     $script:installedListView.Columns.Add("Type", 60) | Out-Null
+
+    # Enable sorting
+    $script:installedListView.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+    $script:installedListView.Add_ColumnClick({
+        param($sender, $e)
+        # Toggle sort order on column click
+        if ($sender.Sorting -eq [System.Windows.Forms.SortOrder]::Ascending) {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Descending
+        } else {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+        }
+        # Sort by clicked column (basic alphabetic sort)
+        $sender.ListViewItemSorter = New-Object System.Collections.CaseInsensitiveComparer
+        $sender.Sort()
+    })
+
+    # Auto-resize columns to content after items loaded
+    $script:installedListView.Add_ClientSizeChanged({
+        foreach ($col in $this.Columns) {
+            $col.Width = -1  # Auto-size to content
+        }
+    })
+
     $leftPanel.Controls.Add($script:installedListView, 0, 1)
 
     # Buttons for installed printers
@@ -516,6 +539,29 @@ function Initialize-Module {
     $script:serverListView.Columns.Add("Printer Name", 180) | Out-Null
     $script:serverListView.Columns.Add("Location", 150) | Out-Null
     $script:serverListView.Columns.Add("Comment", 150) | Out-Null
+
+    # Enable sorting
+    $script:serverListView.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+    $script:serverListView.Add_ColumnClick({
+        param($sender, $e)
+        # Toggle sort order on column click
+        if ($sender.Sorting -eq [System.Windows.Forms.SortOrder]::Ascending) {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Descending
+        } else {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+        }
+        # Sort by clicked column (basic alphabetic sort)
+        $sender.ListViewItemSorter = New-Object System.Collections.CaseInsensitiveComparer
+        $sender.Sort()
+    })
+
+    # Auto-resize columns to content after items loaded
+    $script:serverListView.Add_ClientSizeChanged({
+        foreach ($col in $this.Columns) {
+            $col.Width = -1  # Auto-size to content
+        }
+    })
+
     $rightPanel.Controls.Add($script:serverListView, 0, 2)
 
     # Buttons for adding printers
