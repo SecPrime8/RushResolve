@@ -1,1 +1,0 @@
-powershell.exe -ExecutionPolicy Bypass "C:\Temp\OneDriveIconCleanup.ps1"
