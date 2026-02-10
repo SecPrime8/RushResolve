@@ -167,12 +167,14 @@ $script:ScanForApps = {
         }
     }
 
-    # Scan subfolders recursively (up to 5 levels deep)
-    & $logMsg "Scanning subfolders (recursive, up to 5 levels)..."
+    # Scan subfolders recursively (up to 3 levels deep for performance)
+    # Note: Reduced from 5 to 3 levels to prevent UI freezing on large network shares
+    & $logMsg "Scanning subfolders (recursive, up to 3 levels)..."
+    & $logMsg "Please wait - enumerating directories..."
     try {
         # Use Get-ChildItem with -Recurse and -Depth for deep scanning
-        $allFolders = Get-ChildItem -Path $Path -Directory -Recurse -Depth 5 -ErrorAction Stop
-        & $logMsg "Found $($allFolders.Count) total subfolder(s)"
+        $allFolders = Get-ChildItem -Path $Path -Directory -Recurse -Depth 3 -ErrorAction Stop
+        & $logMsg "Found $($allFolders.Count) total subfolder(s) - now checking for installers..."
     }
     catch {
         & $logMsg "ERROR reading subdirectories: $($_.Exception.Message)"
@@ -181,12 +183,18 @@ $script:ScanForApps = {
 
     # Process each folder for installers
     $foldersProcessed = 0
+    $totalFolders = $allFolders.Count
     foreach ($folder in $allFolders) {
         $foldersProcessed++
 
-        # Show progress every 10 folders or for first few
-        if ($foldersProcessed -le 3 -or $foldersProcessed % 10 -eq 0) {
-            & $logMsg "  Checking folder $foldersProcessed of $($allFolders.Count): $($folder.Name)"
+        # Show progress every 25 folders OR for first 5 OR last few
+        $showProgress = ($foldersProcessed -le 5) -or
+                       ($foldersProcessed % 25 -eq 0) -or
+                       ($foldersProcessed -ge ($totalFolders - 5))
+
+        if ($showProgress) {
+            $percentComplete = [Math]::Round(($foldersProcessed / $totalFolders) * 100, 0)
+            & $logMsg "  Progress: $percentComplete% ($foldersProcessed / $totalFolders folders checked)"
         }
 
         $result = & $script:ProcessFolder -Folder $folder
