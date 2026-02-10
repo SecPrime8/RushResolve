@@ -604,7 +604,7 @@ function Initialize-Module {
 
     # Tab 2: Check for Updates (DISABLED - WinGet blocked by hospital)
     # Hospital blocks Microsoft Store, preventing WinGet from working
-    # This entire tab and all WinGet functionality moved to development branch
+    # This tab and all WinGet functionality moved to development branch
     <#
     $updatesTab = New-Object System.Windows.Forms.TabPage
     $updatesTab.Text = "Check for Updates"
