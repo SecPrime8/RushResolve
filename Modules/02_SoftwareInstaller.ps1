@@ -9,6 +9,19 @@
 $script:ModuleName = "Software Installer"
 $script:ModuleDescription = "Install applications from network share or check for updates"
 
+# ==============================================================================
+# NOTE: GPO (Group Policy Object) Deployment Not Available
+# ==============================================================================
+# This module does not include Group Policy-based software deployment.
+# GPO deployment requires domain admin permissions and GPMC (Group Policy
+# Management Console), which are typically restricted in hospital environments.
+#
+# For enterprise software deployment, use:
+#  - Manual installation via network share (this module)
+#  - SCCM/Intune (if available in your environment)
+#  - Third-party deployment tools (PDQ Deploy, etc.)
+# ==============================================================================
+
 #region Script Blocks (defined first to avoid scope issues)
 
 # Helper: Process a single folder for installer
