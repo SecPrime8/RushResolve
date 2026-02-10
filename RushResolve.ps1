@@ -338,24 +338,43 @@ function Write-SessionLog {
     .SYNOPSIS
         Writes a timestamped entry to the session log.
     .PARAMETER Message
-        The message to log.
+        The message to log (operation name or description).
     .PARAMETER Category
         Optional category prefix (e.g., "Credentials", "Disk Cleanup").
+    .PARAMETER Result
+        Optional result of the operation (e.g., "Success", "Failed: reason", "Freed 2.5 GB").
+        When provided, appended as " - Result" to the message.
+    .EXAMPLE
+        Write-SessionLog -Message "Domain join" -Category "DomainTools" -Result "Success"
+        Output: [10:30:45] [DomainTools] Domain join - Success
+    .EXAMPLE
+        Write-SessionLog -Message "Temp files removed" -Category "DiskCleanup" -Result "Freed 2.5 GB"
+        Output: [10:30:45] [DiskCleanup] Temp files removed - Freed 2.5 GB
     #>
     param(
         [string]$Message,
-        [string]$Category = ""
+        [string]$Category = "",
+        [string]$Result = ""
     )
 
     if (-not $script:SessionLogFile) { return }
 
     try {
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $logEntry = if ($Category) {
-            "[$timestamp] [$Category] $Message"
+
+        # Build log entry with optional result
+        $fullMessage = if ($Result) {
+            "$Message - $Result"
         } else {
-            "[$timestamp] $Message"
+            $Message
         }
+
+        $logEntry = if ($Category) {
+            "[$timestamp] [$Category] $fullMessage"
+        } else {
+            "[$timestamp] $fullMessage"
+        }
+
         Add-Content -Path $script:SessionLogFile -Value $logEntry
     }
     catch {
