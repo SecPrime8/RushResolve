@@ -1,5 +1,37 @@
 # Rush Resolve Changelog
 
+## v2.4.0 (2026-02-09)
+### ✨ New Features
+- **Auto-Update Mechanism** - "Check for Updates" in Help menu
+  - Queries GitHub API for latest releases
+  - Shows release notes in dialog before updating
+  - Downloads update package with progress indicator
+  - SHA256 hash verification before installation
+  - Automatic backup to `Safety/Backups/` (keeps last 3 versions)
+  - Settings preservation across updates (`Config/settings.json`)
+  - Integrity checks: file count, syntax validation
+  - Auto-rollback on failure
+  - Application auto-restart after successful update
+
+### 🔒 Security Enhancements
+- **TLS 1.2+ Enforcement** - All HTTPS connections use modern TLS (prevents downgrade attacks)
+- **HTTPS Validation** - Rejects non-HTTPS download URLs
+- **Hash Verification** - SHA256 integrity check for update packages (parsed from release notes)
+- **Command Injection Prevention** - Array-based argument passing in restart process
+- **PIN Brute-Force Protection** - Exponential backoff on failed attempts (3s, 6s, 9s delays)
+- **Credential Exposure Minimization** - Plaintext passwords cleared immediately after use
+
+### 📝 Documentation
+- Comprehensive README.md with installation, usage, troubleshooting
+- SECURITY-FIXES.md documenting all vulnerability resolutions
+- AUTO-UPDATE-IMPLEMENTATION.md with technical implementation details
+
+### 🔧 Technical
+- 10 new update functions (~650 lines of code)
+- GitHub API integration (api.github.com/repos/SecPrime8/RushResolve)
+- Session logging for all update operations (`[Update]` category)
+- Backup retention management (auto-delete old backups)
+
 ## v2.3 (2026-01-12)
 ### New Features
 - **Session Logging** - All operations logged to `Logs/` folder
