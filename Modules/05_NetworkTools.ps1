@@ -935,6 +935,47 @@ function Initialize-Module {
     }.GetNewClosure())
     $networksBtnPanel.Controls.Add($scanBtn)
 
+    # Copy button for network scan results
+    $copyNetworksBtn = New-Object System.Windows.Forms.Button
+    $copyNetworksBtn.Text = "Copy"
+    $copyNetworksBtn.Width = 75
+    $copyNetworksBtn.Location = New-Object System.Drawing.Point(($scanBtn.Location.X + $scanBtn.Width + 5), 3)
+    $copyNetworksBtn.Add_Click({
+        $networksListViewRef = $script:networksListView
+        if ($networksListViewRef.Items.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "No networks to copy. Click 'Scan Networks' first.",
+                "No Data",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        # Build formatted text from ListView
+        $output = "Available Wireless Networks:`n"
+        $output += "=" * 60 + "`n"
+        $output += "{0,-30} {1,-8} {2,-8} {3}" -f "SSID", "Signal", "Channel", "Security"
+        $output += "`n" + ("-" * 60) + "`n"
+
+        foreach ($item in $networksListViewRef.Items) {
+            $ssid = $item.Text
+            $signal = $item.SubItems[1].Text
+            $channel = $item.SubItems[2].Text
+            $security = $item.SubItems[3].Text
+            $output += "{0,-30} {1,-8} {2,-8} {3}`n" -f $ssid, $signal, $channel, $security
+        }
+
+        [System.Windows.Forms.Clipboard]::SetText($output)
+        [System.Windows.Forms.MessageBox]::Show(
+            "Network scan results copied to clipboard!",
+            "Copied",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }.GetNewClosure())
+    $networksBtnPanel.Controls.Add($copyNetworksBtn)
+
     $networksPanel.Controls.Add($script:networksListView)
     $networksPanel.Controls.Add($networksBtnPanel)
 
