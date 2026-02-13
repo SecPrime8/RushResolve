@@ -1192,54 +1192,157 @@ function Initialize-Module {
     })
     $quickToolsPanel.Controls.Add($chkdskBtn)
 
+    # Helper: Run a command elevated and stream output into diagLogBox
+    $script:RunElevatedInline = {
+        param(
+            [string]$Command,
+            [string]$OpName
+        )
+
+        $logFile = "C:\Temp\RushResolve_elevated_output.log"
+        $wrapperFile = "C:\Temp\RushResolve_elevated_wrapper.cmd"
+
+        # Clean previous log
+        if (Test-Path $logFile) { Remove-Item $logFile -Force -ErrorAction SilentlyContinue }
+
+        # Write wrapper that runs the command and redirects output to log file
+        $wrapperLines = @(
+            "@echo off"
+            "$Command > `"$logFile`" 2>&1"
+            "echo __ELEVATED_DONE__ >> `"$logFile`""
+        )
+        [System.IO.File]::WriteAllLines($wrapperFile, $wrapperLines)
+
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] $OpName - launching elevated (UAC prompt)...`r`n")
+        $script:diagLogBox.ScrollToCaret()
+
+        # Track dism.log for verbose output (readable without elevation)
+        $dismLogPath = "C:\Windows\Logs\DISM\dism.log"
+        $isDism = $Command -match "DISM"
+        $dismLogStartPos = 0
+        if ($isDism -and (Test-Path $dismLogPath)) {
+            $dismLogStartPos = (Get-Item $dismLogPath).Length
+        }
+        $dismReader = $null
+        $lastDismCheck = [DateTime]::MinValue
+
+        # Run wrapper elevated, hidden (no visible window)
+        try {
+            $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$wrapperFile`"" -Verb RunAs -WindowStyle Hidden -PassThru
+        } catch {
+            $script:diagLogBox.AppendText("[$ts] Failed to launch (UAC cancelled or error).`r`n")
+            return
+        }
+
+        Start-AppActivity "$OpName running..."
+        $script:diagLogBox.AppendText("[$ts] $OpName running (PID: $($proc.Id))...`r`n")
+        $script:diagLogBox.ScrollToCaret()
+
+        # Tail the console output log file
+        $reader = $null
+        $startTime = Get-Date
+        $timeoutMin = 60
+
+        while (-not $proc.HasExited -or ($reader -and $reader.Peek() -ge 0)) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 300
+
+            # Open console output reader once log file appears
+            if (-not $reader -and (Test-Path $logFile)) {
+                try {
+                    $fs = [System.IO.FileStream]::new(
+                        $logFile,
+                        [System.IO.FileMode]::Open,
+                        [System.IO.FileAccess]::Read,
+                        [System.IO.FileShare]::ReadWrite
+                    )
+                    $reader = [System.IO.StreamReader]::new($fs)
+                } catch {}
+            }
+
+            # Read and display console output lines
+            if ($reader) {
+                while ($null -ne ($line = $reader.ReadLine())) {
+                    if ($line -eq "__ELEVATED_DONE__") { continue }
+                    $trimmed = $line.Trim()
+                    if ($trimmed) {
+                        $lts = Get-Date -Format "HH:mm:ss"
+                        $script:diagLogBox.AppendText("[$lts]   $trimmed`r`n")
+                        $script:diagLogBox.ScrollToCaret()
+                    }
+                }
+            }
+
+            # Also tail dism.log for verbose detail (every 3 seconds to avoid flood)
+            if ($isDism -and ((Get-Date) - $lastDismCheck).TotalSeconds -ge 3) {
+                $lastDismCheck = Get-Date
+                if (-not $dismReader -and (Test-Path $dismLogPath)) {
+                    try {
+                        $dfs = [System.IO.FileStream]::new(
+                            $dismLogPath,
+                            [System.IO.FileMode]::Open,
+                            [System.IO.FileAccess]::Read,
+                            [System.IO.FileShare]::ReadWrite
+                        )
+                        # Seek to where the log was when we started
+                        if ($dismLogStartPos -gt 0) { [void]$dfs.Seek($dismLogStartPos, [System.IO.SeekOrigin]::Begin) }
+                        $dismReader = [System.IO.StreamReader]::new($dfs)
+                    } catch {}
+                }
+                if ($dismReader) {
+                    while ($null -ne ($dline = $dismReader.ReadLine())) {
+                        $dt = $dline.Trim()
+                        if (-not $dt) { continue }
+                        # Filter for useful lines: progress, errors, warnings, actions, CBS state changes
+                        if ($dt -match 'Error|Warning|Fail|progress|percent|Repair|corrupt|download|CSI|repairable|component store|manifest|resolving|staging|installing') {
+                            # Strip the verbose timestamp prefix for readability
+                            $shortLine = $dt -replace '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\s*\w+\s+\w+\s+', ''
+                            if ($shortLine.Length -gt 120) { $shortLine = $shortLine.Substring(0, 120) + "..." }
+                            $lts = Get-Date -Format "HH:mm:ss"
+                            $script:diagLogBox.AppendText("[$lts]   [DISM] $shortLine`r`n")
+                            $script:diagLogBox.ScrollToCaret()
+                        }
+                    }
+                }
+            }
+
+            # Timeout
+            if (((Get-Date) - $startTime).TotalMinutes -gt $timeoutMin) {
+                $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WARNING: $OpName timed out after 60 minutes.`r`n")
+                try { $proc.Kill() } catch {}
+                break
+            }
+        }
+
+        if ($reader) { $reader.Close(); $reader.Dispose() }
+        if ($dismReader) { $dismReader.Close(); $dismReader.Dispose() }
+
+        Clear-AppStatus
+        $doneTs = Get-Date -Format "HH:mm:ss"
+        $elapsed = [int]((Get-Date) - $startTime).TotalSeconds
+        $script:diagLogBox.AppendText("[$doneTs] $OpName complete (${elapsed}s).`r`n")
+        if ($isDism) {
+            $script:diagLogBox.AppendText("[$doneTs] Full verbose log: C:\Windows\Logs\DISM\dism.log`r`n")
+        }
+        $script:diagLogBox.ScrollToCaret()
+        Write-SessionLog -Message "$OpName completed in ${elapsed}s" -Category "Diagnostics"
+
+        # Cleanup
+        Remove-Item $wrapperFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+    }
+
     # SFC button
     $sfcBtn = New-Object System.Windows.Forms.Button
     $sfcBtn.Text = "SFC Scan"
     $sfcBtn.AutoSize = $true
     $sfcBtn.Height = 30
     $sfcBtn.Add_Click({
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:diagLogBox.AppendText("[$ts] Launching System File Checker (sfc /scannow)...`r`n")
         Write-SessionLog -Message "Launched SFC via Diagnostics Quick Tools" -Category "Diagnostics"
-
-        # Use credential wrapper to launch SFC in visible PowerShell window
-        $sfcCommand = "Write-Host 'Running System File Checker...' -ForegroundColor Cyan; sfc /scannow; Write-Host '`nSFC Complete. Review results above.' -ForegroundColor Green; pause"
-        Start-ElevatedProcess -FilePath "powershell.exe" -ArgumentList "-NoExit -Command $sfcCommand" -OperationName "run System File Checker"
+        & $script:RunElevatedInline -Command "sfc /scannow" -OpName "SFC Scan"
     })
     $quickToolsPanel.Controls.Add($sfcBtn)
-
-    # DISM elapsed timer state
-    $script:dismTimer = New-Object System.Windows.Forms.Timer
-    $script:dismTimer.Interval = 5000  # tick every 5 seconds
-    $script:dismStartTime = $null
-    $script:dismOpName = ""
-    $script:dismTimer.Add_Tick({
-        if ($script:dismStartTime) {
-            $elapsed = (Get-Date) - $script:dismStartTime
-            $elapsedStr = "{0:d2}:{1:d2}" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] $($script:dismOpName) running... (elapsed: $elapsedStr)`r`n")
-            $script:diagLogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-            # Auto-stop after 60 minutes
-            if ($elapsed.TotalMinutes -ge 60) {
-                $script:dismTimer.Stop()
-                Clear-AppStatus
-                $script:diagLogBox.AppendText("[$ts] Timer stopped after 60 min. Check the DISM window for results.`r`n")
-                $script:diagLogBox.ScrollToCaret()
-            }
-        }
-    })
-
-    # Helper: start DISM elapsed timer
-    $script:StartDismTimer = {
-        param([string]$OpName)
-        $script:dismTimer.Stop()
-        $script:dismOpName = $OpName
-        $script:dismStartTime = Get-Date
-        Start-AppActivity -Message "$OpName running..."
-        $script:dismTimer.Start()
-    }
 
     # DISM dropdown button
     $script:dismBtn = New-Object System.Windows.Forms.Button
@@ -1253,63 +1356,34 @@ function Initialize-Module {
     $dismCheck = New-Object System.Windows.Forms.ToolStripMenuItem
     $dismCheck.Text = "CheckHealth (Quick)"
     $dismCheck.Add_Click({
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:diagLogBox.AppendText("[$ts] Launching DISM CheckHealth...`r`n")
-        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /CheckHealth`r`n")
         Write-SessionLog -Message "Launched DISM CheckHealth via Quick Tools" -Category "Diagnostics"
-        $cmd = "Write-Host 'Running DISM CheckHealth...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /CheckHealth; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
-        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM CheckHealth'
-        if ($result.Success) { & $script:StartDismTimer "DISM CheckHealth" }
+        & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /CheckHealth /LogLevel:4" -OpName "DISM CheckHealth"
     })
     $script:dismMenu.Items.Add($dismCheck) | Out-Null
 
     # 2. ScanHealth - full corruption scan (5-15 min)
     $dismScan = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismScan.Text = "ScanHealth (Thorough)"
+    $dismScan.Text = "ScanHealth (Full Scan)"
     $dismScan.Add_Click({
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:diagLogBox.AppendText("[$ts] Launching DISM ScanHealth (5-15 minutes)...`r`n")
-        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /ScanHealth`r`n")
         Write-SessionLog -Message "Launched DISM ScanHealth via Quick Tools" -Category "Diagnostics"
-        $cmd = "Write-Host 'Running DISM ScanHealth (this may take 5-15 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /ScanHealth; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
-        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM ScanHealth'
-        if ($result.Success) { & $script:StartDismTimer "DISM ScanHealth" }
+        & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /ScanHealth /LogLevel:4" -OpName "DISM ScanHealth"
     })
     $script:dismMenu.Items.Add($dismScan) | Out-Null
-
-    # 3. RestoreHealth - repair from Windows Update (10-45 min)
-    $dismRestore = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismRestore.Text = "RestoreHealth (Repair)"
-    $dismRestore.Add_Click({
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth (10-45 minutes)...`r`n")
-        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /RestoreHealth`r`n")
-        Write-SessionLog -Message "Launched DISM RestoreHealth via Quick Tools" -Category "Diagnostics"
-        $cmd = "Write-Host 'Running DISM RestoreHealth (this may take 10-45 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
-        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM RestoreHealth'
-        if ($result.Success) { & $script:StartDismTimer "DISM RestoreHealth" }
-    })
-    $script:dismMenu.Items.Add($dismRestore) | Out-Null
 
     # --- separator ---
     $script:dismMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-    # 4. RestoreHealth from WIM - offline repair when WU is blocked
+    # 3. RestoreHealth from WIM - primary repair (WU blocked by hospital GPO)
     $dismRestoreWim = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismRestoreWim.Text = "RestoreHealth from WIM..."
+    $dismRestoreWim.Text = "Repair from WIM (10-45 min)..."
     $dismRestoreWim.Add_Click({
         $ofd = New-Object System.Windows.Forms.OpenFileDialog
         $ofd.Title = "Select Windows Image (install.wim or install.esd)"
         $ofd.Filter = "Windows Image|install.wim;install.esd|All Files|*.*"
         if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $wimPath = $ofd.FileName
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth from $wimPath...`r`n")
-            $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /RestoreHealth /Source:'$wimPath' /LimitAccess`r`n")
             Write-SessionLog -Message "Launched DISM RestoreHealth from WIM: $wimPath" -Category "Diagnostics"
-            $cmd = "Write-Host 'Running DISM RestoreHealth from local source (10-45 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth /Source:'$wimPath' /LimitAccess; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
-            $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM RestoreHealth from WIM'
-            if ($result.Success) { & $script:StartDismTimer "DISM RestoreHealth (WIM)" }
+            & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /RestoreHealth /Source:`"$wimPath`" /LimitAccess /LogLevel:4" -OpName "DISM RestoreHealth (WIM)"
         }
     })
     $script:dismMenu.Items.Add($dismRestoreWim) | Out-Null
@@ -1317,17 +1391,12 @@ function Initialize-Module {
     # --- separator ---
     $script:dismMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-    # 5. StartComponentCleanup - shrink WinSxS store
+    # 4. StartComponentCleanup - shrink WinSxS store
     $dismCleanup = New-Object System.Windows.Forms.ToolStripMenuItem
     $dismCleanup.Text = "Component Cleanup"
     $dismCleanup.Add_Click({
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:diagLogBox.AppendText("[$ts] Launching DISM Component Cleanup...`r`n")
-        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /StartComponentCleanup`r`n")
         Write-SessionLog -Message "Launched DISM StartComponentCleanup via Quick Tools" -Category "Diagnostics"
-        $cmd = "Write-Host 'Running DISM Component Cleanup...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /StartComponentCleanup; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
-        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM Component Cleanup'
-        if ($result.Success) { & $script:StartDismTimer "DISM Component Cleanup" }
+        & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /StartComponentCleanup /LogLevel:4" -OpName "DISM Component Cleanup"
     })
     $script:dismMenu.Items.Add($dismCleanup) | Out-Null
 
