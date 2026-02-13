@@ -2,14 +2,17 @@
     "global":  {
                    "cacheCredentials":  true,
                    "defaultDomain":  "RUSH",
-                   "windowWidth":  900,
+                   "windowWidth":  1141,
                    "windowHeight":  700,
-                   "lastTab":  "Software Info"
+                   "lastTab":  "Diagnostics"
                },
     "modules":  {
                     "SoftwareInstaller":  {
-                                              "localPath":  "D:\\RushResolveApp\\Repo",
-                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software"
+                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+                                              "networkPathUNC":  "",
+                                              "networkPathUNCDefault":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+                                              "localPath":  "..\\Repository\\LocalInstallers",
+                                              "favoritesLocalPath":  "C:\\Users\\luisa\\KILA Strategies\\projects\\Rush_IT\\Repository\\Favorites"
                                           }
                 }
 }

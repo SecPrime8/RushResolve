@@ -4,7 +4,7 @@
 .DESCRIPTION
     Systematically collects system health data to diagnose intermittent issues
     (freezing, hangs, crashes) and provides actionable recommendations.
-    Includes HP-specific driver management via HPIA.
+
 .NOTES
     Root causes detected (in order of frequency):
     1. Storage issues - Low disk space, failing drives (SMART errors)
@@ -37,48 +37,6 @@ $script:SeverityColors = @{
 # OS version detection
 $script:OSVersion = [System.Environment]::OSVersion.Version
 $script:IsWin11 = $script:OSVersion.Build -ge 22000
-
-# HP detection
-$script:IsHPMachine = $null
-$script:HPIAPath = $null
-
-#endregion
-
-#region HP Detection Functions
-
-$script:DetectHP = {
-    if ($null -eq $script:IsHPMachine) {
-        try {
-            $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
-            $script:IsHPMachine = $cs.Manufacturer -match "HP|Hewlett"
-        }
-        catch {
-            $script:IsHPMachine = $false
-        }
-    }
-    return $script:IsHPMachine
-}
-
-$script:GetHPIAPath = {
-    if ($null -eq $script:HPIAPath) {
-        # Check repo location first (Tools/HPIA/ relative to module's parent directory)
-        $repoHPIA = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\HPIA\HPImageAssistant.exe"
-
-        $possiblePaths = @(
-            $repoHPIA,
-            "${env:ProgramFiles(x86)}\HP\HPIA\HPImageAssistant.exe",
-            "${env:ProgramFiles}\HP\HPIA\HPImageAssistant.exe",
-            "C:\HPIA\HPImageAssistant.exe"
-        )
-        foreach ($path in $possiblePaths) {
-            if (Test-Path $path) {
-                $script:HPIAPath = $path
-                break
-            }
-        }
-    }
-    return $script:HPIAPath
-}
 
 #endregion
 
@@ -940,220 +898,6 @@ $script:CollectBatteryHealth = {
 
 #endregion
 
-#region HP HPIA Integration
-
-$script:RunHPIAAnalysis = {
-    param([scriptblock]$Log)
-
-    $findings = @()
-
-    # Check if HP machine
-    if (-not (& $script:DetectHP)) {
-        if ($Log) { & $Log "Not an HP machine - skipping HPIA" }
-        return $findings
-    }
-
-    $hpiaPath = & $script:GetHPIAPath
-    if (-not $hpiaPath) {
-        $findings += & $script:NewFinding -Category "HP Drivers" `
-            -Issue "HPIA not installed" `
-            -Severity "Info" `
-            -Recommendation "Download HP Image Assistant for driver management" `
-            -Details "Download from: https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html"
-        return $findings
-    }
-
-    if ($Log) { & $Log "Running HP Image Assistant analysis..." }
-
-    $reportPath = "$env:TEMP\HPIA_Report"
-    if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
-    New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
-
-    try {
-        # Run HPIA in analyze-only mode
-        $args = "/Operation:Analyze /Action:List /Category:Drivers /Silent /ReportFolder:`"$reportPath`""
-
-        if ($Log) { & $Log "  Command: HPImageAssistant.exe $args" }
-
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = $hpiaPath
-        $pinfo.Arguments = $args
-        $pinfo.UseShellExecute = $false
-        $pinfo.CreateNoWindow = $true
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-
-        $proc = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $pinfo
-        $proc.Start() | Out-Null
-        $proc.WaitForExit(120000)  # 2 minute timeout
-
-        # Parse results
-        $jsonReport = Get-ChildItem $reportPath -Filter "*.json" -Recurse | Select-Object -First 1
-
-        if ($jsonReport) {
-            $report = Get-Content $jsonReport.FullName -Raw | ConvertFrom-Json
-
-            $outdated = @()
-            if ($report.HPIA.Recommendations) {
-                foreach ($rec in $report.HPIA.Recommendations) {
-                    if ($rec.RecommendationValue -eq "Install") {
-                        $outdated += $rec
-                    }
-                }
-            }
-
-            if ($outdated.Count -gt 0) {
-                # Create individual finding for each driver with proper severity
-                foreach ($driver in $outdated) {
-                    # Map HPIA priority to our severity (Critical, Recommended, Routine)
-                    $priority = if ($driver.CvaPackageInformation.Priority) { $driver.CvaPackageInformation.Priority } else { "Recommended" }
-                    $severity = switch ($priority) {
-                        "Critical" { "Critical" }
-                        "Recommended" { "Warning" }
-                        default { "Info" }  # Routine
-                    }
-
-                    $softpaqId = if ($driver.Id) { $driver.Id } else { "N/A" }
-                    $version = if ($driver.Version) { $driver.Version } else { "N/A" }
-
-                    $findings += & $script:NewFinding -Category "HP Drivers" `
-                        -Issue "[$priority] $($driver.Name)" `
-                        -Severity $severity `
-                        -Recommendation "Install via HP Drivers menu" `
-                        -Details "SoftPaq: $softpaqId | Version: $version"
-
-                    if ($Log) { & $Log "  [$priority] $($driver.Name) - $softpaqId" }
-                }
-
-                # Summary finding
-                $critCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Critical" }).Count
-                $recCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Recommended" }).Count
-                $routineCount = $outdated.Count - $critCount - $recCount
-
-                if ($Log) { & $Log "  Summary: $critCount critical, $recCount recommended, $routineCount routine" }
-            }
-            else {
-                $findings += & $script:NewFinding -Category "HP Drivers" `
-                    -Issue "All HP drivers current" `
-                    -Severity "OK" `
-                    -Recommendation "-"
-
-                if ($Log) { & $Log "  All drivers up to date" }
-            }
-        }
-        else {
-            if ($Log) { & $Log "  No HPIA report generated" }
-        }
-    }
-    catch {
-        if ($Log) { & $Log "  HPIA analysis failed: $($_.Exception.Message)" }
-        $findings += & $script:NewFinding -Category "HP Drivers" `
-            -Issue "HPIA analysis failed" `
-            -Severity "Info" `
-            -Recommendation "Run HPIA manually to check drivers" `
-            -Details $_.Exception.Message
-    }
-    finally {
-        # Cleanup
-        if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-
-    return $findings
-}
-
-$script:RunHPIAUpdate = {
-    param(
-        [scriptblock]$Log,
-        [PSCredential]$Credential,
-        [ValidateSet("All", "Critical", "Recommended")]
-        [string]$Selection = "All"
-    )
-
-    if (-not (& $script:DetectHP)) {
-        [System.Windows.Forms.MessageBox]::Show("This is not an HP machine.", "Not HP", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return
-    }
-
-    $hpiaPath = & $script:GetHPIAPath
-    if (-not $hpiaPath) {
-        [System.Windows.Forms.MessageBox]::Show("HP Image Assistant is not installed.`n`nDownload from:`nhttps://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html", "HPIA Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        return
-    }
-
-    # Build selection description for confirmation dialog
-    $selectionDesc = switch ($Selection) {
-        "Critical" { "CRITICAL drivers only" }
-        "Recommended" { "CRITICAL and RECOMMENDED drivers" }
-        default { "ALL available drivers" }
-    }
-
-    $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "This will download and install $selectionDesc.`n`nThe system may require a reboot after updates.`n`nContinue?",
-        "Install HP Driver Updates",
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Question
-    )
-
-    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-
-    if ($Log) { & $Log "Starting HP driver update (Selection: $Selection)..." }
-
-    $reportPath = "$env:TEMP\HPIA_Update"
-    if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
-    New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
-
-    try {
-        # Build selection string - for "Recommended" we want Critical+Recommended
-        $selectionArg = if ($Selection -eq "Recommended") { "Critical,Recommended" } else { $Selection }
-
-        # Note: Skipping BIOS updates for safety
-        $args = "/Operation:Analyze /Action:Install /Category:Drivers /Selection:$selectionArg /Silent /ReportFolder:`"$reportPath`""
-
-        if ($Log) { & $Log "  Running HPIA with /Action:Install..." }
-
-        # This may need elevation
-        if ($Credential) {
-            $result = Invoke-Elevated -ScriptBlock {
-                param($path, $arguments)
-                $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-                $pinfo.FileName = $path
-                $pinfo.Arguments = $arguments
-                $pinfo.UseShellExecute = $false
-                $pinfo.CreateNoWindow = $true
-
-                $proc = New-Object System.Diagnostics.Process
-                $proc.StartInfo = $pinfo
-                $proc.Start() | Out-Null
-                $proc.WaitForExit(600000)  # 10 minute timeout for updates
-                return $proc.ExitCode
-            } -ArgumentList $hpiaPath, $args -Credential $Credential -OperationName "install HP drivers"
-
-            if ($result.Success) {
-                if ($Log) { & $Log "  HPIA update completed" }
-                [System.Windows.Forms.MessageBox]::Show("HP driver updates completed.`n`nA reboot may be required.", "Update Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            }
-            else {
-                if ($Log) { & $Log "  HPIA update failed: $($result.Error)" }
-                [System.Windows.Forms.MessageBox]::Show("HP driver update failed.`n`n$($result.Error)", "Update Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
-        }
-        else {
-            # Try without elevation
-            Start-Process -FilePath $hpiaPath -ArgumentList $args -Wait -NoNewWindow
-            if ($Log) { & $Log "  HPIA update completed (non-elevated)" }
-        }
-    }
-    catch {
-        if ($Log) { & $Log "  HPIA update error: $($_.Exception.Message)" }
-        [System.Windows.Forms.MessageBox]::Show("Error running HPIA: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-    finally {
-        if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-}
-
-#endregion
 
 #region Export Report
 
@@ -1263,6 +1007,7 @@ function Initialize-Module {
 
     # Store references for closures
     $script:diagFindings = @()
+    $script:toolTip = New-Object System.Windows.Forms.ToolTip
 
     # Quick Check button
     $quickCheckBtn = New-Object System.Windows.Forms.Button
@@ -1337,11 +1082,6 @@ function Initialize-Module {
             @{ Name = "Battery"; Script = $script:CollectBatteryHealth }
         )
 
-        # Add HP check if HP machine
-        if (& $script:DetectHP) {
-            $collectors += @{ Name = "HP Drivers"; Script = $script:RunHPIAAnalysis }
-        }
-
         $index = 0
         foreach ($collector in $collectors) {
             $index++
@@ -1357,122 +1097,6 @@ function Initialize-Module {
         Write-SessionLog -Message "Full diagnostic: $(@($script:diagFindings | Where-Object {$_.Severity -eq 'Critical'}).Count) critical, $(@($script:diagFindings | Where-Object {$_.Severity -eq 'Warning'}).Count) warning" -Category "Diagnostics"
     })
     $buttonPanel.Controls.Add($fullDiagBtn)
-
-    # HP Drivers dropdown menu
-    $hpDropdown = New-Object System.Windows.Forms.ToolStripDropDownButton
-    $hpDropdown.Text = "HP Drivers"
-    $hpDropdown.DisplayStyle = [System.Windows.Forms.ToolStripItemDisplayStyle]::Text
-
-    # We'll use a regular button with context menu instead for simpler implementation
-    $hpBtn = New-Object System.Windows.Forms.Button
-    $hpBtn.Text = "HP Drivers..."
-    $hpBtn.AutoSize = $true
-    $hpBtn.Height = 30
-
-    $hpMenu = New-Object System.Windows.Forms.ContextMenuStrip
-
-    $hpCheckItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $hpCheckItem.Text = "Check Drivers"
-    $hpCheckItem.Add_Click({
-        if (-not (& $script:DetectHP)) {
-            [System.Windows.Forms.MessageBox]::Show("This is not an HP machine.", "Not HP", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            return
-        }
-
-        Start-AppActivity "Checking HP drivers..."
-        $script:diagLogBox.Clear()
-
-        $logCallback = {
-            param([string]$Message)
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] $Message`r`n")
-            $script:diagLogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        $hpFindings = & $script:RunHPIAAnalysis -Log $logCallback
-
-        # Add to existing findings or replace HP category
-        $script:diagFindings = @($script:diagFindings | Where-Object { $_.Category -ne "HP Drivers" })
-        $script:diagFindings += $hpFindings
-
-        & $script:UpdateFindingsListView
-        Clear-AppStatus
-        & $logCallback "HP driver check complete."
-    })
-    $hpMenu.Items.Add($hpCheckItem) | Out-Null
-
-    # Separator
-    $hpMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-
-    # Install All
-    $hpInstallAllItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $hpInstallAllItem.Text = "Install All Drivers"
-    $hpInstallAllItem.Add_Click({
-        $logCallback = {
-            param([string]$Message)
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] $Message`r`n")
-            $script:diagLogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
-        if ($cred) {
-            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred -Selection "All"
-        }
-    })
-    $hpMenu.Items.Add($hpInstallAllItem) | Out-Null
-
-    # Install Critical Only
-    $hpInstallCriticalItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $hpInstallCriticalItem.Text = "Install Critical Only"
-    $hpInstallCriticalItem.Add_Click({
-        $logCallback = {
-            param([string]$Message)
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] $Message`r`n")
-            $script:diagLogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
-        if ($cred) {
-            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred -Selection "Critical"
-        }
-    })
-    $hpMenu.Items.Add($hpInstallCriticalItem) | Out-Null
-
-    # Install Critical + Recommended
-    $hpInstallRecItem = New-Object System.Windows.Forms.ToolStripMenuItem
-    $hpInstallRecItem.Text = "Install Critical + Recommended"
-    $hpInstallRecItem.Add_Click({
-        $logCallback = {
-            param([string]$Message)
-            $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] $Message`r`n")
-            $script:diagLogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
-        if ($cred) {
-            & $script:RunHPIAUpdate -Log $logCallback -Credential $cred -Selection "Recommended"
-        }
-    })
-    $hpMenu.Items.Add($hpInstallRecItem) | Out-Null
-
-    $hpBtn.Add_Click({
-        $hpMenu.Show($hpBtn, [System.Drawing.Point]::new(0, $hpBtn.Height))
-    })
-    $buttonPanel.Controls.Add($hpBtn)
-
-    # Separator
-    $sep1 = New-Object System.Windows.Forms.Label
-    $sep1.Text = " | "
-    $sep1.AutoSize = $true
-    $sep1.Padding = New-Object System.Windows.Forms.Padding(5, 8, 5, 0)
-    $buttonPanel.Controls.Add($sep1)
 
     # Export button
     $exportBtn = New-Object System.Windows.Forms.Button
@@ -1580,25 +1204,140 @@ function Initialize-Module {
 
         # Use credential wrapper to launch SFC in visible PowerShell window
         $sfcCommand = "Write-Host 'Running System File Checker...' -ForegroundColor Cyan; sfc /scannow; Write-Host '`nSFC Complete. Review results above.' -ForegroundColor Green; pause"
-        Start-ElevatedProcess -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $sfcCommand -OperationName "run System File Checker"
+        Start-ElevatedProcess -FilePath "powershell.exe" -ArgumentList "-NoExit -Command $sfcCommand" -OperationName "run System File Checker"
     })
     $quickToolsPanel.Controls.Add($sfcBtn)
 
-    # DISM button
-    $dismBtn = New-Object System.Windows.Forms.Button
-    $dismBtn.Text = "DISM Repair"
-    $dismBtn.AutoSize = $true
-    $dismBtn.Height = 30
-    $dismBtn.Add_Click({
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth (this may take 10-20 minutes)...`r`n")
-        Write-SessionLog -Message "Launched DISM repair via Diagnostics Quick Tools" -Category "Diagnostics"
-
-        # Use credential wrapper to launch DISM in visible PowerShell window
-        $dismCommand = "Write-Host 'Running DISM RestoreHealth (this may take 10-20 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host '`nDISM Complete. Review results above.' -ForegroundColor Green; pause"
-        Start-ElevatedProcess -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $dismCommand -OperationName "run DISM repair"
+    # DISM elapsed timer state
+    $script:dismTimer = New-Object System.Windows.Forms.Timer
+    $script:dismTimer.Interval = 5000  # tick every 5 seconds
+    $script:dismStartTime = $null
+    $script:dismOpName = ""
+    $script:dismTimer.Add_Tick({
+        if ($script:dismStartTime) {
+            $elapsed = (Get-Date) - $script:dismStartTime
+            $elapsedStr = "{0:d2}:{1:d2}" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
+            $ts = Get-Date -Format "HH:mm:ss"
+            $script:diagLogBox.AppendText("[$ts] $($script:dismOpName) running... (elapsed: $elapsedStr)`r`n")
+            $script:diagLogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+            # Auto-stop after 60 minutes
+            if ($elapsed.TotalMinutes -ge 60) {
+                $script:dismTimer.Stop()
+                Clear-AppStatus
+                $script:diagLogBox.AppendText("[$ts] Timer stopped after 60 min. Check the DISM window for results.`r`n")
+                $script:diagLogBox.ScrollToCaret()
+            }
+        }
     })
-    $quickToolsPanel.Controls.Add($dismBtn)
+
+    # Helper: start DISM elapsed timer
+    $script:StartDismTimer = {
+        param([string]$OpName)
+        $script:dismTimer.Stop()
+        $script:dismOpName = $OpName
+        $script:dismStartTime = Get-Date
+        Start-AppActivity -Message "$OpName running..."
+        $script:dismTimer.Start()
+    }
+
+    # DISM dropdown button
+    $script:dismBtn = New-Object System.Windows.Forms.Button
+    $script:dismBtn.Text = "DISM Tools"
+    $script:dismBtn.AutoSize = $true
+    $script:dismBtn.Height = 30
+
+    $script:dismMenu = New-Object System.Windows.Forms.ContextMenuStrip
+
+    # 1. CheckHealth - quick flag check (seconds)
+    $dismCheck = New-Object System.Windows.Forms.ToolStripMenuItem
+    $dismCheck.Text = "CheckHealth (Quick)"
+    $dismCheck.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching DISM CheckHealth...`r`n")
+        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /CheckHealth`r`n")
+        Write-SessionLog -Message "Launched DISM CheckHealth via Quick Tools" -Category "Diagnostics"
+        $cmd = "Write-Host 'Running DISM CheckHealth...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /CheckHealth; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
+        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM CheckHealth'
+        if ($result.Success) { & $script:StartDismTimer "DISM CheckHealth" }
+    })
+    $script:dismMenu.Items.Add($dismCheck) | Out-Null
+
+    # 2. ScanHealth - full corruption scan (5-15 min)
+    $dismScan = New-Object System.Windows.Forms.ToolStripMenuItem
+    $dismScan.Text = "ScanHealth (Thorough)"
+    $dismScan.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching DISM ScanHealth (5-15 minutes)...`r`n")
+        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /ScanHealth`r`n")
+        Write-SessionLog -Message "Launched DISM ScanHealth via Quick Tools" -Category "Diagnostics"
+        $cmd = "Write-Host 'Running DISM ScanHealth (this may take 5-15 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /ScanHealth; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
+        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM ScanHealth'
+        if ($result.Success) { & $script:StartDismTimer "DISM ScanHealth" }
+    })
+    $script:dismMenu.Items.Add($dismScan) | Out-Null
+
+    # 3. RestoreHealth - repair from Windows Update (10-45 min)
+    $dismRestore = New-Object System.Windows.Forms.ToolStripMenuItem
+    $dismRestore.Text = "RestoreHealth (Repair)"
+    $dismRestore.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth (10-45 minutes)...`r`n")
+        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /RestoreHealth`r`n")
+        Write-SessionLog -Message "Launched DISM RestoreHealth via Quick Tools" -Category "Diagnostics"
+        $cmd = "Write-Host 'Running DISM RestoreHealth (this may take 10-45 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
+        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM RestoreHealth'
+        if ($result.Success) { & $script:StartDismTimer "DISM RestoreHealth" }
+    })
+    $script:dismMenu.Items.Add($dismRestore) | Out-Null
+
+    # --- separator ---
+    $script:dismMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+    # 4. RestoreHealth from WIM - offline repair when WU is blocked
+    $dismRestoreWim = New-Object System.Windows.Forms.ToolStripMenuItem
+    $dismRestoreWim.Text = "RestoreHealth from WIM..."
+    $dismRestoreWim.Add_Click({
+        $ofd = New-Object System.Windows.Forms.OpenFileDialog
+        $ofd.Title = "Select Windows Image (install.wim or install.esd)"
+        $ofd.Filter = "Windows Image|install.wim;install.esd|All Files|*.*"
+        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $wimPath = $ofd.FileName
+            $ts = Get-Date -Format "HH:mm:ss"
+            $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth from $wimPath...`r`n")
+            $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /RestoreHealth /Source:'$wimPath' /LimitAccess`r`n")
+            Write-SessionLog -Message "Launched DISM RestoreHealth from WIM: $wimPath" -Category "Diagnostics"
+            $cmd = "Write-Host 'Running DISM RestoreHealth from local source (10-45 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth /Source:'$wimPath' /LimitAccess; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
+            $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM RestoreHealth from WIM'
+            if ($result.Success) { & $script:StartDismTimer "DISM RestoreHealth (WIM)" }
+        }
+    })
+    $script:dismMenu.Items.Add($dismRestoreWim) | Out-Null
+
+    # --- separator ---
+    $script:dismMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+    # 5. StartComponentCleanup - shrink WinSxS store
+    $dismCleanup = New-Object System.Windows.Forms.ToolStripMenuItem
+    $dismCleanup.Text = "Component Cleanup"
+    $dismCleanup.Add_Click({
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:diagLogBox.AppendText("[$ts] Launching DISM Component Cleanup...`r`n")
+        $script:diagLogBox.AppendText("[$ts] Command: DISM /Online /Cleanup-Image /StartComponentCleanup`r`n")
+        Write-SessionLog -Message "Launched DISM StartComponentCleanup via Quick Tools" -Category "Diagnostics"
+        $cmd = "Write-Host 'Running DISM Component Cleanup...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /StartComponentCleanup; Write-Host '`nDone. Review results above.' -ForegroundColor Green; pause"
+        $result = Start-ElevatedProcess -FilePath 'powershell.exe' -ArgumentList "-NoExit -Command $cmd" -OperationName 'run DISM Component Cleanup'
+        if ($result.Success) { & $script:StartDismTimer "DISM Component Cleanup" }
+    })
+    $script:dismMenu.Items.Add($dismCleanup) | Out-Null
+
+    # Show menu below button on click
+    $script:dismBtn.Add_Click({
+        $script:dismMenu.Show($script:dismBtn, (New-Object System.Drawing.Point(0, $script:dismBtn.Height)))
+    })
+    $script:dismBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::System
+    $script:toolTip.SetToolTip($script:dismBtn, "Requires ENT admin account (Run as Administrator)")
+    $quickToolsPanel.Controls.Add($script:dismBtn)
 
     # Separator
     $toolSep1 = New-Object System.Windows.Forms.Label

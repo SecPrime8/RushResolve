@@ -67,6 +67,17 @@ function Test-PrinterPathAllowed {
 
 #region Script Blocks
 
+# Log helper function
+$script:PrinterLog = {
+    param([string]$Message)
+    if ($script:printerLogBox) {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $script:printerLogBox.AppendText("[$timestamp] $Message`r`n")
+        $script:printerLogBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+
 # Get installed printers
 $script:GetInstalledPrinters = {
     $printers = @()
@@ -224,41 +235,95 @@ $script:GetServerPrinters = {
 }
 
 # Add network printer (current user only)
+# Uses rundll32 printui.dll in a background process with responsive wait loop
 $script:AddNetworkPrinter = {
     param([string]$PrinterPath)
 
-    # Method 1: Try Add-Printer cmdlet (if available)
-    if ($script:HasPrintManagement) {
-        try {
-            Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
+    try {
+        & $script:PrinterLog "  Connecting to print server (downloading drivers)..."
+        & $script:PrinterLog "  This may take 1-3 minutes for first-time installs..."
+
+        # Use printui.dll /in to add printer connection for current user
+        # Run as background process so we can pump DoEvents during the wait
+        $process = Start-Process -FilePath "rundll32.exe" `
+            -ArgumentList "printui.dll,PrintUIEntry /in /n`"$PrinterPath`"" `
+            -PassThru -WindowStyle Hidden
+
+        # Responsive wait loop with elapsed time feedback
+        $startTime = [DateTime]::Now
+        $lastLogSeconds = 0
+
+        while (-not $process.HasExited) {
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $elapsed = [int]([DateTime]::Now - $startTime).TotalSeconds
+            # Log progress every 10 seconds
+            if ($elapsed -gt 0 -and $elapsed % 10 -eq 0 -and $elapsed -ne $lastLogSeconds) {
+                $lastLogSeconds = $elapsed
+                & $script:PrinterLog "  Still working... (${elapsed}s elapsed)"
+                Start-AppActivity "Adding printer... (${elapsed}s)"
+            }
+        }
+
+        $elapsed = [int]([DateTime]::Now - $startTime).TotalSeconds
+        $exitCode = $process.ExitCode
+
+        if ($exitCode -eq 0) {
+            & $script:PrinterLog "  [OK] Printer added (${elapsed}s)"
             return @{ Success = $true; Error = $null }
         }
-        catch {
-            # Fall through to WMI method
+        else {
+            & $script:PrinterLog "  printui.dll exited with code $exitCode, trying fallback..."
+
+            # Fallback: Try Add-Printer cmdlet
+            if ($script:HasPrintManagement) {
+                try {
+                    & $script:PrinterLog "  Trying Add-Printer cmdlet..."
+                    Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
+                    & $script:PrinterLog "  [OK] Printer added via Add-Printer cmdlet"
+                    return @{ Success = $true; Error = $null }
+                }
+                catch {
+                    & $script:PrinterLog "  Add-Printer failed: $($_.Exception.Message)"
+                }
+            }
+
+            # Fallback: Try WScript.Network COM object
+            try {
+                & $script:PrinterLog "  Trying WScript.Network fallback..."
+                $wscript = New-Object -ComObject WScript.Network
+                $wscript.AddWindowsPrinterConnection($PrinterPath)
+                & $script:PrinterLog "  [OK] Printer added via WScript.Network"
+                return @{ Success = $true; Error = $null }
+            }
+            catch {
+                & $script:PrinterLog "  [FAIL] All methods failed"
+                return @{ Success = $false; Error = "printui.dll exit code $exitCode. Fallback also failed: $($_.Exception.Message)" }
+            }
         }
     }
-
-    # Method 2: Use WScript.Network COM object (Windows 10 compatible)
-    try {
-        $wscript = New-Object -ComObject WScript.Network
-        $wscript.AddWindowsPrinterConnection($PrinterPath)
-        return @{ Success = $true; Error = $null }
-    }
     catch {
+        & $script:PrinterLog "  [FAIL] Error: $($_.Exception.Message)"
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
 
-# Add network printer for ALL users (requires elevation)
+# Add network printer for ALL users (requires elevation, fire-and-forget)
+# Uses printui.dll /ga to add per-machine printer connection
+# This runs in the background - printer persistence applies at next user logon
 $script:AddNetworkPrinterAllUsers = {
     param([string]$PrinterPath)
 
     try {
         # Use printui.dll with /ga flag (add per-machine printer connection)
+        # Fire-and-forget: don't wait since current user already has the printer
         $result = Start-ElevatedProcess -FilePath "rundll32.exe" `
             -ArgumentList "printui.dll,PrintUIEntry /ga /n`"$PrinterPath`"" `
-            -Wait -Hidden `
+            -Hidden `
             -OperationName "install printer for all users"
+
+        [System.Windows.Forms.Application]::DoEvents()
 
         if ($result.Success) {
             return @{ Success = $true; Error = $null }
@@ -333,13 +398,36 @@ $script:SendTestPage = {
     param([string]$PrinterName)
 
     try {
-        $printer = Get-WmiObject -Query "SELECT * FROM Win32_Printer WHERE Name='$($PrinterName -replace '\\','\\\\')'" -ErrorAction Stop
+        & $script:PrinterLog "Sending test page to: $PrinterName"
+
+        # Use PowerShell filter instead of WQL to avoid backslash escaping issues
+        $printer = Get-WmiObject Win32_Printer -ErrorAction Stop | Where-Object { $_.Name -eq $PrinterName }
+
         if ($printer) {
-            $printer.PrintTestPage() | Out-Null
+            & $script:PrinterLog "  Printer found. Sending test page..."
+            $testResult = $printer.PrintTestPage()
+            if ($testResult.ReturnValue -eq 0) {
+                & $script:PrinterLog "  [OK] Test page sent successfully"
+                return @{ Success = $true; Error = $null }
+            }
+            else {
+                & $script:PrinterLog "  [FAIL] PrintTestPage returned code: $($testResult.ReturnValue)"
+                return @{ Success = $false; Error = "PrintTestPage returned error code $($testResult.ReturnValue)" }
+            }
         }
-        return @{ Success = $true; Error = $null }
+        else {
+            # List available printers to help debug
+            & $script:PrinterLog "  [FAIL] Printer not found in WMI"
+            $allPrinters = Get-WmiObject Win32_Printer -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+            & $script:PrinterLog "  Available printers in WMI:"
+            foreach ($p in $allPrinters) {
+                & $script:PrinterLog "    - $p"
+            }
+            return @{ Success = $false; Error = "Printer '$PrinterName' not found. Check the Activity Log for available names." }
+        }
     }
     catch {
+        & $script:PrinterLog "  [FAIL] Error: $($_.Exception.Message)"
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
@@ -949,9 +1037,10 @@ function Initialize-Module {
     # Test print
     $testPrintBtn.Add_Click({
         if ($script:installedListView.SelectedItems.Count -eq 0) {
+            & $script:PrinterLog "Test Page: No printer selected"
             [System.Windows.Forms.MessageBox]::Show(
-                "Please select a printer to send a test page.",
-                "No Selection",
+                "Please click on a printer in the Installed Printers list first, then click Test Page.",
+                "No Printer Selected",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Warning
             )
@@ -959,7 +1048,11 @@ function Initialize-Module {
         }
 
         $printerName = $script:installedListView.SelectedItems[0].Text
+        & $script:PrinterLog "Selected printer: '$printerName' (length: $($printerName.Length))"
+        Start-AppActivity "Sending test page..."
+        [System.Windows.Forms.Application]::DoEvents()
         $result = & $script:SendTestPage -PrinterName $printerName
+        Clear-AppStatus
 
         if ($result.Success) {
             [System.Windows.Forms.MessageBox]::Show(
@@ -999,21 +1092,49 @@ function Initialize-Module {
         $successCount = 0
         $failedPrinters = @()
         $modeText = "all users"
+        $totalPrinters = $checkedItems.Count
 
+        & $script:PrinterLog "=== Adding $totalPrinters printer(s) ==="
+        Start-AppActivity "Adding printer(s)..."
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $currentIndex = 0
         foreach ($printer in $checkedItems) {
-            $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
-            # Also add for current user so it shows immediately
-            if ($result.Success) {
-                & $script:AddNetworkPrinter -PrinterPath $printer.FullPath | Out-Null
-            }
+            $currentIndex++
+            & $script:PrinterLog "[$currentIndex/$totalPrinters] Processing: $($printer.Name)"
+            & $script:PrinterLog "  Path: $($printer.FullPath)"
+            Set-AppProgress -Value $currentIndex -Maximum $totalPrinters -Message "Adding printer $currentIndex of ${totalPrinters}: $($printer.Name)..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            # Step 1: Add for current user first (fast, no elevation)
+            & $script:PrinterLog "  Adding for current user..."
+            $result = & $script:AddNetworkPrinter -PrinterPath $printer.FullPath
 
             if ($result.Success) {
+                & $script:PrinterLog "  [OK] Printer added for current user"
                 $successCount++
+
+                # Step 2: Persist for all users (fire-and-forget, runs in background)
+                & $script:PrinterLog "  Persisting for all users (background)..."
+                $allUsersResult = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
+                if ($allUsersResult.Success) {
+                    & $script:PrinterLog "  [OK] All-users persistence queued"
+                }
+                else {
+                    & $script:PrinterLog "  ! Warning: All-users persistence failed: $($allUsersResult.Error)"
+                    & $script:PrinterLog "    (Printer still works for current user)"
+                }
             }
             else {
+                & $script:PrinterLog "  [FAIL] FAILED: $($result.Error)"
                 $failedPrinters += "$($printer.Name): $($result.Error)"
             }
+
+            [System.Windows.Forms.Application]::DoEvents()
         }
+
+        & $script:PrinterLog "Refreshing installed printer list..."
+        Clear-AppStatus
 
         if ($failedPrinters.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
@@ -1024,7 +1145,7 @@ function Initialize-Module {
             )
         }
         else {
-            $message = "Added $successCount printer(s) for $modeText.`n`nFailed:`n" + ($failedPrinters -join "`n")
+            $message = "Added $successCount printer(s) for ${modeText}.`n`nFailed:`n" + ($failedPrinters -join "`n")
             [System.Windows.Forms.MessageBox]::Show(
                 $message,
                 "Partial Success",
@@ -1034,6 +1155,10 @@ function Initialize-Module {
         }
 
         & $script:RefreshInstalledPrinters
+        & $script:PrinterLog "[OK] Complete! Added $successCount printer(s) successfully."
+        if ($failedPrinters.Count -gt 0) {
+            & $script:PrinterLog "[FAIL] Failed: $($failedPrinters.Count) printer(s)"
+        }
     })
 
     # Manual add by path - SECURITY: Server dropdown + printer name only
@@ -1154,20 +1279,46 @@ function Initialize-Module {
 
             $modeText = "all users"
 
-            $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
-            # Also add for current user so it shows immediately
+            & $script:PrinterLog "=== Manual printer add ==="
+            & $script:PrinterLog "Printer: $printerName"
+            & $script:PrinterLog "Path: $printerPath"
+            Start-AppActivity "Adding printer: $printerName..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            # Step 1: Add for current user first (fast, no elevation)
+            & $script:PrinterLog "Adding for current user..."
+            $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
+
             if ($result.Success) {
-                & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
+                & $script:PrinterLog "[OK] Printer added for current user"
+
+                # Step 2: Persist for all users (fire-and-forget, background)
+                & $script:PrinterLog "Persisting for all users (background)..."
+                $allUsersResult = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
+                if ($allUsersResult.Success) {
+                    & $script:PrinterLog "[OK] All-users persistence queued"
+                }
+                else {
+                    & $script:PrinterLog "! Warning: All-users persistence failed: $($allUsersResult.Error)"
+                    & $script:PrinterLog "  (Printer still works for current user)"
+                }
             }
+            else {
+                & $script:PrinterLog "[FAIL] FAILED: $($result.Error)"
+            }
+
+            & $script:PrinterLog "Refreshing installed printer list..."
+            Clear-AppStatus
 
             if ($result.Success) {
                 [System.Windows.Forms.MessageBox]::Show(
-                    "Printer added successfully for $modeText.`n`nPath: $printerPath",
+                    "Printer added successfully for ${modeText}.`n`nPath: $printerPath",
                     "Success",
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
                 & $script:RefreshInstalledPrinters
+                & $script:PrinterLog "[OK] Complete!"
             }
             else {
                 [System.Windows.Forms.MessageBox]::Show(
@@ -1183,8 +1334,35 @@ function Initialize-Module {
 
     #endregion
 
+    # Main layout - split container on top, log box on bottom
+    $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $mainLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $mainLayout.RowCount = 2
+    $mainLayout.ColumnCount = 1
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 70))) | Out-Null
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 30))) | Out-Null
+
+    # Add split container to top row
+    $mainLayout.Controls.Add($script:splitContainer, 0, 0)
+
+    # Log box at bottom
+    $logGroup = New-Object System.Windows.Forms.GroupBox
+    $logGroup.Text = "Activity Log"
+    $logGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $logGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:printerLogBox = New-Object System.Windows.Forms.RichTextBox
+    $script:printerLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:printerLogBox.ReadOnly = $true
+    $script:printerLogBox.BackColor = [System.Drawing.Color]::White
+    $script:printerLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:printerLogBox.WordWrap = $false
+    $logGroup.Controls.Add($script:printerLogBox)
+
+    $mainLayout.Controls.Add($logGroup, 0, 1)
+
     # Add to tab
-    $tab.Controls.Add($script:splitContainer)
+    $tab.Controls.Add($mainLayout)
 
     # Set splitter position to 50/50 after form is sized
     $tab.Add_SizeChanged({
@@ -1193,12 +1371,18 @@ function Initialize-Module {
         }
     })
 
+    # Initial log message
+    & $script:PrinterLog "Printer Management module loaded."
+    & $script:PrinterLog "Ready to add, remove, and manage network printers."
+    & $script:PrinterLog ""
+
     # Initial load - installed printers (with error handling for Windows 10 compatibility)
     try {
         & $script:RefreshInstalledPrinters
     }
     catch {
         Write-SessionLog -Message "Failed to load installed printers during module init: $($_.Exception.Message)" -Category "Printer Management"
+        & $script:PrinterLog "Warning: Could not load installed printers automatically."
         # UI will still load, user can manually refresh
     }
 
@@ -1209,6 +1393,7 @@ function Initialize-Module {
         }
         catch {
             Write-SessionLog -Message "Failed to auto-load server printers during module init: $($_.Exception.Message)" -Category "Printer Management"
+            & $script:PrinterLog "Warning: Could not load server printers automatically."
             # UI will still load, user can manually browse
         }
     }

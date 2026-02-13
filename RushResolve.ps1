@@ -202,6 +202,8 @@ $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
 $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
+$script:ConnectedSharePath = $null       # UNC root of active net use session
+$script:NetworkShareCredential = $null   # Session-cached PSCredential for share access (separate from elevation creds)
 
 # Session logging
 $script:LogsPath = Join-Path $script:AppPath "Logs"
@@ -1892,10 +1894,16 @@ function Start-ElevatedProcess {
             }
             if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
             if ($Hidden) { $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
-            if ($Wait) { $startParams.Wait = $true }
+            # Don't use -Wait switch, we'll wait manually with DoEvents
+            # if ($Wait) { $startParams.Wait = $true }
 
             $process = Start-Process @startParams
             if ($Wait -and $process) {
+                # Wait for process with UI responsiveness
+                while (-not $process.HasExited) {
+                    Start-Sleep -Milliseconds 100
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
                 $result.ExitCode = $process.ExitCode
                 $result.Success = ($process.ExitCode -eq 0)
                 if (-not $result.Success) { $result.Error = "Process exited with code $($process.ExitCode)" }
@@ -1937,11 +1945,17 @@ function Start-ElevatedProcess {
         }
         if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
         if ($Hidden) { $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
-        if ($Wait) { $startParams.Wait = $true }
+        # Don't use -Wait switch, we'll wait manually with DoEvents
+        # if ($Wait) { $startParams.Wait = $true }
 
         $process = Start-Process @startParams
 
         if ($Wait -and $process) {
+            # Wait for process with UI responsiveness
+            while (-not $process.HasExited) {
+                Start-Sleep -Milliseconds 100
+                [System.Windows.Forms.Application]::DoEvents()
+            }
             $result.ExitCode = $process.ExitCode
             $result.Success = ($process.ExitCode -eq 0)
             if (-not $result.Success) { $result.Error = "Process exited with code $($process.ExitCode)" }
@@ -1994,12 +2008,181 @@ function Start-ElevatedProcess {
     return $result
 }
 
+function Resolve-ToUNCPath {
+    <#
+    .SYNOPSIS
+        Converts a mapped drive letter to its UNC path.
+    .PARAMETER Path
+        The path to resolve (e.g., "K:\FLDTECH\..." or "\\server\share\...")
+    .OUTPUTS
+        Returns the UNC path if the drive is a network drive, or $null if it's not.
+    #>
+    param([string]$Path)
+
+    # Already UNC? Return as-is
+    if ($Path -match '^\\\\') { return $Path }
+
+    # Extract drive letter
+    if ($Path -notmatch '^([A-Z]):') { return $null }
+    $driveLetter = $matches[1] + ':'
+
+    try {
+        $drive = Get-WmiObject -Class Win32_LogicalDisk -Filter "DeviceID='$driveLetter'" -ErrorAction Stop
+        if ($drive.DriveType -eq 4) {  # Network drive
+            # Replace drive letter with UNC path
+            $uncPath = $Path -replace "^$([regex]::Escape($driveLetter))", $drive.ProviderName
+            return $uncPath
+        }
+    }
+    catch {
+        Write-SessionLog -Message "Failed to resolve drive $driveLetter to UNC: $($_.Exception.Message)" -Category "NetworkShare" -Level "Warning"
+    }
+
+    return $null
+}
+
+function Connect-NetworkShare {
+    <#
+    .SYNOPSIS
+        Establishes an authenticated SMB session to a network share using net use.
+    .PARAMETER SharePath
+        Full UNC path to connect to (e.g., "\\server\share\folder\file.exe")
+    .PARAMETER Credential
+        Optional PSCredential to use. If not provided, will try cached session creds or prompt.
+    .OUTPUTS
+        Hashtable with Success (bool), Error (string), ShareRoot (string)
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$SharePath,
+        [PSCredential]$Credential = $null
+    )
+
+    $result = @{
+        Success = $false
+        Error = $null
+        ShareRoot = $null
+    }
+
+    # Extract share root (\\server\share)
+    if ($SharePath -notmatch '^(\\\\[^\\]+\\[^\\]+)') {
+        $result.Error = "Invalid UNC path: $SharePath"
+        return $result
+    }
+    $shareRoot = $matches[1]
+    $result.ShareRoot = $shareRoot
+
+    # Quick check: already accessible?
+    if (Test-Path $shareRoot -ErrorAction SilentlyContinue) {
+        Write-SessionLog -Message "Share $shareRoot is already accessible (no auth needed)" -Category "NetworkShare"
+        $result.Success = $true
+        $script:ConnectedSharePath = $shareRoot
+        return $result
+    }
+
+    # Disconnect any stale session to this share
+    $existingSession = net use | Select-String -Pattern "^OK\s+$([regex]::Escape($shareRoot))"
+    if ($existingSession) {
+        Write-SessionLog -Message "Disconnecting existing session to $shareRoot" -Category "NetworkShare"
+        net use $shareRoot /delete /yes 2>&1 | Out-Null
+    }
+
+    # Credential cascade
+    $credToUse = $null
+    $isRetry = $false
+
+    if ($Credential) {
+        $credToUse = $Credential
+    }
+    elseif ($script:NetworkShareCredential) {
+        $credToUse = $script:NetworkShareCredential
+        $isRetry = $true  # Mark as retry in case it fails
+        Write-SessionLog -Message "Using cached network share credentials for $shareRoot" -Category "NetworkShare"
+    }
+    else {
+        # Prompt for new credentials
+        $credToUse = Get-Credential -Message "Enter credentials to access $shareRoot"
+        if (-not $credToUse) {
+            $result.Error = "Authentication cancelled by user"
+            return $result
+        }
+    }
+
+    # Extract username and password
+    $username = $credToUse.UserName
+    $password = $credToUse.GetNetworkCredential().Password
+
+    # Auto-prepend domain if username lacks \ or @
+    if ($username -notmatch '\\|@') {
+        $username = "RUSH\$username"
+        Write-SessionLog -Message "Prepending default domain: $username" -Category "NetworkShare"
+    }
+
+    # Attempt connection
+    try {
+        Write-SessionLog -Message "Connecting to $shareRoot as $username..." -Category "NetworkShare"
+        $output = net use $shareRoot /user:$username $password 2>&1
+        $password = $null  # Clear immediately
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-SessionLog -Message "Successfully connected to $shareRoot" -Category "NetworkShare"
+            $result.Success = $true
+            $script:ConnectedSharePath = $shareRoot
+            $script:NetworkShareCredential = $credToUse
+            return $result
+        }
+        else {
+            $result.Error = "net use failed: $($output -join ' ')"
+        }
+    }
+    catch {
+        $password = $null  # Clear on error too
+        $result.Error = "Connection failed: $($_.Exception.Message)"
+    }
+
+    # If we used cached creds and they failed, clear cache and retry once with fresh prompt
+    if ($isRetry -and -not $result.Success) {
+        Write-SessionLog -Message "Cached credentials failed, clearing cache and re-prompting" -Category "NetworkShare" -Level "Warning"
+        $script:NetworkShareCredential = $null
+
+        $newCred = Get-Credential -Message "Previous credentials failed. Enter credentials to access $shareRoot"
+        if ($newCred) {
+            return Connect-NetworkShare -SharePath $SharePath -Credential $newCred
+        }
+        else {
+            $result.Error = "Authentication cancelled after failed retry"
+        }
+    }
+
+    if (-not $result.Success) {
+        Write-SessionLog -Message "Failed to connect to $shareRoot : $($result.Error)" -Category "NetworkShare" -Level "Error"
+    }
+
+    return $result
+}
+
+function Disconnect-NetworkShare {
+    <#
+    .SYNOPSIS
+        Disconnects the active network share session.
+    #>
+    if ($script:ConnectedSharePath) {
+        Write-SessionLog -Message "Disconnecting from $script:ConnectedSharePath" -Category "NetworkShare"
+        net use $script:ConnectedSharePath /delete /yes 2>&1 | Out-Null
+        $script:ConnectedSharePath = $null
+    }
+}
+
 function Clear-CachedCredentials {
     # Clear in-memory credential
     $script:CachedCredential = $null
     $script:CredentialPINHash = $null
     $script:PINLastVerified = $null
     $script:PINFailCount = 0
+
+    # Clear network share credentials and disconnect
+    $script:NetworkShareCredential = $null
+    Disconnect-NetworkShare
 
     # Delete encrypted files from disk
     Remove-EncryptedCredential
@@ -3641,6 +3824,7 @@ function Initialize-Module {
         if ($tabControl.SelectedTab) {
             $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
         }
+        Disconnect-NetworkShare
         Save-Settings
         Close-SessionLog
     })
