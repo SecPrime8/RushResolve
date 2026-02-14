@@ -1992,7 +1992,19 @@ function Start-ElevatedProcess {
         }
 
         $job = Start-Job -ScriptBlock $scriptBlock -Credential $Credential -ArgumentList $FilePath, $ArgumentList, $Hidden, $Wait, $workDir
-        $jobResult = $job | Wait-Job | Receive-Job
+
+        # Poll with DoEvents to keep UI responsive (replaces blocking Wait-Job)
+        $jobStart = Get-Date
+        while ($job.State -eq 'Running') {
+            Start-Sleep -Milliseconds 100
+            [System.Windows.Forms.Application]::DoEvents()
+            if (((Get-Date) - $jobStart).TotalMinutes -gt 5) {
+                Stop-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+                throw "Elevated process timed out after 5 minutes"
+            }
+        }
+        $jobResult = Receive-Job $job
         Remove-Job $job -Force
 
         if ($null -eq $jobResult) { $jobResult = 0 }

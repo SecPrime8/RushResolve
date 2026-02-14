@@ -1,5 +1,42 @@
 # Rush Resolve Changelog
 
+## v2.6.0 (2026-02-13)
+### Improvements
+- **Module 7 (Diagnostics) - DISM/SFC Overhaul**
+  - Replaced external PowerShell windows with inline output streaming (RunElevatedInline helper)
+  - DISM and SFC output now appears directly in the diagnostics log panel
+  - Added verbose `dism.log` tailing for real-time repair detail (filtered for errors, progress, corruption info)
+  - UAC RunAs elevation with hidden cmd window (no more visible console pop-ups)
+  - 60-minute timeout safety with automatic process termination
+  - Removed internet-dependent RestoreHealth option (blocked by hospital GPO)
+  - Promoted WIM-based repair as primary fix path ("Repair from WIM")
+  - Added `/LogLevel:4` to all DISM commands for verbose logging
+  - Removed legacy DISM elapsed timer (replaced by inline streaming)
+
+- **Module 3 (Printer Management)**
+  - Rewritten printer add to use `printui.dll` with responsive DoEvents polling
+  - Added activity log panel for printer operations
+  - Fixed WQL backslash escaping for test page
+  - Current-user-first workflow for printer installation
+
+- **Module 2 (Software Installer) - HPIA Driver Workflow**
+  - Fixed JSON field mapping: `RecommendationValue` is target version, not install status
+  - Removed incorrect `RecommendationValue=="Install"` gate that filtered out all driver recommendations
+  - Handle HPIA exit code 256 (system up to date) with clear message
+  - Replaced blocking `WaitForExit` with DoEvents polling for responsive UI
+  - Two-phase install: download SoftPaqs first, then run `InstallAll.cmd` with streamed output
+
+- **Core Framework (RushResolve.ps1)**
+  - Added DoEvents to `Start-ElevatedProcess` wait loops (UI stays responsive)
+  - Added `Resolve-ToUNCPath` and `Connect-NetworkShare` for SMB auth
+  - Network share credential caching
+
+### Technical
+- Module 7: Removed duplicate HPIA code (consolidated in Module 2)
+- Config: Added `favorites.json`, updated settings with UNC paths
+- Security: Added `integrity-manifest.json` for settings/main script hashes
+- Updated module hashes in security manifest
+
 ## v2.5.1 (2026-02-10)
 ### 🐛 Bug Fixes
 - **Module 2 (Software Installer)**
