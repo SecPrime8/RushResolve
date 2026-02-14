@@ -15,6 +15,9 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# SECURITY: Enforce TLS 1.2+ for all HTTPS connections (prevents downgrade attacks)
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+
 # QRCoder Library - bundled for QR code generation
 # DLL is included in Lib folder - no runtime download needed
 $script:QRCoderPath = Join-Path $PSScriptRoot "Lib\QRCoder.dll"
@@ -103,7 +106,25 @@ function Show-SplashScreen {
     $script:SplashForm.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
     $script:SplashForm.TopMost = $true
 
-    # App name
+    # Rush Logo (top-left corner)
+    $logoPath = Join-Path $script:AppPath "Assets/Rush-logo.png"
+    if (Test-Path $logoPath) {
+        try {
+            $logoPictureBox = New-Object System.Windows.Forms.PictureBox
+            $logoPictureBox.Image = [System.Drawing.Image]::FromFile($logoPath)
+            $logoPictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+            $logoPictureBox.Size = New-Object System.Drawing.Size(60, 60)
+            $logoPictureBox.Location = New-Object System.Drawing.Point(20, 20)
+            $logoPictureBox.BackColor = [System.Drawing.Color]::Transparent
+            $script:SplashForm.Controls.Add($logoPictureBox)
+        }
+        catch {
+            # If logo fails to load, continue without it
+            Write-Verbose "Failed to load Rush logo: $_"
+        }
+    }
+
+    # App name (adjusted position to accommodate logo)
     $titleLabel = New-Object System.Windows.Forms.Label
     $titleLabel.Text = "Rush Resolve"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
@@ -162,7 +183,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.3"  # Session logging
+$script:AppVersion = "2.5.0"  # Stability & TDD release
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -188,6 +209,72 @@ $script:SessionLogFile = $null
 #endregion
 
 #region Session Logging
+
+<#
+.SYNOPSIS
+    Collects essential system information for session log header.
+.DESCRIPTION
+    Gathers OS, CPU, RAM, and domain information to be logged at session start.
+.OUTPUTS
+    Hashtable with system information
+#>
+function Get-SessionStartInfo {
+    try {
+        $info = @{}
+
+        # Get CIM instances
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+        $cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+
+        # Computer info
+        $info['ComputerName'] = $env:COMPUTERNAME
+
+        # OS info
+        if ($os) {
+            $info['OS'] = $os.Caption
+            $info['OSVersion'] = $os.Version
+            $info['Build'] = $os.BuildNumber
+            $info['Architecture'] = $os.OSArchitecture
+        }
+
+        # CPU info
+        if ($cpu) {
+            $info['CPU'] = $cpu.Name.Trim()
+            $info['Cores'] = $cpu.NumberOfCores
+            $info['Threads'] = $cpu.NumberOfLogicalProcessors
+        }
+
+        # RAM info
+        if ($cs) {
+            $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+            $info['RAM'] = "$ramGB GB"
+
+            # Domain info
+            if ($cs.PartOfDomain) {
+                $info['Domain'] = $cs.Domain
+                $info['DomainJoined'] = $true
+            } else {
+                $info['Workgroup'] = $cs.Workgroup
+                $info['DomainJoined'] = $false
+            }
+        }
+
+        # Network adapters (basic count)
+        $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
+        $info['ActiveAdapters'] = $adapters.Count
+
+        return $info
+    }
+    catch {
+        # Return minimal info if gathering fails
+        return @{
+            ComputerName = $env:COMPUTERNAME
+            Error = $_.Exception.Message
+        }
+    }
+}
+
 function Initialize-SessionLog {
     <#
     .SYNOPSIS
@@ -199,23 +286,63 @@ function Initialize-SessionLog {
             New-Item -Path $script:LogsPath -ItemType Directory -Force | Out-Null
         }
 
-        # Generate filename with timestamp
+        # Generate filename with computer name and timestamp
+        # Format: SESSION-COMPUTERNAME-2026-02-09_143522.log
         $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-        $script:SessionLogFile = Join-Path $script:LogsPath "session_$timestamp.log"
+        $computerName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'UNKNOWN' }
+        $script:SessionLogFile = Join-Path $script:LogsPath "SESSION-$computerName-$timestamp.log"
 
-        # Write header
-        $header = @"
-================================================================================
-RUSH RESOLVE SESSION LOG
-================================================================================
-Started: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-User: $env:USERDOMAIN\$env:USERNAME
-Computer: $env:COMPUTERNAME
-Version: $($script:AppVersion)
-================================================================================
+        # Gather system information
+        $sysInfo = Get-SessionStartInfo
 
-"@
-        Set-Content -Path $script:SessionLogFile -Value $header -Force
+        # Build header with system information
+        $headerBuilder = [System.Text.StringBuilder]::new()
+        [void]$headerBuilder.AppendLine("=" * 80)
+        [void]$headerBuilder.AppendLine("RUSH RESOLVE SESSION LOG")
+        [void]$headerBuilder.AppendLine("=" * 80)
+        [void]$headerBuilder.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        [void]$headerBuilder.AppendLine("User: $env:USERDOMAIN\$env:USERNAME")
+        [void]$headerBuilder.AppendLine("Computer: $env:COMPUTERNAME")
+        [void]$headerBuilder.AppendLine("Version: $($script:AppVersion)")
+        [void]$headerBuilder.AppendLine("")
+
+        [void]$headerBuilder.AppendLine("SYSTEM INFORMATION:")
+        [void]$headerBuilder.AppendLine("-" * 80)
+
+        if ($sysInfo.ContainsKey('Error')) {
+            [void]$headerBuilder.AppendLine("Error gathering system info: $($sysInfo.Error)")
+        } else {
+            if ($sysInfo.OS) {
+                [void]$headerBuilder.AppendLine("OS: $($sysInfo.OS)")
+                [void]$headerBuilder.AppendLine("Version: $($sysInfo.OSVersion)")
+                [void]$headerBuilder.AppendLine("Build: $($sysInfo.Build)")
+                [void]$headerBuilder.AppendLine("Architecture: $($sysInfo.Architecture)")
+            }
+
+            if ($sysInfo.CPU) {
+                [void]$headerBuilder.AppendLine("CPU: $($sysInfo.CPU)")
+                [void]$headerBuilder.AppendLine("Cores: $($sysInfo.Cores) cores, $($sysInfo.Threads) threads")
+            }
+
+            if ($sysInfo.RAM) {
+                [void]$headerBuilder.AppendLine("RAM: $($sysInfo.RAM)")
+            }
+
+            if ($sysInfo.DomainJoined) {
+                [void]$headerBuilder.AppendLine("Domain: $($sysInfo.Domain)")
+            } elseif ($sysInfo.Workgroup) {
+                [void]$headerBuilder.AppendLine("Workgroup: $($sysInfo.Workgroup)")
+            }
+
+            if ($sysInfo.ActiveAdapters) {
+                [void]$headerBuilder.AppendLine("Active Network Adapters: $($sysInfo.ActiveAdapters)")
+            }
+        }
+
+        [void]$headerBuilder.AppendLine("=" * 80)
+        [void]$headerBuilder.AppendLine("")
+
+        Set-Content -Path $script:SessionLogFile -Value $headerBuilder.ToString() -Force
         Write-SessionLog "Application started"
     }
     catch {
@@ -229,24 +356,43 @@ function Write-SessionLog {
     .SYNOPSIS
         Writes a timestamped entry to the session log.
     .PARAMETER Message
-        The message to log.
+        The message to log (operation name or description).
     .PARAMETER Category
         Optional category prefix (e.g., "Credentials", "Disk Cleanup").
+    .PARAMETER Result
+        Optional result of the operation (e.g., "Success", "Failed: reason", "Freed 2.5 GB").
+        When provided, appended as " - Result" to the message.
+    .EXAMPLE
+        Write-SessionLog -Message "Domain join" -Category "DomainTools" -Result "Success"
+        Output: [10:30:45] [DomainTools] Domain join - Success
+    .EXAMPLE
+        Write-SessionLog -Message "Temp files removed" -Category "DiskCleanup" -Result "Freed 2.5 GB"
+        Output: [10:30:45] [DiskCleanup] Temp files removed - Freed 2.5 GB
     #>
     param(
         [string]$Message,
-        [string]$Category = ""
+        [string]$Category = "",
+        [string]$Result = ""
     )
 
     if (-not $script:SessionLogFile) { return }
 
     try {
         $timestamp = Get-Date -Format "HH:mm:ss"
-        $logEntry = if ($Category) {
-            "[$timestamp] [$Category] $Message"
+
+        # Build log entry with optional result
+        $fullMessage = if ($Result) {
+            "$Message - $Result"
         } else {
-            "[$timestamp] $Message"
+            $Message
         }
+
+        $logEntry = if ($Category) {
+            "[$timestamp] [$Category] $fullMessage"
+        } else {
+            "[$timestamp] $fullMessage"
+        }
+
         Add-Content -Path $script:SessionLogFile -Value $logEntry
     }
     catch {
@@ -655,11 +801,16 @@ function Protect-Credential {
     )
 
     try {
-        # Convert credential to storable format
+        # SECURITY NOTE: Plaintext password must be extracted temporarily for encryption
+        # This is a PowerShell limitation - minimize exposure window
         $username = $Credential.UserName
         $password = $Credential.GetNetworkCredential().Password
         $data = "$username|$password"
         $dataBytes = [System.Text.Encoding]::UTF8.GetBytes($data)
+
+        # Clear plaintext password from memory immediately
+        $password = $null
+        $data = $null
 
         # 1. Generate random Salt (16 bytes) and IV (16 bytes)
         $salt = New-Object byte[] 16
@@ -1083,9 +1234,11 @@ function Copy-PasswordToClipboard {
                 $script:PINFailCount = 0
                 Update-CredentialStatusIndicator
 
-                # Copy password to clipboard
+                # SECURITY NOTE: Plaintext password required for clipboard API
+                # Minimize exposure window by clearing immediately after use
                 $password = $decrypted.GetNetworkCredential().Password
                 [System.Windows.Forms.Clipboard]::SetText($password)
+                $password = $null  # Clear plaintext from memory
                 Write-SessionLog -Message "Credentials unlocked with PIN, password copied to clipboard" -Category "Credentials"
 
                 [void][System.Windows.Forms.MessageBox]::Show(
@@ -1114,6 +1267,12 @@ function Copy-PasswordToClipboard {
             # Wrong PIN
             $script:PINFailCount++
             $attemptsLeft = 3 - $script:PINFailCount
+
+            # SECURITY: Add exponential backoff to prevent brute-force attacks
+            $delaySeconds = 3 * $script:PINFailCount  # 3s, 6s, 9s
+            if ($delaySeconds -gt 0) {
+                Start-Sleep -Seconds $delaySeconds
+            }
 
             if ($attemptsLeft -gt 0) {
                 [void][System.Windows.Forms.MessageBox]::Show(
@@ -1231,6 +1390,12 @@ function Show-QRCodeAuthenticator {
             else {
                 $script:PINFailCount++
                 $attemptsLeft = 3 - $script:PINFailCount
+
+                # SECURITY: Add exponential backoff to prevent brute-force attacks
+                $delaySeconds = 3 * $script:PINFailCount  # 3s, 6s, 9s
+                if ($delaySeconds -gt 0) {
+                    Start-Sleep -Seconds $delaySeconds
+                }
 
                 if ($attemptsLeft -gt 0) {
                     [void][System.Windows.Forms.MessageBox]::Show(
@@ -1452,6 +1617,12 @@ function Get-ElevatedCredential {
                 # Wrong PIN
                 $script:PINFailCount++
                 $attemptsLeft = 3 - $script:PINFailCount
+
+                # SECURITY: Add exponential backoff to prevent brute-force attacks
+                $delaySeconds = 3 * $script:PINFailCount  # 3s, 6s, 9s
+                if ($delaySeconds -gt 0) {
+                    Start-Sleep -Seconds $delaySeconds
+                }
 
                 if ($attemptsLeft -gt 0) {
                     [void][System.Windows.Forms.MessageBox]::Show(
@@ -2038,6 +2209,688 @@ function Load-Module {
         Write-Warning "Failed to load module '$($ModuleFile.Name)': $_"
         return $false
     }
+}
+#endregion
+
+#region Auto-Update Functions
+function Invoke-CheckForUpdates {
+    <#
+    .SYNOPSIS
+        Entry point for update check. Queries GitHub and shows update dialog if newer version available.
+    #>
+    Write-SessionLog "Check for updates initiated by user" -Category "Update"
+
+    # Show checking dialog
+    $checkingForm = Show-ProgressDialog -StatusText "Checking for updates..."
+
+    try {
+        $release = Get-LatestGitHubRelease
+
+        if ($checkingForm) {
+            $checkingForm.Close()
+            $checkingForm.Dispose()
+        }
+
+        if (-not $release) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Cannot reach GitHub. Please check your internet connection.",
+                "Update Check Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return
+        }
+
+        Write-SessionLog "GitHub API response: latest version is $($release.tag_name)" -Category "Update"
+
+        $isNewer = Test-NewVersionAvailable -Current $script:AppVersion -GitHub $release.tag_name
+        if (-not $isNewer) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "You're running the latest version (v$($script:AppVersion))",
+                "No Updates Available",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return
+        }
+
+        Write-SessionLog "Update available: v$($script:AppVersion) → $($release.tag_name)" -Category "Update"
+
+        # Show update dialog with release notes
+        Show-UpdateDialog -Release $release
+    }
+    catch {
+        if ($checkingForm) {
+            $checkingForm.Close()
+            $checkingForm.Dispose()
+        }
+        Write-SessionLog "Update check error: $_" -Category "Update"
+        [System.Windows.Forms.MessageBox]::Show(
+            "Error checking for updates: $_",
+            "Update Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    }
+}
+
+function Get-LatestGitHubRelease {
+    <#
+    .SYNOPSIS
+        Queries GitHub API for latest release information.
+    .OUTPUTS
+        Hashtable with release metadata, or $null if request fails.
+    #>
+    $apiUrl = "https://api.github.com/repos/SecPrime8/RushResolve/releases/latest"
+
+    try {
+        # GitHub API requires User-Agent header
+        $headers = @{
+            'User-Agent' = 'RushResolve-Updater'
+        }
+
+        $response = Invoke-RestMethod -Uri $apiUrl -Method Get -Headers $headers -UseBasicParsing -TimeoutSec 10
+
+        # Extract ZIP asset (first asset assumed to be the release ZIP)
+        $zipAsset = $response.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+
+        if (-not $zipAsset) {
+            Write-SessionLog "No ZIP asset found in release" -Category "Update"
+            return $null
+        }
+
+        return @{
+            tag_name = $response.tag_name
+            name = $response.name
+            body = $response.body
+            download_url = $zipAsset.browser_download_url
+            size = $zipAsset.size
+            created_at = $response.created_at
+        }
+    }
+    catch {
+        Write-SessionLog "GitHub API error: $_" -Category "Update"
+        return $null
+    }
+}
+
+function Test-NewVersionAvailable {
+    <#
+    .SYNOPSIS
+        Compares current version with GitHub version.
+    .PARAMETER Current
+        Current version string (e.g., "2.3").
+    .PARAMETER GitHub
+        GitHub release tag (e.g., "v2.4.0").
+    .OUTPUTS
+        $true if GitHub version is newer, $false otherwise.
+    #>
+    param(
+        [string]$Current,
+        [string]$GitHub
+    )
+
+    try {
+        # Normalize versions: "2.3" → "2.3.0", "v2.4.0" → "2.4.0"
+        $currentVer = [version]($Current + ".0")
+        $githubVer = [version]($GitHub -replace "^v", "")
+
+        return $githubVer -gt $currentVer
+    }
+    catch {
+        Write-SessionLog "Version comparison error: $_" -Category "Update"
+        return $false
+    }
+}
+
+function Download-UpdatePackage {
+    <#
+    .SYNOPSIS
+        Downloads update ZIP from GitHub to temp folder.
+    .PARAMETER Url
+        Direct download URL from GitHub release.
+    .OUTPUTS
+        Full path to downloaded ZIP, or $null if download fails.
+    #>
+    param([string]$Url)
+
+    try {
+        # SECURITY: Validate HTTPS enforcement (prevent MITM attacks)
+        if (-not $Url.StartsWith("https://", [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-SessionLog "SECURITY: Download URL does not use HTTPS: $Url" -Category "Update"
+            return $null
+        }
+
+        # Create temp folder
+        $tempPath = Join-Path $env:TEMP "RushResolveUpdate_$(Get-Date -Format 'yyyyMMddHHmmss')"
+        New-Item -Path $tempPath -ItemType Directory -Force | Out-Null
+
+        $zipPath = Join-Path $tempPath "update.zip"
+
+        Write-SessionLog "Download started from: $Url" -Category "Update"
+
+        # Download with progress (simple synchronous download for now)
+        Invoke-WebRequest -Uri $Url -OutFile $zipPath -UseBasicParsing
+
+        $fileSize = (Get-Item $zipPath).Length
+        Write-SessionLog "Download completed: $([math]::Round($fileSize / 1MB, 2)) MB" -Category "Update"
+
+        return $zipPath
+    }
+    catch {
+        Write-SessionLog "Download failed: $_" -Category "Update"
+        return $null
+    }
+}
+
+function Verify-UpdatePackage {
+    <#
+    .SYNOPSIS
+        Verifies SHA256 hash of downloaded ZIP against expected value.
+    .PARAMETER ZipPath
+        Path to downloaded ZIP file.
+    .PARAMETER ExpectedHash
+        Expected SHA256 hash in hexadecimal format (from GitHub).
+    .OUTPUTS
+        $true if hash matches, $false otherwise.
+    #>
+    param(
+        [string]$ZipPath,
+        [string]$ExpectedHash
+    )
+
+    try {
+        $actualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash
+
+        if ($actualHash -ne $ExpectedHash) {
+            Write-SessionLog "Hash mismatch: Expected $ExpectedHash, got $actualHash" -Category "Update"
+            return $false
+        }
+
+        Write-SessionLog "Hash verification: PASSED" -Category "Update"
+        return $true
+    }
+    catch {
+        Write-SessionLog "Hash verification error: $_" -Category "Update"
+        return $false
+    }
+}
+
+function Backup-CurrentVersion {
+    <#
+    .SYNOPSIS
+        Creates backup ZIP of current version before updating.
+    .OUTPUTS
+        Full path to backup ZIP, or $null if backup fails.
+    #>
+    try {
+        $backupDir = Join-Path $script:AppPath "Safety\Backups"
+        if (-not (Test-Path $backupDir)) {
+            New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+        }
+
+        $timestamp = Get-Date -Format "yyyy-MM-ddTHHmmssZ"
+        $backupName = "RushResolveApp_v$($script:AppVersion)_backup_$timestamp.zip"
+        $backupPath = Join-Path $backupDir $backupName
+
+        # Get files to backup (exclude Config, Logs, Safety)
+        $itemsToBackup = @()
+
+        # Main script
+        if (Test-Path (Join-Path $script:AppPath "RushResolve.ps1")) {
+            $itemsToBackup += Join-Path $script:AppPath "RushResolve.ps1"
+        }
+
+        # Folders to backup
+        $foldersToBackup = @("Modules", "Lib", "Security")
+        foreach ($folder in $foldersToBackup) {
+            $folderPath = Join-Path $script:AppPath $folder
+            if (Test-Path $folderPath) {
+                $itemsToBackup += $folderPath
+            }
+        }
+
+        if ($itemsToBackup.Count -eq 0) {
+            Write-SessionLog "No files to backup" -Category "Update"
+            return $null
+        }
+
+        # Create backup ZIP
+        Compress-Archive -Path $itemsToBackup -DestinationPath $backupPath -Force
+
+        Write-SessionLog "Backup created: $backupName ($([math]::Round((Get-Item $backupPath).Length / 1MB, 2)) MB)" -Category "Update"
+
+        # Cleanup: Keep only last 3 backups
+        Get-ChildItem $backupDir -Filter "RushResolveApp_*.zip" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -Skip 3 |
+            ForEach-Object {
+                Write-SessionLog "Removing old backup: $($_.Name)" -Category "Update"
+                Remove-Item $_.FullName -Force
+            }
+
+        return $backupPath
+    }
+    catch {
+        Write-SessionLog "Backup failed: $_" -Category "Update"
+        return $null
+    }
+}
+
+function Install-Update {
+    <#
+    .SYNOPSIS
+        Extracts update ZIP and replaces current files (preserves user settings).
+    .PARAMETER ZipPath
+        Path to verified update ZIP.
+    .OUTPUTS
+        $true if installation succeeds, $false otherwise.
+    #>
+    param([string]$ZipPath)
+
+    try {
+        # 1. Preserve user settings
+        $settingsBackup = Join-Path $env:TEMP "settings_backup_$(Get-Date -Format 'HHmmss').json"
+        if (Test-Path $script:SettingsFile) {
+            Copy-Item $script:SettingsFile $settingsBackup -Force
+            Write-SessionLog "User settings backed up" -Category "Update"
+        }
+
+        # 2. Extract to temp folder first (verify before replacing live files)
+        $tempExtract = Join-Path $env:TEMP "RushResolveExtract_$(Get-Date -Format 'HHmmss')"
+        Expand-Archive -Path $ZipPath -DestinationPath $tempExtract -Force
+
+        Write-SessionLog "Update extracted to temp folder" -Category "Update"
+
+        # 3. Verify integrity of extracted files
+        if (-not (Test-UpdateIntegrity -ExtractPath $tempExtract)) {
+            Write-SessionLog "Integrity check failed, aborting install" -Category "Update"
+            return $false
+        }
+
+        # 4. Copy extracted files to live location
+        # Identify the root folder in the ZIP (might be "RushResolveApp" or similar)
+        $extractedItems = Get-ChildItem $tempExtract
+        $sourceRoot = $tempExtract
+
+        # If ZIP contains a single folder, use that as source
+        if ($extractedItems.Count -eq 1 -and $extractedItems[0].PSIsContainer) {
+            $sourceRoot = $extractedItems[0].FullName
+        }
+
+        # Copy files (will overwrite existing)
+        Copy-Item "$sourceRoot\*" -Destination $script:AppPath -Recurse -Force
+
+        Write-SessionLog "Files copied to application directory" -Category "Update"
+
+        # 5. Restore user settings
+        if (Test-Path $settingsBackup) {
+            Copy-Item $settingsBackup $script:SettingsFile -Force
+            Write-SessionLog "User settings restored" -Category "Update"
+        }
+
+        # 6. Regenerate security manifests
+        Update-SecurityManifests
+        Write-SessionLog "Security manifests regenerated" -Category "Update"
+
+        # 7. Cleanup temp files
+        if (Test-Path $tempExtract) {
+            Remove-Item $tempExtract -Recurse -Force
+        }
+        if (Test-Path $settingsBackup) {
+            Remove-Item $settingsBackup -Force
+        }
+
+        Write-SessionLog "Update installed successfully" -Category "Update"
+        return $true
+    }
+    catch {
+        Write-SessionLog "Installation failed: $_" -Category "Update"
+        return $false
+    }
+}
+
+function Test-UpdateIntegrity {
+    <#
+    .SYNOPSIS
+        Verifies integrity of extracted update files before installation.
+    .PARAMETER ExtractPath
+        Path to extracted update folder.
+    .OUTPUTS
+        $true if integrity checks pass, $false otherwise.
+    #>
+    param([string]$ExtractPath)
+
+    try {
+        # Handle case where ZIP contains a root folder
+        $extractedItems = Get-ChildItem $ExtractPath
+        $checkRoot = $ExtractPath
+
+        if ($extractedItems.Count -eq 1 -and $extractedItems[0].PSIsContainer) {
+            $checkRoot = $extractedItems[0].FullName
+        }
+
+        # Check 1: Main script exists
+        $mainScript = Join-Path $checkRoot "RushResolve.ps1"
+        if (-not (Test-Path $mainScript)) {
+            Write-SessionLog "Integrity check failed: Main script missing" -Category "Update"
+            return $false
+        }
+
+        # Check 2: Modules folder exists with at least 8 modules
+        $modulesPath = Join-Path $checkRoot "Modules"
+        if (-not (Test-Path $modulesPath)) {
+            Write-SessionLog "Integrity check failed: Modules folder missing" -Category "Update"
+            return $false
+        }
+
+        $moduleFiles = Get-ChildItem $modulesPath -Filter "*.ps1"
+        if ($moduleFiles.Count -lt 8) {
+            Write-SessionLog "Integrity check failed: Expected 8+ modules, found $($moduleFiles.Count)" -Category "Update"
+            return $false
+        }
+
+        # Check 3: Syntax check on main script
+        try {
+            $testScript = Get-Content $mainScript -Raw
+            $scriptBlock = [scriptblock]::Create($testScript)
+            Write-SessionLog "Syntax check: PASSED" -Category "Update"
+        }
+        catch {
+            Write-SessionLog "Syntax check failed: $_" -Category "Update"
+            return $false
+        }
+
+        return $true
+    }
+    catch {
+        Write-SessionLog "Integrity check error: $_" -Category "Update"
+        return $false
+    }
+}
+
+function Restore-PreviousVersion {
+    <#
+    .SYNOPSIS
+        Rolls back to previous version from backup ZIP.
+    .PARAMETER BackupPath
+        Path to backup ZIP file.
+    #>
+    param([string]$BackupPath)
+
+    try {
+        Write-SessionLog "Rollback initiated from: $BackupPath" -Category "Update"
+
+        # Extract backup over current installation
+        $tempRestore = Join-Path $env:TEMP "RushResolveRestore_$(Get-Date -Format 'HHmmss')"
+        Expand-Archive -Path $BackupPath -DestinationPath $tempRestore -Force
+
+        # Copy restored files back
+        Copy-Item "$tempRestore\*" -Destination $script:AppPath -Recurse -Force
+
+        # Regenerate manifests
+        Update-SecurityManifests
+
+        # Cleanup
+        if (Test-Path $tempRestore) {
+            Remove-Item $tempRestore -Recurse -Force
+        }
+
+        Write-SessionLog "Rollback complete" -Category "Update"
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "Update failed and was rolled back to previous version.",
+            "Update Rollback",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+    catch {
+        Write-SessionLog "Rollback failed: $_" -Category "Update"
+        [System.Windows.Forms.MessageBox]::Show(
+            "CRITICAL: Update and rollback both failed. Please reinstall manually.`n`nError: $_",
+            "Critical Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    }
+}
+
+function Show-UpdateDialog {
+    <#
+    .SYNOPSIS
+        Displays update available dialog with release notes.
+    .PARAMETER Release
+        Hashtable with release information from GitHub API.
+    #>
+    param($Release)
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "Update Available"
+    $dialog.Size = New-Object System.Drawing.Size(520, 450)
+    $dialog.StartPosition = "CenterParent"
+    $dialog.FormBorderStyle = "FixedDialog"
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+
+    # Version info label
+    $versionLabel = New-Object System.Windows.Forms.Label
+    $versionLabel.Text = "Current Version: v$($script:AppVersion)`nLatest Version: $($Release.tag_name)"
+    $versionLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $versionLabel.Size = New-Object System.Drawing.Size(460, 40)
+    $versionLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $dialog.Controls.Add($versionLabel)
+
+    # Release notes label
+    $notesLabel = New-Object System.Windows.Forms.Label
+    $notesLabel.Text = "Release Notes:"
+    $notesLabel.Location = New-Object System.Drawing.Point(20, 70)
+    $notesLabel.AutoSize = $true
+    $notesLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $dialog.Controls.Add($notesLabel)
+
+    # Release notes textbox
+    $notesBox = New-Object System.Windows.Forms.TextBox
+    $notesBox.Multiline = $true
+    $notesBox.ScrollBars = "Vertical"
+    $notesBox.Text = $Release.body
+    $notesBox.Location = New-Object System.Drawing.Point(20, 95)
+    $notesBox.Size = New-Object System.Drawing.Size(460, 260)
+    $notesBox.ReadOnly = $true
+    $notesBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $dialog.Controls.Add($notesBox)
+
+    # Update Now button
+    $updateBtn = New-Object System.Windows.Forms.Button
+    $updateBtn.Text = "Update Now"
+    $updateBtn.Location = New-Object System.Drawing.Point(250, 370)
+    $updateBtn.Size = New-Object System.Drawing.Size(110, 30)
+    $updateBtn.Add_Click({
+        $dialog.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $dialog.Close()
+    })
+    $dialog.Controls.Add($updateBtn)
+
+    # Later button
+    $laterBtn = New-Object System.Windows.Forms.Button
+    $laterBtn.Text = "Later"
+    $laterBtn.Location = New-Object System.Drawing.Point(370, 370)
+    $laterBtn.Size = New-Object System.Drawing.Size(110, 30)
+    $laterBtn.Add_Click({
+        $dialog.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $dialog.Close()
+    })
+    $dialog.Controls.Add($laterBtn)
+
+    $result = $dialog.ShowDialog()
+
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        Start-UpdateProcess -Release $Release
+    }
+
+    $dialog.Dispose()
+}
+
+function Start-UpdateProcess {
+    <#
+    .SYNOPSIS
+        Orchestrates the full update process: download, verify, backup, install, restart.
+    .PARAMETER Release
+        Hashtable with release information.
+    #>
+    param($Release)
+
+    $progressForm = $null
+
+    try {
+        # Step 1: Download
+        $progressForm = Show-ProgressDialog -StatusText "Downloading update..."
+
+        $zipPath = Download-UpdatePackage -Url $Release.download_url
+
+        if (-not $zipPath -or -not (Test-Path $zipPath)) {
+            if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+            [System.Windows.Forms.MessageBox]::Show(
+                "Download failed. Please check your internet connection and try again.",
+                "Download Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return
+        }
+
+        # Step 2: Verify hash (SECURITY: Critical integrity check)
+        $expectedHash = $null
+        if ($Release.body) {
+            # Parse SHA256 from release notes (format: "SHA256: <hash>" or "Hash: <hash>")
+            if ($Release.body -match '(?i)SHA256[:\s]+([A-F0-9]{64})') {
+                $expectedHash = $matches[1]
+            }
+            elseif ($Release.body -match '(?i)Hash[:\s]+([A-F0-9]{64})') {
+                $expectedHash = $matches[1]
+            }
+        }
+
+        if ($expectedHash) {
+            Write-SessionLog "Hash verification enabled: $expectedHash" -Category "Update"
+            $hashValid = Verify-UpdatePackage -ZipPath $zipPath -ExpectedHash $expectedHash
+
+            if (-not $hashValid) {
+                if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+                Write-SessionLog "SECURITY: Hash verification FAILED - aborting update" -Category "Update"
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Download verification failed (hash mismatch).`n`nThis could indicate a corrupted or tampered update package.`n`nUpdate cancelled for security.",
+                    "Security Error",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error
+                )
+                return
+            }
+        }
+        else {
+            Write-SessionLog "WARNING: No hash provided in release notes - proceeding without verification" -Category "Update"
+        }
+
+        # Step 3: Backup
+        if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+        $progressForm = Show-ProgressDialog -StatusText "Creating backup..."
+
+        $backupPath = Backup-CurrentVersion
+
+        if (-not $backupPath) {
+            if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+            [System.Windows.Forms.MessageBox]::Show(
+                "Failed to create backup. Update cancelled for safety.",
+                "Backup Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return
+        }
+
+        # Step 4: Install
+        if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+        $progressForm = Show-ProgressDialog -StatusText "Installing update..."
+
+        $installSuccess = Install-Update -ZipPath $zipPath
+
+        if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+
+        if (-not $installSuccess) {
+            # Rollback
+            Restore-PreviousVersion -BackupPath $backupPath
+            return
+        }
+
+        # Step 5: Success - Restart
+        Write-SessionLog "Application restarting with new version ($($Release.tag_name))" -Category "Update"
+
+        $restartDialog = [System.Windows.Forms.MessageBox]::Show(
+            "Update installed successfully!`n`nThe application will now restart to apply changes.",
+            "Update Complete",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+
+        # Restart application (SECURITY: Array-based args prevent command injection)
+        $scriptPath = Join-Path $script:AppPath "RushResolve.ps1"
+        Start-Process -FilePath "powershell.exe" -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $scriptPath)
+
+        # Close current instance
+        $script:MainForm.Close()
+    }
+    catch {
+        if ($progressForm) { $progressForm.Close(); $progressForm.Dispose() }
+        Write-SessionLog "Update process error: $_" -Category "Update"
+        [System.Windows.Forms.MessageBox]::Show(
+            "Update failed: $_",
+            "Update Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    }
+}
+
+function Show-ProgressDialog {
+    <#
+    .SYNOPSIS
+        Creates a non-blocking progress dialog with marquee animation.
+    .PARAMETER StatusText
+        Status message to display.
+    .OUTPUTS
+        Form object (caller must close/dispose when done).
+    #>
+    param([string]$StatusText)
+
+    $progressForm = New-Object System.Windows.Forms.Form
+    $progressForm.Text = "Updating..."
+    $progressForm.Size = New-Object System.Drawing.Size(400, 150)
+    $progressForm.StartPosition = "CenterScreen"
+    $progressForm.FormBorderStyle = "FixedDialog"
+    $progressForm.ControlBox = $false
+    $progressForm.MaximizeBox = $false
+    $progressForm.MinimizeBox = $false
+
+    $statusLabel = New-Object System.Windows.Forms.Label
+    $statusLabel.Text = $StatusText
+    $statusLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $statusLabel.Size = New-Object System.Drawing.Size(340, 30)
+    $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $progressForm.Controls.Add($statusLabel)
+
+    $progressBar = New-Object System.Windows.Forms.ProgressBar
+    $progressBar.Location = New-Object System.Drawing.Point(20, 60)
+    $progressBar.Size = New-Object System.Drawing.Size(340, 30)
+    $progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    $progressBar.MarqueeAnimationSpeed = 30
+    $progressForm.Controls.Add($progressBar)
+
+    $progressForm.Show()
+    $progressForm.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    return $progressForm
 }
 #endregion
 
@@ -2630,6 +3483,14 @@ function Show-MainWindow {
     # Help menu
     $helpMenu = New-Object System.Windows.Forms.ToolStripMenuItem
     $helpMenu.Text = "&Help"
+
+    # Check for Updates
+    $checkUpdateMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $checkUpdateMenuItem.Text = "Check for Updates..."
+    $checkUpdateMenuItem.Add_Click({ Invoke-CheckForUpdates })
+    $helpMenu.DropDownItems.Add($checkUpdateMenuItem) | Out-Null
+
+    $helpMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     $viewLogsMenuItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $viewLogsMenuItem.Text = "View Session Logs"

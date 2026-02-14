@@ -256,7 +256,29 @@ function Initialize-Module {
     $adBtn.Width = 75
     $adBtn.Height = 30
     $adBtn.Add_Click({
-        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "dsa.msc" -OperationName "open Active Directory Users and Computers"
+        # Check if RSAT (Remote Server Administration Tools) is installed
+        $dsaPath = Join-Path $env:SystemRoot "System32\dsa.msc"
+
+        if (Test-Path $dsaPath) {
+            Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "dsa.msc" -OperationName "open Active Directory Users and Computers"
+        }
+        else {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Active Directory Users and Computers (dsa.msc) not found.`n`n" +
+                "RSAT (Remote Server Administration Tools) must be installed.`n`n" +
+                "To install RSAT:`n" +
+                "1. Open Settings > Apps > Optional Features`n" +
+                "2. Click 'Add a feature'`n" +
+                "3. Search for 'RSAT: Active Directory'`n" +
+                "4. Install 'RSAT: Active Directory Domain Services and Lightweight Directory Services Tools'`n`n" +
+                "Or use PowerShell (as Administrator):`n" +
+                "Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0",
+                "RSAT Not Installed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            Write-SessionLog -Message "AD Users button clicked but RSAT not installed" -Category "System Info" -Result "Error: dsa.msc not found"
+        }
     })
     $buttonPanel.Controls.Add($adBtn)
 
@@ -305,158 +327,6 @@ function Initialize-Module {
     })
     $buttonPanel.Controls.Add($memDiagBtn)
 
-    # Installed Apps - opens ListView with all installed applications
-    $installedAppsBtn = New-Object System.Windows.Forms.Button
-    $installedAppsBtn.Text = "Installed Apps"
-    $installedAppsBtn.Width = 95
-    $installedAppsBtn.Height = 30
-    $installedAppsBtn.Add_Click({
-        # Create form
-        $appForm = New-Object System.Windows.Forms.Form
-        $appForm.Text = "Installed Applications"
-        $appForm.Size = New-Object System.Drawing.Size(900, 600)
-        $appForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
-        $appForm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-
-        # Top panel for filter
-        $filterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-        $filterPanel.Dock = [System.Windows.Forms.DockStyle]::Top
-        $filterPanel.Height = 35
-        $filterPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-
-        $filterLabel = New-Object System.Windows.Forms.Label
-        $filterLabel.Text = "Filter:"
-        $filterLabel.AutoSize = $true
-        $filterLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
-        $filterPanel.Controls.Add($filterLabel)
-
-        $filterBox = New-Object System.Windows.Forms.TextBox
-        $filterBox.Width = 250
-        $filterPanel.Controls.Add($filterBox)
-
-        $clearBtn = New-Object System.Windows.Forms.Button
-        $clearBtn.Text = "X"
-        $clearBtn.Width = 25
-        $clearBtn.Height = 23
-        $clearBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-        $filterPanel.Controls.Add($clearBtn)
-
-        $countLabel = New-Object System.Windows.Forms.Label
-        $countLabel.Text = "Loading..."
-        $countLabel.AutoSize = $true
-        $countLabel.ForeColor = [System.Drawing.Color]::Gray
-        $countLabel.Padding = New-Object System.Windows.Forms.Padding(15, 5, 0, 0)
-        $filterPanel.Controls.Add($countLabel)
-
-        # ListView
-        $appListView = New-Object System.Windows.Forms.ListView
-        $appListView.Dock = [System.Windows.Forms.DockStyle]::Fill
-        $appListView.View = [System.Windows.Forms.View]::Details
-        $appListView.FullRowSelect = $true
-        $appListView.GridLines = $true
-        $appListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-
-        $appListView.Columns.Add("Name", 300) | Out-Null
-        $appListView.Columns.Add("Version", 120) | Out-Null
-        $appListView.Columns.Add("Publisher", 200) | Out-Null
-        $appListView.Columns.Add("Install Date", 100) | Out-Null
-
-        # Store full app list
-        $script:allApps = @()
-        $sortCol = 0
-        $sortAsc = $true
-
-        # Column click sorting
-        $appListView.Add_ColumnClick({
-            param($s, $e)
-            $col = $e.Column
-            if ($col -eq $sortCol) { $sortAsc = -not $sortAsc } else { $sortCol = $col; $sortAsc = $true }
-            $items = @($appListView.Items | ForEach-Object { $_ })
-            $sorted = $items | Sort-Object { $_.SubItems[$col].Text } -Descending:(-not $sortAsc)
-            $appListView.BeginUpdate()
-            $appListView.Items.Clear()
-            foreach ($item in $sorted) { $appListView.Items.Add($item) | Out-Null }
-            $appListView.EndUpdate()
-        })
-
-        # Apply filter function
-        $applyFilter = {
-            param($apps, $filterText)
-            $appListView.BeginUpdate()
-            $appListView.Items.Clear()
-            $matchCount = 0
-            foreach ($app in $apps) {
-                $match = $true
-                if ($filterText) {
-                    $match = $app.Name.ToLower().Contains($filterText.ToLower()) -or
-                             ($app.Publisher -and $app.Publisher.ToLower().Contains($filterText.ToLower()))
-                }
-                if ($match) {
-                    $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
-                    $item.SubItems.Add($app.Version) | Out-Null
-                    $item.SubItems.Add($app.Publisher) | Out-Null
-                    $item.SubItems.Add($app.InstallDate) | Out-Null
-                    $appListView.Items.Add($item) | Out-Null
-                    $matchCount++
-                }
-            }
-            $appListView.EndUpdate()
-            if ($filterText) { $countLabel.Text = "Showing $matchCount of $($apps.Count)" }
-            else { $countLabel.Text = "$($apps.Count) applications" }
-        }
-
-        $filterBox.Add_TextChanged({
-            & $applyFilter $script:allApps $filterBox.Text
-        }.GetNewClosure())
-
-        $clearBtn.Add_Click({
-            $filterBox.Text = ""
-        })
-
-        $appForm.Controls.Add($appListView)
-        $appForm.Controls.Add($filterPanel)
-
-        # Load apps on form shown
-        $appForm.Add_Shown({
-            [System.Windows.Forms.Application]::DoEvents()
-            $countLabel.Text = "Loading..."
-            [System.Windows.Forms.Application]::DoEvents()
-
-            # Get installed apps from registry (both 32 and 64 bit)
-            $apps = @()
-            $regPaths = @(
-                "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-                "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
-                "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
-            )
-            foreach ($path in $regPaths) {
-                $items = Get-ItemProperty $path -ErrorAction SilentlyContinue |
-                    Where-Object { $_.DisplayName -and $_.DisplayName.Trim() }
-                foreach ($item in $items) {
-                    $installDate = ""
-                    if ($item.InstallDate) {
-                        try {
-                            $d = [datetime]::ParseExact($item.InstallDate, "yyyyMMdd", $null)
-                            $installDate = $d.ToString("yyyy-MM-dd")
-                        } catch { $installDate = $item.InstallDate }
-                    }
-                    $apps += [PSCustomObject]@{
-                        Name = $item.DisplayName.Trim()
-                        Version = if ($item.DisplayVersion) { $item.DisplayVersion } else { "" }
-                        Publisher = if ($item.Publisher) { $item.Publisher } else { "" }
-                        InstallDate = $installDate
-                    }
-                }
-            }
-            # Remove duplicates by Name+Version
-            $script:allApps = $apps | Sort-Object Name, Version -Unique
-            & $applyFilter $script:allApps ""
-        }.GetNewClosure())
-
-        $appForm.ShowDialog() | Out-Null
-    })
-    $buttonPanel.Controls.Add($installedAppsBtn)
-
     # Separator before power buttons
     $sep2 = New-Object System.Windows.Forms.Label
     $sep2.Text = " | "
@@ -493,15 +363,6 @@ function Initialize-Module {
         }
     })
     $buttonPanel.Controls.Add($shutdownBtn)
-
-    # Note label
-    $noteLabel = New-Object System.Windows.Forms.Label
-    $noteLabel.Text = "Battery Report moved to dedicated module"
-    $noteLabel.AutoSize = $true
-    $noteLabel.ForeColor = [System.Drawing.Color]::Gray
-    $noteLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $noteLabel.Padding = New-Object System.Windows.Forms.Padding(20, 10, 0, 0)
-    $buttonPanel.Controls.Add($noteLabel)
 
     $bottomPanel.Controls.Add($buttonPanel)
 

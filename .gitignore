@@ -1,1 +1,19 @@
+# Dependencies
 lib/
+
+# User data folders
+Config/credential.dat
+Config/credential.pin
+Logs/
+Safety/Backups/
+
+# Large installer files (download separately)
+Tools/New Teams install/MSTeams-x64.msix
+Tools/New Teams install/teamsbootstrapper.exe
+Tools/*.exe
+Tools/*.msi
+
+# Temporary files
+*.tmp
+*.bak
+*.log

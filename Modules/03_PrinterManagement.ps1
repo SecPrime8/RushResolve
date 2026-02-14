@@ -393,6 +393,29 @@ function Initialize-Module {
     $script:installedListView.Columns.Add("Printer Name", 220) | Out-Null
     $script:installedListView.Columns.Add("Default", 55) | Out-Null
     $script:installedListView.Columns.Add("Type", 60) | Out-Null
+
+    # Enable sorting
+    $script:installedListView.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+    $script:installedListView.Add_ColumnClick({
+        param($sender, $e)
+        # Toggle sort order on column click
+        if ($sender.Sorting -eq [System.Windows.Forms.SortOrder]::Ascending) {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Descending
+        } else {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+        }
+        # Sort by clicked column (basic alphabetic sort)
+        $sender.ListViewItemSorter = New-Object System.Collections.CaseInsensitiveComparer
+        $sender.Sort()
+    })
+
+    # Auto-resize columns to content after items loaded
+    $script:installedListView.Add_ClientSizeChanged({
+        foreach ($col in $this.Columns) {
+            $col.Width = -1  # Auto-size to content
+        }
+    })
+
     $leftPanel.Controls.Add($script:installedListView, 0, 1)
 
     # Buttons for installed printers
@@ -430,6 +453,134 @@ function Initialize-Module {
     $removeBtn.Height = 30
     $removeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $installedBtnPanel.Controls.Add($removeBtn)
+
+    # Backup button
+    $backupBtn = New-Object System.Windows.Forms.Button
+    $backupBtn.Text = "Backup"
+    $backupBtn.Width = 75
+    $backupBtn.Height = 30
+    $backupBtn.Add_Click({
+        try {
+            $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+            $saveDialog.Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*"
+            $saveDialog.Title = "Save Printer Backup"
+            $saveDialog.FileName = "PrinterBackup_$(Get-Date -Format 'yyyy-MM-dd').xml"
+
+            if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                # Get all printers with their configuration
+                if ($script:HasPrintManagement) {
+                    $printers = Get-Printer | Select-Object Name, DriverName, PortName, Shared, Published, Location, Comment
+                } else {
+                    $printers = Get-WmiObject -Class Win32_Printer | Select-Object Name, DriverName, PortName, Shared, Location, Comment
+                }
+
+                # Export to XML
+                $printers | Export-Clixml -Path $saveDialog.FileName
+
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Printer configurations backed up successfully to:`n$($saveDialog.FileName)",
+                    "Backup Complete",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
+
+                Write-SessionLog -Message "Printer configurations backed up to $($saveDialog.FileName)" -Category "PrinterManagement"
+            }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Failed to backup printers: $($_.Exception.Message)",
+                "Backup Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+        }
+    })
+    $installedBtnPanel.Controls.Add($backupBtn)
+
+    # Restore button
+    $restoreBtn = New-Object System.Windows.Forms.Button
+    $restoreBtn.Text = "Restore"
+    $restoreBtn.Width = 75
+    $restoreBtn.Height = 30
+    $restoreBtn.Add_Click({
+        try {
+            $openDialog = New-Object System.Windows.Forms.OpenFileDialog
+            $openDialog.Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*"
+            $openDialog.Title = "Open Printer Backup"
+
+            if ($openDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                # Import printer configurations
+                $printers = Import-Clixml -Path $openDialog.FileName
+
+                $confirm = [System.Windows.Forms.MessageBox]::Show(
+                    "This will restore $($printers.Count) printer(s) from backup.`n`nNote: Drivers and ports must exist on this system.`n`nContinue?",
+                    "Confirm Restore",
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Question
+                )
+
+                if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    $restored = 0
+                    $failed = 0
+
+                    foreach ($printer in $printers) {
+                        try {
+                            # Check if printer already exists
+                            if ($script:HasPrintManagement) {
+                                $exists = Get-Printer -Name $printer.Name -ErrorAction SilentlyContinue
+                            } else {
+                                $exists = Get-WmiObject -Class Win32_Printer -Filter "Name='$($printer.Name)'" -ErrorAction SilentlyContinue
+                            }
+
+                            if (-not $exists) {
+                                if ($script:HasPrintManagement) {
+                                    Add-Printer -Name $printer.Name -DriverName $printer.DriverName -PortName $printer.PortName -ErrorAction Stop
+                                    if ($printer.Shared) {
+                                        Set-Printer -Name $printer.Name -Shared $true -ShareName $printer.Name -ErrorAction SilentlyContinue
+                                    }
+                                } else {
+                                    # WMI-based method for Windows 10 compatibility
+                                    $wmi = ([wmiclass]"Win32_Printer")
+                                    $newPrinter = $wmi.CreateInstance()
+                                    $newPrinter.Name = $printer.Name
+                                    $newPrinter.DriverName = $printer.DriverName
+                                    $newPrinter.PortName = $printer.PortName
+                                    $newPrinter.Put() | Out-Null
+                                }
+                                $restored++
+                            }
+                        }
+                        catch {
+                            $failed++
+                            Write-SessionLog -Message "Failed to restore printer '$($printer.Name)': $($_.Exception.Message)" -Category "PrinterManagement"
+                        }
+                    }
+
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Restore complete:`n`nRestored: $restored`nFailed: $failed`nSkipped (already exist): $($printers.Count - $restored - $failed)",
+                        "Restore Complete",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Information
+                    )
+
+                    Write-SessionLog -Message "Printer restore completed: $restored restored, $failed failed" -Category "PrinterManagement"
+
+                    # Refresh installed printer list
+                    $refreshInstalledBtn.PerformClick()
+                }
+            }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Failed to restore printers: $($_.Exception.Message)",
+                "Restore Error",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+        }
+    })
+    $installedBtnPanel.Controls.Add($restoreBtn)
 
     $leftPanel.Controls.Add($installedBtnPanel, 0, 2)
     $script:splitContainer.Panel1.Controls.Add($leftPanel)
@@ -516,6 +667,29 @@ function Initialize-Module {
     $script:serverListView.Columns.Add("Printer Name", 180) | Out-Null
     $script:serverListView.Columns.Add("Location", 150) | Out-Null
     $script:serverListView.Columns.Add("Comment", 150) | Out-Null
+
+    # Enable sorting
+    $script:serverListView.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+    $script:serverListView.Add_ColumnClick({
+        param($sender, $e)
+        # Toggle sort order on column click
+        if ($sender.Sorting -eq [System.Windows.Forms.SortOrder]::Ascending) {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Descending
+        } else {
+            $sender.Sorting = [System.Windows.Forms.SortOrder]::Ascending
+        }
+        # Sort by clicked column (basic alphabetic sort)
+        $sender.ListViewItemSorter = New-Object System.Collections.CaseInsensitiveComparer
+        $sender.Sort()
+    })
+
+    # Auto-resize columns to content after items loaded
+    $script:serverListView.Add_ClientSizeChanged({
+        foreach ($col in $this.Columns) {
+            $col.Width = -1  # Auto-size to content
+        }
+    })
+
     $rightPanel.Controls.Add($script:serverListView, 0, 2)
 
     # Buttons for adding printers
