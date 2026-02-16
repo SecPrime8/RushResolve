@@ -1577,12 +1577,10 @@ function Initialize-Module {
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Launching System File Checker (sfc /scannow)...`r`n")
         Write-SessionLog -Message "Launched SFC via Diagnostics Quick Tools" -Category "Diagnostics"
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for System File Checker"
-        if ($cred) {
-            Invoke-Elevated -ScriptBlock {
-                Start-Process "powershell.exe" -ArgumentList "-NoExit", "-Command", "Write-Host 'Running System File Checker...' -ForegroundColor Cyan; sfc /scannow; Write-Host '`nSFC Complete. Review results above.' -ForegroundColor Green; pause" -Wait
-            } -Credential $cred -OperationName "run SFC scan"
-        }
+
+        # Use credential wrapper to launch SFC in visible PowerShell window
+        $sfcCommand = "Write-Host 'Running System File Checker...' -ForegroundColor Cyan; sfc /scannow; Write-Host '`nSFC Complete. Review results above.' -ForegroundColor Green; pause"
+        Start-ElevatedProcess -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $sfcCommand -OperationName "run System File Checker"
     })
     $quickToolsPanel.Controls.Add($sfcBtn)
 
@@ -1595,12 +1593,10 @@ function Initialize-Module {
         $ts = Get-Date -Format "HH:mm:ss"
         $script:diagLogBox.AppendText("[$ts] Launching DISM RestoreHealth (this may take 10-20 minutes)...`r`n")
         Write-SessionLog -Message "Launched DISM repair via Diagnostics Quick Tools" -Category "Diagnostics"
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for DISM Repair"
-        if ($cred) {
-            Invoke-Elevated -ScriptBlock {
-                Start-Process "powershell.exe" -ArgumentList "-NoExit", "-Command", "Write-Host 'Running DISM RestoreHealth (this may take 10-20 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host '`nDISM Complete. Review results above.' -ForegroundColor Green; pause" -Wait
-            } -Credential $cred -OperationName "run DISM repair"
-        }
+
+        # Use credential wrapper to launch DISM in visible PowerShell window
+        $dismCommand = "Write-Host 'Running DISM RestoreHealth (this may take 10-20 minutes)...' -ForegroundColor Cyan; DISM /Online /Cleanup-Image /RestoreHealth; Write-Host '`nDISM Complete. Review results above.' -ForegroundColor Green; pause"
+        Start-ElevatedProcess -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $dismCommand -OperationName "run DISM repair"
     })
     $quickToolsPanel.Controls.Add($dismBtn)
 

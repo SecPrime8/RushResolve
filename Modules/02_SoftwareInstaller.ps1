@@ -9,6 +9,19 @@
 $script:ModuleName = "Software Installer"
 $script:ModuleDescription = "Install applications from network share or check for updates"
 
+# ==============================================================================
+# NOTE: GPO (Group Policy Object) Deployment Not Available
+# ==============================================================================
+# This module does not include Group Policy-based software deployment.
+# GPO deployment requires domain admin permissions and GPMC (Group Policy
+# Management Console), which are typically restricted in hospital environments.
+#
+# For enterprise software deployment, use:
+#  - Manual installation via network share (this module)
+#  - SCCM/Intune (if available in your environment)
+#  - Third-party deployment tools (PDQ Deploy, etc.)
+# ==============================================================================
+
 #region Script Blocks (defined first to avoid scope issues)
 
 # Helper: Process a single folder for installer
@@ -96,7 +109,7 @@ $script:ProcessFolder = {
     return $null
 }
 
-# Scan directory for installable applications (2 levels deep)
+# Scan directory for installable applications (recursive, up to 5 levels deep)
 $script:ScanForApps = {
     param(
         [string]$Path,
@@ -154,45 +167,49 @@ $script:ScanForApps = {
         }
     }
 
-    # Scan subfolders (level 1) for apps
-    & $logMsg "Scanning level 1 subfolders..."
+    # Scan subfolders recursively (up to 3 levels deep for performance)
+    # Note: Reduced from 5 to 3 levels to prevent UI freezing on large network shares
+    & $logMsg "Scanning subfolders (recursive, up to 3 levels)..."
+    & $logMsg "Please wait - enumerating directories..."
     try {
-        $level1Folders = Get-ChildItem -Path $Path -Directory -ErrorAction Stop
-        & $logMsg "Found $($level1Folders.Count) subfolder(s) at level 1"
+        # Use Get-ChildItem with -Recurse and -Depth for deep scanning
+        $allFolders = Get-ChildItem -Path $Path -Directory -Recurse -Depth 3 -ErrorAction Stop
+        & $logMsg "Found $($allFolders.Count) total subfolder(s) - now checking for installers..."
     }
     catch {
-        & $logMsg "ERROR reading level 1 folders: $($_.Exception.Message)"
-        $level1Folders = @()
+        & $logMsg "ERROR reading subdirectories: $($_.Exception.Message)"
+        $allFolders = @()
     }
 
-    foreach ($folder in $level1Folders) {
-        & $logMsg "  Checking: $($folder.Name)"
+    # Process each folder for installers
+    $foldersProcessed = 0
+    $totalFolders = $allFolders.Count
+    foreach ($folder in $allFolders) {
+        $foldersProcessed++
+
+        # Show progress every 25 folders OR for first 5 OR last few
+        $showProgress = ($foldersProcessed -le 5) -or
+                       ($foldersProcessed % 25 -eq 0) -or
+                       ($foldersProcessed -ge ($totalFolders - 5))
+
+        if ($showProgress) {
+            $percentComplete = [Math]::Round(($foldersProcessed / $totalFolders) * 100, 0)
+            & $logMsg "  Progress: $percentComplete% ($foldersProcessed / $totalFolders folders checked)"
+        }
+
         $result = & $script:ProcessFolder -Folder $folder
         if ($result) {
+            # Calculate relative path from root for better naming
+            $relativePath = $folder.FullName.Replace($Path, "").TrimStart('\', '/')
+            $pathParts = $relativePath -split '[\\/]' | Where-Object { $_ }
+
+            # Use relative path for name (e.g., "Parent / Child / App")
+            if ($pathParts.Count -gt 1) {
+                $result.Name = ($pathParts -join " / ")
+            }
+
             & $logMsg "    -> Found installer: $($result.Name)"
             $apps += $result
-        }
-        else {
-            # No installer at level 1, check level 2 subfolders
-            try {
-                $level2Folders = Get-ChildItem -Path $folder.FullName -Directory -ErrorAction Stop
-                if ($level2Folders.Count -gt 0) {
-                    & $logMsg "    -> No installer, checking $($level2Folders.Count) level 2 subfolder(s)"
-                }
-            }
-            catch {
-                & $logMsg "    -> ERROR reading level 2: $($_.Exception.Message)"
-                $level2Folders = @()
-            }
-            foreach ($subfolder in $level2Folders) {
-                $subResult = & $script:ProcessFolder -Folder $subfolder
-                if ($subResult) {
-                    # Prefix name with parent folder for clarity
-                    $subResult.Name = "$($folder.Name) / $($subResult.Name)"
-                    & $logMsg "      -> Found installer: $($subResult.Name)"
-                    $apps += $subResult
-                }
-            }
         }
     }
 
@@ -410,6 +427,20 @@ $script:InstallApp = {
     $LogBox.ScrollToCaret()
 }
 
+# ==============================================================================
+# WINGET FUNCTIONALITY DISABLED FOR STABLE BRANCH
+# ==============================================================================
+# WinGet (Windows Package Manager) is blocked in hospital environments.
+# This functionality is preserved in comments for reference and is available
+# in the development branch for environments that support WinGet.
+#
+# To re-enable in dev branch:
+#  1. Uncomment the two script blocks below (ScanForUpdates and UpdateApp)
+#  2. Uncomment the UI label at line ~1286
+#  3. Uncomment the function calls at lines ~1378, ~1442, ~1479
+# ==============================================================================
+
+<#
 # Scan for available updates using WinGet
 $script:ScanForUpdates = {
     param(
@@ -599,6 +630,10 @@ $script:UpdateApp = {
     $LogBox.AppendText("`r`n")
     $LogBox.ScrollToCaret()
 }
+#>
+
+# WinGet functions above are commented out for stable branch
+# Use manual installer scanning (folder browse) instead
 
 # Query All Available GPO Software Packages from Active Directory
 $script:QueryGPOSoftware = {
@@ -1102,6 +1137,158 @@ function Initialize-Module {
     $detailsBtn.Width = 90
     $detailsBtn.Height = 30
     $buttonPanel.Controls.Add($detailsBtn)
+
+    # Installed Apps - opens ListView with all installed applications
+    $installedAppsBtn = New-Object System.Windows.Forms.Button
+    $installedAppsBtn.Text = "Installed Apps"
+    $installedAppsBtn.Width = 95
+    $installedAppsBtn.Height = 30
+    $installedAppsBtn.Add_Click({
+        # Create form
+        $appForm = New-Object System.Windows.Forms.Form
+        $appForm.Text = "Installed Applications"
+        $appForm.Size = New-Object System.Drawing.Size(900, 600)
+        $appForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+        $appForm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+        # Top panel for filter
+        $filterPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+        $filterPanel.Dock = [System.Windows.Forms.DockStyle]::Top
+        $filterPanel.Height = 35
+        $filterPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+        $filterLabel = New-Object System.Windows.Forms.Label
+        $filterLabel.Text = "Filter:"
+        $filterLabel.AutoSize = $true
+        $filterLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
+        $filterPanel.Controls.Add($filterLabel)
+
+        $filterBox = New-Object System.Windows.Forms.TextBox
+        $filterBox.Width = 250
+        $filterPanel.Controls.Add($filterBox)
+
+        $clearBtn = New-Object System.Windows.Forms.Button
+        $clearBtn.Text = "X"
+        $clearBtn.Width = 25
+        $clearBtn.Height = 23
+        $clearBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $filterPanel.Controls.Add($clearBtn)
+
+        $countLabel = New-Object System.Windows.Forms.Label
+        $countLabel.Text = "Loading..."
+        $countLabel.AutoSize = $true
+        $countLabel.ForeColor = [System.Drawing.Color]::Gray
+        $countLabel.Padding = New-Object System.Windows.Forms.Padding(15, 5, 0, 0)
+        $filterPanel.Controls.Add($countLabel)
+
+        # ListView
+        $appListView = New-Object System.Windows.Forms.ListView
+        $appListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $appListView.View = [System.Windows.Forms.View]::Details
+        $appListView.FullRowSelect = $true
+        $appListView.GridLines = $true
+        $appListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+        $appListView.Columns.Add("Name", 300) | Out-Null
+        $appListView.Columns.Add("Version", 120) | Out-Null
+        $appListView.Columns.Add("Publisher", 200) | Out-Null
+        $appListView.Columns.Add("Install Date", 100) | Out-Null
+
+        # Store full app list
+        $script:allApps = @()
+        $sortCol = 0
+        $sortAsc = $true
+
+        # Column click sorting
+        $appListView.Add_ColumnClick({
+            param($s, $e)
+            $col = $e.Column
+            if ($col -eq $sortCol) { $sortAsc = -not $sortAsc } else { $sortCol = $col; $sortAsc = $true }
+            $items = @($appListView.Items | ForEach-Object { $_ })
+            $sorted = $items | Sort-Object { $_.SubItems[$col].Text } -Descending:(-not $sortAsc)
+            $appListView.BeginUpdate()
+            $appListView.Items.Clear()
+            foreach ($item in $sorted) { $appListView.Items.Add($item) | Out-Null }
+            $appListView.EndUpdate()
+        })
+
+        # Apply filter function
+        $applyFilter = {
+            param($apps, $filterText)
+            $appListView.BeginUpdate()
+            $appListView.Items.Clear()
+            $matchCount = 0
+            foreach ($app in $apps) {
+                $match = $true
+                if ($filterText) {
+                    $match = $app.Name.ToLower().Contains($filterText.ToLower()) -or
+                             ($app.Publisher -and $app.Publisher.ToLower().Contains($filterText.ToLower()))
+                }
+                if ($match) {
+                    $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+                    $item.SubItems.Add($app.Version) | Out-Null
+                    $item.SubItems.Add($app.Publisher) | Out-Null
+                    $item.SubItems.Add($app.InstallDate) | Out-Null
+                    $appListView.Items.Add($item) | Out-Null
+                    $matchCount++
+                }
+            }
+            $appListView.EndUpdate()
+            if ($filterText) { $countLabel.Text = "Showing $matchCount of $($apps.Count)" }
+            else { $countLabel.Text = "$($apps.Count) applications" }
+        }
+
+        $filterBox.Add_TextChanged({
+            & $applyFilter $script:allApps $filterBox.Text
+        }.GetNewClosure())
+
+        $clearBtn.Add_Click({
+            $filterBox.Text = ""
+        })
+
+        $appForm.Controls.Add($appListView)
+        $appForm.Controls.Add($filterPanel)
+
+        # Load apps on form shown
+        $appForm.Add_Shown({
+            [System.Windows.Forms.Application]::DoEvents()
+            $countLabel.Text = "Loading..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            # Get installed apps from registry (both 32 and 64 bit)
+            $apps = @()
+            $regPaths = @(
+                "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+            )
+            foreach ($path in $regPaths) {
+                $items = Get-ItemProperty $path -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DisplayName -and $_.DisplayName.Trim() }
+                foreach ($item in $items) {
+                    $installDate = ""
+                    if ($item.InstallDate) {
+                        try {
+                            $d = [datetime]::ParseExact($item.InstallDate, "yyyyMMdd", $null)
+                            $installDate = $d.ToString("yyyy-MM-dd")
+                        } catch { $installDate = $item.InstallDate }
+                    }
+                    $apps += [PSCustomObject]@{
+                        Name = $item.DisplayName.Trim()
+                        Version = if ($item.DisplayVersion) { $item.DisplayVersion } else { "" }
+                        Publisher = if ($item.Publisher) { $item.Publisher } else { "" }
+                        InstallDate = $installDate
+                    }
+                }
+            }
+            # Remove duplicates by Name+Version
+            $script:allApps = $apps | Sort-Object Name, Version -Unique
+            & $applyFilter $script:allApps ""
+        }.GetNewClosure())
+
+        $appForm.ShowDialog() | Out-Null
+    })
+    $buttonPanel.Controls.Add($installedAppsBtn)
 
     $mainPanel.Controls.Add($buttonPanel, 0, 2)
     #endregion
@@ -1683,7 +1870,9 @@ Requires Elevation: $elevText
     $scanPanel.Controls.Add($scanBtn)
 
     $scanInfoLabel = New-Object System.Windows.Forms.Label
-    $scanInfoLabel.Text = "Scan for application updates using Windows Package Manager (WinGet)"
+    # WinGet disabled for stable branch - hospital environment blocks it
+    # $scanInfoLabel.Text = "Scan for application updates using Windows Package Manager (WinGet)"
+    $scanInfoLabel.Text = "Note: Automatic updates disabled. Use manual installer scanning (Browse Folder tab)"
     $scanInfoLabel.AutoSize = $true
     $scanInfoLabel.Padding = New-Object System.Windows.Forms.Padding(10, 10, 0, 0)
     $scanInfoLabel.ForeColor = [System.Drawing.Color]::Gray
@@ -1775,7 +1964,11 @@ Requires Elevation: $elevText
         $script:updateLogBox.AppendText("[$timestamp] Checking for updates...`r`n")
         Start-AppActivity "Scanning for updates..."
 
-        $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
+        # WinGet disabled for stable branch
+        # $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
+        $updates = @()
+        $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled for stable branch`r`n")
+        $script:updateLogBox.AppendText("[$timestamp] Use 'Browse Folder' tab to install software manually`r`n")
         $script:UpdatesList = $updates
         Clear-AppStatus
 
@@ -1839,7 +2032,10 @@ Requires Elevation: $elevText
             foreach ($app in $selectedItems) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
-                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                # WinGet disabled for stable branch
+                # & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled - cannot update $($app.Name)`r`n")
             }
 
             Clear-AppStatus
@@ -1876,7 +2072,10 @@ Requires Elevation: $elevText
             foreach ($app in $script:UpdatesList) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
-                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                # WinGet disabled for stable branch
+                # & $script:UpdateApp -App $app -LogBox $script:updateLogBox
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled - cannot update $($app.Name)`r`n")
             }
 
             Clear-AppStatus
@@ -1893,7 +2092,7 @@ Requires Elevation: $elevText
     $timestamp = Get-Date -Format "HH:mm:ss"
     $script:updateLogBox.AppendText("[$timestamp] Software Updates ready.`r`n")
     $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to scan for available updates.`r`n")
-
+    #>
     #endregion Check for Updates Tab
 
     # Add TabControl to main tab
