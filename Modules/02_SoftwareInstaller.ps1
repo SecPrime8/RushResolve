@@ -9,18 +9,250 @@
 $script:ModuleName = "Software Installer"
 $script:ModuleDescription = "Install applications from network share or check for updates"
 
-# ==============================================================================
-# NOTE: GPO (Group Policy Object) Deployment Not Available
-# ==============================================================================
-# This module does not include Group Policy-based software deployment.
-# GPO deployment requires domain admin permissions and GPMC (Group Policy
-# Management Console), which are typically restricted in hospital environments.
-#
-# For enterprise software deployment, use:
-#  - Manual installation via network share (this module)
-#  - SCCM/Intune (if available in your environment)
-#  - Third-party deployment tools (PDQ Deploy, etc.)
-# ==============================================================================
+#region HP Detection & HPIA Script Blocks
+
+$script:IsHPMachine = $null
+$script:HPIAPath = $null
+
+$script:DetectHP = {
+    if ($null -eq $script:IsHPMachine) {
+        try {
+            $manufacturer = (Get-CimInstance -ClassName Win32_ComputerSystem -Property Manufacturer -ErrorAction Stop).Manufacturer
+            $script:IsHPMachine = ($manufacturer -match "HP|Hewlett")
+        }
+        catch {
+            $script:IsHPMachine = $false
+        }
+    }
+    return $script:IsHPMachine
+}
+
+$script:GetHPIAPath = {
+    if ($null -eq $script:HPIAPath) {
+        $repoHPIADir = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\HPIA"
+        $repoHPIA = Join-Path $repoHPIADir "HPImageAssistant.exe"
+
+        $possiblePaths = @(
+            $repoHPIA,
+            "${env:ProgramFiles(x86)}\HP\HPIA\HPImageAssistant.exe",
+            "${env:ProgramFiles}\HP\HPIA\HPImageAssistant.exe",
+            "C:\HPIA\HPImageAssistant.exe"
+        )
+        foreach ($path in $possiblePaths) {
+            if (Test-Path $path) {
+                $script:HPIAPath = $path
+                break
+            }
+        }
+
+        # If not found, check if the installer exe (hp-hpia-*.exe) is in the Tools\HPIA folder and extract it
+        if ($null -eq $script:HPIAPath -and (Test-Path $repoHPIADir)) {
+            $installer = Get-ChildItem -Path $repoHPIADir -Filter "hp-hpia-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($installer) {
+                Write-Host "Found HPIA installer: $($installer.Name). Extracting..."
+                $extractDir = Join-Path $repoHPIADir "extracted"
+                try {
+                    Start-Process -FilePath $installer.FullName -ArgumentList "/s /e /f `"$extractDir`"" -Wait -NoNewWindow
+                    $extracted = Get-ChildItem -Path $extractDir -Filter "HPImageAssistant.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($extracted) {
+                        Get-ChildItem -Path $extracted.DirectoryName -ErrorAction SilentlyContinue | Copy-Item -Destination $repoHPIADir -Recurse -Force
+                        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+                        if (Test-Path $repoHPIA) {
+                            $script:HPIAPath = $repoHPIA
+                            Write-Host "HPIA extracted successfully to: $repoHPIADir"
+                        }
+                    }
+                } catch {
+                    Write-Warning "Failed to extract HPIA installer: $_"
+                }
+            }
+        }
+    }
+    return $script:HPIAPath
+}
+
+$script:RunHPIAAnalysis = {
+    param([scriptblock]$Log)
+
+    $findings = @()
+
+    if (-not (& $script:DetectHP)) {
+        if ($Log) { & $Log "Not an HP machine - skipping HPIA" }
+        return $findings
+    }
+
+    $hpiaPath = & $script:GetHPIAPath
+    if (-not $hpiaPath) {
+        if ($Log) { & $Log "HPIA not found. Place hp-hpia-*.exe in Tools\HPIA or install HPIA." }
+        return $findings
+    }
+
+    if ($Log) { & $Log "Running HP Image Assistant analysis..." }
+
+    $reportPath = "$env:TEMP\HPIA_Report"
+    if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
+    New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
+
+    try {
+        $hpiaArgs = "/Operation:Analyze /Action:List /Category:Drivers /Silent /ReportFolder:`"$reportPath`""
+        if ($Log) { & $Log "  Command: HPImageAssistant.exe $hpiaArgs" }
+
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = $hpiaPath
+        $pinfo.Arguments = $hpiaArgs
+        $pinfo.UseShellExecute = $false
+        $pinfo.CreateNoWindow = $true
+        $pinfo.RedirectStandardOutput = $true
+        $pinfo.RedirectStandardError = $true
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $pinfo
+        $proc.Start() | Out-Null
+        $proc.WaitForExit(120000)
+
+        $jsonReport = Get-ChildItem $reportPath -Filter "*.json" -Recurse | Select-Object -First 1
+
+        if ($jsonReport) {
+            $report = Get-Content $jsonReport.FullName -Raw | ConvertFrom-Json
+
+            $outdated = @()
+            if ($report.HPIA.Recommendations) {
+                foreach ($rec in $report.HPIA.Recommendations) {
+                    if ($rec.RecommendationValue -eq "Install") {
+                        $outdated += $rec
+                    }
+                }
+            }
+
+            foreach ($driver in $outdated) {
+                $priority = if ($driver.CvaPackageInformation.Priority) { $driver.CvaPackageInformation.Priority } else { "Recommended" }
+                $severity = switch ($priority) {
+                    "Critical" { "Critical" }
+                    "Recommended" { "Warning" }
+                    default { "Info" }
+                }
+                $softpaqId = if ($driver.Id) { $driver.Id } else { "N/A" }
+                $version = if ($driver.Version) { $driver.Version } else { "N/A" }
+
+                $findings += @{
+                    Name     = $driver.Name
+                    Priority = $priority
+                    Severity = $severity
+                    SoftPaq  = $softpaqId
+                    Version  = $version
+                }
+                if ($Log) { & $Log "  [$priority] $($driver.Name) - $softpaqId" }
+            }
+
+            if ($outdated.Count -eq 0) {
+                if ($Log) { & $Log "  All HP drivers are up to date." }
+            } else {
+                $critCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Critical" }).Count
+                $recCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Recommended" }).Count
+                $routineCount = $outdated.Count - $critCount - $recCount
+                if ($Log) { & $Log "  Summary: $critCount critical, $recCount recommended, $routineCount routine" }
+            }
+        }
+        else {
+            if ($Log) { & $Log "  No HPIA report generated" }
+        }
+    }
+    catch {
+        if ($Log) { & $Log "  HPIA analysis failed: $($_.Exception.Message)" }
+    }
+    finally {
+        if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    return $findings
+}
+
+$script:RunHPIAUpdate = {
+    param(
+        [scriptblock]$Log,
+        [PSCredential]$Credential,
+        [ValidateSet("All", "Critical", "Recommended")]
+        [string]$Selection = "All"
+    )
+
+    if (-not (& $script:DetectHP)) {
+        [System.Windows.Forms.MessageBox]::Show("This is not an HP machine.", "Not HP", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+
+    $hpiaPath = & $script:GetHPIAPath
+    if (-not $hpiaPath) {
+        [System.Windows.Forms.MessageBox]::Show("HP Image Assistant is not installed.`n`nDownload from:`nhttps://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html", "HPIA Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+
+    $selectionDesc = switch ($Selection) {
+        "Critical" { "CRITICAL drivers only" }
+        "Recommended" { "CRITICAL and RECOMMENDED drivers" }
+        default { "ALL available drivers" }
+    }
+
+    $confirm = [System.Windows.Forms.MessageBox]::Show(
+        "This will download and install $selectionDesc.`n`nThe system may require a reboot after updates.`n`nContinue?",
+        "Install HP Driver Updates",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+    if ($Log) { & $Log "Starting HP driver update (Selection: $Selection)..." }
+
+    $reportPath = "$env:TEMP\HPIA_Update"
+    if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
+    New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
+
+    try {
+        $selectionArg = if ($Selection -eq "Recommended") { "Critical,Recommended" } else { $Selection }
+        $hpiaArgs = "/Operation:Analyze /Action:Install /Category:Drivers /Selection:$selectionArg /Silent /ReportFolder:`"$reportPath`""
+
+        if ($Log) { & $Log "  Running HPIA with /Action:Install..." }
+
+        if ($Credential) {
+            $result = Invoke-Elevated -ScriptBlock {
+                param($path, $arguments)
+                $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+                $pinfo.FileName = $path
+                $pinfo.Arguments = $arguments
+                $pinfo.UseShellExecute = $false
+                $pinfo.CreateNoWindow = $true
+
+                $proc = New-Object System.Diagnostics.Process
+                $proc.StartInfo = $pinfo
+                $proc.Start() | Out-Null
+                $proc.WaitForExit(600000)
+                return $proc.ExitCode
+            } -ArgumentList $hpiaPath, $hpiaArgs -Credential $Credential -OperationName "install HP drivers"
+
+            if ($result.Success) {
+                if ($Log) { & $Log "  HPIA update completed" }
+                [System.Windows.Forms.MessageBox]::Show("HP driver updates completed.`n`nA reboot may be required.", "Update Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            }
+            else {
+                if ($Log) { & $Log "  HPIA update failed: $($result.Error)" }
+                [System.Windows.Forms.MessageBox]::Show("HP driver update failed.`n`n$($result.Error)", "Update Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            }
+        }
+        else {
+            Start-Process -FilePath $hpiaPath -ArgumentList $hpiaArgs -Wait -NoNewWindow
+            if ($Log) { & $Log "  HPIA update completed (non-elevated)" }
+        }
+    }
+    catch {
+        if ($Log) { & $Log "  HPIA update error: $($_.Exception.Message)" }
+        [System.Windows.Forms.MessageBox]::Show("Error running HPIA: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+#endregion
 
 #region Script Blocks (defined first to avoid scope issues)
 
@@ -2094,6 +2326,241 @@ Requires Elevation: $elevText
     $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to scan for available updates.`r`n")
     #>
     #endregion Check for Updates Tab
+
+    #region HP Drivers (HPIA) Tab
+
+    $hpiaTab = New-Object System.Windows.Forms.TabPage
+    $hpiaTab.Text = "HP Drivers (HPIA)"
+    $hpiaTab.UseVisualStyleBackColor = $true
+    $tabControl.TabPages.Add($hpiaTab)
+
+    $hpiaPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $hpiaPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $hpiaPanel.RowCount = 4
+    $hpiaPanel.ColumnCount = 1
+    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80))) | Out-Null
+    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
+    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
+    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null
+
+    # Row 0: Status + Scan button
+    $hpiaScanPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $hpiaScanPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $hpiaScanPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:hpiaStatusLabel = New-Object System.Windows.Forms.Label
+    $script:hpiaStatusLabel.AutoSize = $true
+    $script:hpiaStatusLabel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 15, 0)
+    $script:hpiaStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+
+    # Detect status on load
+    $isHP = & $script:DetectHP
+    $hpiaPath = & $script:GetHPIAPath
+    if (-not $isHP) {
+        $script:hpiaStatusLabel.Text = "Status: Not an HP machine"
+        $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+    } elseif (-not $hpiaPath) {
+        $script:hpiaStatusLabel.Text = "Status: HPIA not found - place hp-hpia-*.exe in Tools\HPIA"
+        $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::OrangeRed
+    } else {
+        $script:hpiaStatusLabel.Text = "Status: HPIA ready ($hpiaPath)"
+        $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::Green
+    }
+    $hpiaScanPanel.Controls.Add($script:hpiaStatusLabel)
+
+    # Force new row in FlowLayoutPanel
+    $hpiaSpacer = New-Object System.Windows.Forms.Label
+    $hpiaSpacer.Text = ""
+    $hpiaSpacer.Width = 2000
+    $hpiaSpacer.Height = 1
+    $hpiaScanPanel.Controls.Add($hpiaSpacer)
+
+    $hpiaScanBtn = New-Object System.Windows.Forms.Button
+    $hpiaScanBtn.Text = "Scan Drivers"
+    $hpiaScanBtn.Width = 120
+    $hpiaScanBtn.Height = 30
+    $hpiaScanBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
+    $hpiaScanPanel.Controls.Add($hpiaScanBtn)
+
+    $hpiaDownloadLink = New-Object System.Windows.Forms.LinkLabel
+    $hpiaDownloadLink.Text = "Download HPIA"
+    $hpiaDownloadLink.AutoSize = $true
+    $hpiaDownloadLink.Padding = New-Object System.Windows.Forms.Padding(15, 8, 0, 0)
+    $hpiaDownloadLink.Add_LinkClicked({
+        Start-Process "https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html"
+    })
+    $hpiaScanPanel.Controls.Add($hpiaDownloadLink)
+
+    $hpiaPanel.Controls.Add($hpiaScanPanel, 0, 0)
+
+    # Row 1: Driver ListView
+    $hpiaListGroup = New-Object System.Windows.Forms.GroupBox
+    $hpiaListGroup.Text = "HP Driver Status"
+    $hpiaListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $hpiaListGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:hpiaListView = New-Object System.Windows.Forms.ListView
+    $script:hpiaListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:hpiaListView.View = [System.Windows.Forms.View]::Details
+    $script:hpiaListView.FullRowSelect = $true
+    $script:hpiaListView.GridLines = $true
+    $script:hpiaListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+    $script:hpiaListView.Columns.Add("Driver", 300) | Out-Null
+    $script:hpiaListView.Columns.Add("Priority", 100) | Out-Null
+    $script:hpiaListView.Columns.Add("SoftPaq", 100) | Out-Null
+    $script:hpiaListView.Columns.Add("Version", 120) | Out-Null
+
+    $hpiaListGroup.Controls.Add($script:hpiaListView)
+    $hpiaPanel.Controls.Add($hpiaListGroup, 0, 1)
+
+    # Row 2: Install buttons
+    $hpiaButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $hpiaButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $hpiaButtonPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $hpiaInstallAllBtn = New-Object System.Windows.Forms.Button
+    $hpiaInstallAllBtn.Text = "Install All"
+    $hpiaInstallAllBtn.Width = 100
+    $hpiaInstallAllBtn.Height = 30
+    $hpiaInstallAllBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
+    $hpiaButtonPanel.Controls.Add($hpiaInstallAllBtn)
+
+    $hpiaInstallCritBtn = New-Object System.Windows.Forms.Button
+    $hpiaInstallCritBtn.Text = "Install Critical"
+    $hpiaInstallCritBtn.Width = 120
+    $hpiaInstallCritBtn.Height = 30
+    $hpiaInstallCritBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
+    $hpiaButtonPanel.Controls.Add($hpiaInstallCritBtn)
+
+    $hpiaInstallRecBtn = New-Object System.Windows.Forms.Button
+    $hpiaInstallRecBtn.Text = "Install Critical + Recommended"
+    $hpiaInstallRecBtn.Width = 210
+    $hpiaInstallRecBtn.Height = 30
+    $hpiaInstallRecBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
+    $hpiaButtonPanel.Controls.Add($hpiaInstallRecBtn)
+
+    $hpiaPanel.Controls.Add($hpiaButtonPanel, 0, 2)
+
+    # Row 3: HPIA Log
+    $hpiaLogGroup = New-Object System.Windows.Forms.GroupBox
+    $hpiaLogGroup.Text = "HPIA Log"
+    $hpiaLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $hpiaLogGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:hpiaLogBox = New-Object System.Windows.Forms.TextBox
+    $script:hpiaLogBox.Multiline = $true
+    $script:hpiaLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:hpiaLogBox.ReadOnly = $true
+    $script:hpiaLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:hpiaLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:hpiaLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:hpiaLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $hpiaLogGroup.Controls.Add($script:hpiaLogBox)
+    $hpiaPanel.Controls.Add($hpiaLogGroup, 0, 3)
+
+    # HPIA log helper
+    $script:hpiaLog = {
+        param([string]$Message)
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:hpiaLogBox.AppendText("[$ts] $Message`r`n")
+        $script:hpiaLogBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    # Event: Scan Drivers
+    $hpiaScanBtn.Add_Click({
+        $script:hpiaListView.Items.Clear()
+        $script:hpiaLogBox.Clear()
+
+        if (-not (& $script:DetectHP)) {
+            & $script:hpiaLog "This is not an HP machine. HP driver scanning is not available."
+            return
+        }
+
+        # Re-check HPIA path (in case user just dropped the installer)
+        $script:HPIAPath = $null
+        $hpiaPath = & $script:GetHPIAPath
+        if ($hpiaPath) {
+            $script:hpiaStatusLabel.Text = "Status: HPIA ready ($hpiaPath)"
+            $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::Green
+        } else {
+            $script:hpiaStatusLabel.Text = "Status: HPIA not found - place hp-hpia-*.exe in Tools\HPIA"
+            $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::OrangeRed
+            & $script:hpiaLog "HPIA not found. Download from https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html"
+            & $script:hpiaLog "Or place hp-hpia-*.exe in the Tools\HPIA folder and click Scan again."
+            return
+        }
+
+        Start-AppActivity "Scanning HP drivers..."
+        $findings = & $script:RunHPIAAnalysis -Log $script:hpiaLog
+        $script:HPIAFindings = $findings
+
+        foreach ($f in $findings) {
+            $item = New-Object System.Windows.Forms.ListViewItem($f.Name)
+            $item.SubItems.Add($f.Priority) | Out-Null
+            $item.SubItems.Add($f.SoftPaq) | Out-Null
+            $item.SubItems.Add($f.Version) | Out-Null
+
+            # Color by priority
+            switch ($f.Priority) {
+                "Critical" { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220) }
+                "Recommended" { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 245, 220) }
+            }
+
+            $script:hpiaListView.Items.Add($item) | Out-Null
+        }
+
+        Clear-AppStatus
+
+        if ($findings.Count -eq 0) {
+            & $script:hpiaLog "Scan complete. All HP drivers are up to date."
+        } else {
+            & $script:hpiaLog "Scan complete. Found $($findings.Count) driver(s) needing updates."
+        }
+
+        Write-SessionLog -Message "HPIA scan: $($findings.Count) drivers need updates" -Category "Software"
+    })
+
+    # Event: Install All
+    $hpiaInstallAllBtn.Add_Click({
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
+        if ($cred) {
+            & $script:RunHPIAUpdate -Log $script:hpiaLog -Credential $cred -Selection "All"
+        }
+    })
+
+    # Event: Install Critical
+    $hpiaInstallCritBtn.Add_Click({
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
+        if ($cred) {
+            & $script:RunHPIAUpdate -Log $script:hpiaLog -Credential $cred -Selection "Critical"
+        }
+    })
+
+    # Event: Install Critical + Recommended
+    $hpiaInstallRecBtn.Add_Click({
+        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
+        if ($cred) {
+            & $script:RunHPIAUpdate -Log $script:hpiaLog -Credential $cred -Selection "Recommended"
+        }
+    })
+
+    # Initial log message
+    $hpiaTimestamp = Get-Date -Format "HH:mm:ss"
+    $script:hpiaLogBox.AppendText("[$hpiaTimestamp] HP Drivers (HPIA) ready.`r`n")
+    if ($isHP -and $hpiaPath) {
+        $script:hpiaLogBox.AppendText("[$hpiaTimestamp] Click 'Scan Drivers' to check for HP driver updates.`r`n")
+    } elseif ($isHP) {
+        $script:hpiaLogBox.AppendText("[$hpiaTimestamp] HPIA not found. Place hp-hpia-5.3.3.exe (or newer) in Tools\HPIA and click Scan.`r`n")
+    } else {
+        $script:hpiaLogBox.AppendText("[$hpiaTimestamp] Not an HP machine - HP driver features are unavailable.`r`n")
+    }
+
+    $hpiaTab.Controls.Add($hpiaPanel)
+
+    #endregion HP Drivers (HPIA) Tab
 
     # Add TabControl to main tab
     $tab.Controls.Add($tabControl)
