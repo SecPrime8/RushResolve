@@ -12,10 +12,8 @@ RushResolve is a modular PowerShell GUI application designed for IT field techni
 
 ### Key Features
 
-- **🔄 Auto-Update Mechanism** - Click "Check for Updates" to safely upgrade from GitHub
 - **🔒 Security-First Design** - PIN-protected credential caching, SHA256 verification, TLS 1.2+ enforcement
 - **📦 Modular Architecture** - 8 specialized modules for different IT tasks
-- **💾 Automatic Backup** - Creates backups before updates with auto-rollback on failure
 - **🎯 Field-Tested** - Built for real-world hospital IT environments
 - **📊 Session Logging** - Comprehensive logging for troubleshooting and auditing
 
@@ -59,35 +57,6 @@ On first launch:
 2. Configure settings via Tools → Settings
 3. Optionally cache domain credentials (PIN-protected)
 4. Review session log location: `Logs/`
-
----
-
-## Auto-Update Feature (New in v2.4.0)
-
-### How to Update
-
-1. Click **Help → Check for Updates**
-2. Review release notes in the dialog
-3. Click **Update Now**
-4. Wait for automatic backup, download, and installation (~30 seconds)
-5. Application restarts with new version
-
-### What Happens During Update
-
-- ✅ Downloads latest release from GitHub
-- ✅ Verifies SHA256 hash (if provided in release notes)
-- ✅ Creates backup to `Safety/Backups/`
-- ✅ Preserves your settings (`Config/settings.json`)
-- ✅ Regenerates security manifests
-- ✅ Auto-rolls back if any step fails
-
-### Update Safety
-
-- **Automatic backups** kept in `Safety/Backups/` (last 3 versions)
-- **Settings preserved** across updates
-- **Auto-rollback** on download failure, hash mismatch, or integrity errors
-- **HTTPS enforcement** prevents man-in-the-middle attacks
-- **Session logging** tracks all update operations
 
 ---
 
@@ -194,137 +163,6 @@ Location: `Config/settings.json`
   "Theme": "Light",
   "LogRetentionDays": 30
 }
-```
-
-### Module Customization
-
-Modules are located in `Modules/` and follow naming convention:
-- `01_SystemInfo.ps1`
-- `02_SoftwareInstaller.ps1`
-- etc.
-
-Each module must define:
-- `$script:ModuleName` - Display name
-- `$script:ModuleDescription` - Tooltip text
-- `Initialize-Module` function - Creates UI
-
-See [docs/module-template.md](docs/module-template.md) for development guide.
-
----
-
-## Logging
-
-### Session Logs
-
-Location: `Logs/SESSION-<ComputerName>-<Timestamp>.log`
-
-Example:
-```
-[2026-02-09 14:35:22] Application started (v2.4.0)
-[14:35:25] [Credentials] Cached credentials loaded successfully
-[14:36:10] [Update] Check for updates initiated by user
-[14:36:12] [Update] GitHub API response: latest version is v2.4.0
-[14:36:13] [Update] You're running the latest version
-```
-
-### View Logs
-
-Click **Help → View Session Logs** to open logs folder.
-
----
-
-## Troubleshooting
-
-### "Execution policy prevents script from running"
-
-**Solution:**
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass
-```
-
-### "Module blocked by security manifest"
-
-**Cause:** Module file was modified or not in whitelist
-
-**Solution:**
-```powershell
-# Regenerate security manifests
-# Tools → Security → Update Security Manifests
-```
-
-### "Cannot reach GitHub" during update
-
-**Cause:** Firewall blocks api.github.com
-
-**Solution:**
-- Whitelist `api.github.com` and `github.com` in firewall
-- Verify proxy settings
-- Test: `Invoke-RestMethod -Uri https://api.github.com/repos/SecPrime8/RushResolve/releases/latest`
-
-### "Hash verification failed"
-
-**Cause:** Downloaded file doesn't match expected SHA256
-
-**Solution:**
-- Retry update (network corruption)
-- If persists, verify GitHub account not compromised
-- Manual download and verify hash:
-  ```powershell
-  (Get-FileHash .\RushResolveApp_v2.4.0.zip -Algorithm SHA256).Hash
-  ```
-
-### "Settings lost after update"
-
-**Cause:** Bug in settings preservation (rare)
-
-**Solution:**
-- Restore from backup: `Safety/Backups/RushResolveApp_v2.3_backup_<timestamp>.zip`
-- Extract only `Config/settings.json` from backup
-
----
-
-## Development
-
-### Building from Source
-
-```powershell
-# Clone repository
-git clone https://github.com/SecPrime8/RushResolve.git
-cd RushResolve
-
-# Run application
-.\RushResolve.ps1
-
-# Update security manifests after code changes
-# Tools → Security → Update Security Manifests
-```
-
-### Creating a Module
-
-1. Copy `docs/module-template.md`
-2. Create new file: `Modules/09_YourModule.ps1`
-3. Define `$script:ModuleName` and `Initialize-Module`
-4. Update security manifests
-5. Test in application
-
-### Release Process
-
-1. Update version number in `RushResolve.ps1` (line 165)
-2. Update `CHANGELOG.md`
-3. Commit changes
-4. Create release ZIP:
-   ```powershell
-   Compress-Archive -Path * -DestinationPath RushResolveApp_v2.4.0.zip
-   ```
-5. Generate SHA256:
-   ```powershell
-   (Get-FileHash RushResolveApp_v2.4.0.zip -Algorithm SHA256).Hash
-   ```
-6. Create GitHub release:
-   - Tag: `v2.4.0`
-   - Upload ZIP
-   - Include SHA256 in release notes
-
 ---
 
 ## File Structure
@@ -347,8 +185,6 @@ RushResolveApp/
 ├── Logs/                       # Session logs
 ├── Tools/                      # Helper scripts and installers
 └── docs/                       # Documentation
-
-```
 
 ---
 
@@ -439,14 +275,3 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 This software is proprietary and confidential. Unauthorized copying, distribution, or modification is prohibited.
 
 ---
-
-## Credits
-
-**Development:** Rush IT Field Services Team
-**Security Review:** KILA Strategies (Claude Code)
-**Version:** 2.4.0
-**Last Updated:** 2026-02-09
-
----
-
-**Made with ❤️ for Rush University Medical Center IT Technicians**
