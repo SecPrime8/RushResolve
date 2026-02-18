@@ -1,7 +1,23 @@
 # Rush Resolve Changelog
 
-## v2.6.0 (2026-02-13)
+## Planned (Next Version)
+- **AppLocker Packaged App Rules (Module 3 or new Security module)**
+  - Launch Local Security Policy (`secpol.msc`) from within RushResolve
+  - Auto-generate AppLocker rules for all packaged apps installed on the computer
+  - Auto-generate AppLocker rules for all packaged app installers within a specific folder
+  - Use case: field techs need to unblock installers blocked by AppLocker packaged app rules
+
+- **Driver Management (Module 2 or new module)**
+  - List all installed drivers with version info
+  - Check for available updates across all drivers
+  - Bulk update all outdated drivers or provide download links to latest versions
+
+## v2.6.0 (2026-02-18)
 ### Improvements
+- **Module 3 (Printer Management) - Windows 10 Compatibility**
+  - Fixed UI hang when adding printers on Windows 10 (WinForms event handler scoping)
+  - Fixed privilege escalation: printer operations no longer require full admin elevation on Win10
+
 - **Module 7 (Diagnostics) - DISM/SFC Overhaul**
   - Replaced external PowerShell windows with inline output streaming (RunElevatedInline helper)
   - DISM and SFC output now appears directly in the diagnostics log panel

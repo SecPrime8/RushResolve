@@ -2,7 +2,7 @@
 
 **Portable IT Technician Toolkit for Rush University Medical Center**
 
-Version: 2.5.0 | License: Internal Use
+Version: 2.6.0 | License: Internal Use
 
 ---
 
@@ -12,10 +12,10 @@ RushResolve is a modular PowerShell GUI application designed for IT field techni
 
 ### Key Features
 
-- **🔒 Security-First Design** - PIN-protected credential caching, SHA256 verification, TLS 1.2+ enforcement
-- **📦 Modular Architecture** - 8 specialized modules for different IT tasks
-- **🎯 Field-Tested** - Built for real-world hospital IT environments
-- **📊 Session Logging** - Comprehensive logging for troubleshooting and auditing
+- 🔒 **Security-First Design** - PIN-protected credential caching, SHA256 verification, TLS 1.2+ enforcement
+- 📦 **Modular Architecture** - 8 specialized modules for different IT tasks
+- 🎯 **Field-Tested** - Built for real-world hospital IT environments
+- 📊 **Session Logging** - Comprehensive logging for troubleshooting and auditing
 
 ---
 
@@ -39,7 +39,7 @@ RushResolve is a modular PowerShell GUI application designed for IT field techni
 2. **Extract to desired location:**
    ```powershell
    # Example: C:\Tools\RushResolveApp
-   Expand-Archive -Path RushResolveApp_v2.4.0.zip -DestinationPath C:\Tools\
+   Expand-Archive -Path RushResolveApp_v2.6.0.zip -DestinationPath C:\Tools\
    ```
 
 3. **Run the application:**
@@ -163,6 +163,8 @@ Location: `Config/settings.json`
   "Theme": "Light",
   "LogRetentionDays": 30
 }
+```
+
 ---
 
 ## File Structure
@@ -237,32 +239,23 @@ Report issues at: https://github.com/SecPrime8/RushResolve/issues
 
 ## Changelog
 
-### [2.4.0] - 2026-02-09
+### [2.6.0] - 2026-02-18
 
 #### Added
-- **Auto-update mechanism** - "Check for Updates" in Help menu
-- SHA256 hash verification for update packages
-- Automatic backup before updates (rollback on failure)
-- Settings preservation across updates
-- TLS 1.2+ enforcement for HTTPS connections
-- PIN brute-force protection with exponential backoff
-- Command injection prevention in restart process
-- HTTPS validation for downloads
+- **Module 7** - Inline DISM/SFC output with UAC RunAs elevation (no external windows)
+- **Module 3** - Rewritten printer add with `printui.dll` and activity log panel
+- **Module 2** - Fixed HPIA driver parsing and two-phase install workflow
+- **Core** - `Resolve-ToUNCPath`, `Connect-NetworkShare` for SMB auth
 
-#### Changed
-- Help menu reorganized (updates at top)
-- Session logging enhanced with `[Update]` category
+#### Fixed
+- **Module 3** - UI hang and privilege escalation on Windows 10
+- **Module 7** - Removed internet-dependent RestoreHealth (blocked by GPO)
 
-#### Security
-- All critical security vulnerabilities from pre-release audit resolved
-- See [SECURITY-FIXES.md](SECURITY-FIXES.md) for complete details
-
-### [2.3] - 2026-01-09
-- Initial stable release
-- 8 functional modules
-- PIN-protected credential caching
-- Module security whitelisting
-- Session logging
+### [2.5.0] - 2026-02-10
+- Session logging with computer info headers
+- Sortable printer columns, backup/restore printers
+- LLDP alternative method for network tools
+- RSAT check for Active Directory button
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
 
@@ -275,3 +268,14 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
 This software is proprietary and confidential. Unauthorized copying, distribution, or modification is prohibited.
 
 ---
+
+## Credits
+
+**Development:** Rush IT Field Services Team
+**Security Review:** KILA Strategies (Claude Code)
+**Version:** 2.6.0
+**Last Updated:** 2026-02-18
+
+---
+
+**Made with ❤️ for Rush University Medical Center IT Technicians**

@@ -183,7 +183,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.5.1"  # Bug fix: Software Installer module display
+$script:AppVersion = "2.6.0"  # DISM/SFC overhaul, printer mgmt, HPIA driver fix, Win10 compat
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
