@@ -1648,10 +1648,13 @@ function Initialize-Module {
 
     # Connect button (for network shares only)
     $script:ConnectBtn = New-Object System.Windows.Forms.Button
-    $script:ConnectBtn.Text = "Connect"
-    $script:ConnectBtn.Width = 75
+    $script:ConnectBtn.Text = "Connect to Share"
+    $script:ConnectBtn.Width = 120
     $script:ConnectBtn.Height = 30
     $script:ConnectBtn.Visible = $false
+    $script:ConnectBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
+    $script:ConnectBtn.ForeColor = [System.Drawing.Color]::White
+    $script:ConnectBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $sourcePanel.Controls.Add($script:ConnectBtn)
 
     # Connection status label (for network shares only)
@@ -2105,6 +2108,7 @@ function Initialize-Module {
     $script:currentPath = ""
     $script:networkPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
     $script:localPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Default ""
+    $script:networkUncPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkUncPath" -Default $script:networkPath
 
     # Resolve relative paths and create Repository structure (for USB portability)
     # $PSScriptRoot is Modules directory, so go up to RushResolve root, then to parent for Repository
@@ -2302,24 +2306,10 @@ function Initialize-Module {
         }
     })
 
-    # Connect button (for network shares)
+    # Connect button (for network shares) — uses PIN-protected share credentials
     $script:ConnectBtn.Add_Click({
-        $path = $script:pathTextBox.Text.Trim()
-        if (-not $path) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Please enter a network share path first.",
-                "No Path Specified",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            return
-        }
-
-        # Attempt connection
-        $connected = & $script:EnsureShareAccess -SharePath $path -LogBox $script:installerLogBox
-
+        $connected = Connect-ShareWithPIN
         if ($connected) {
-            # Refresh app list on successful connection
             & $script:RefreshAppList
         }
     })

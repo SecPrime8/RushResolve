@@ -115,9 +115,33 @@ $script:SearchADUser = {
             }
         }
 
+        # Look up local profile size
+        $userInfo.ProfilePath = "N/A"
+        $userInfo.ProfileSize = "N/A"
+        $profilePath = "C:\Users\$Username"
+        if (Test-Path $profilePath) {
+            $userInfo.ProfilePath = $profilePath
+            $LogBox.AppendText("[$timestamp]   Profile: $profilePath - calculating size...`r`n")
+            [System.Windows.Forms.Application]::DoEvents()
+            try {
+                $bytes = (Get-ChildItem -Path $profilePath -Recurse -Force -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum
+                if (-not $bytes) { $bytes = 0 }
+                $userInfo.ProfileSize = switch ($bytes) {
+                    { $_ -ge 1GB } { "{0:N1} GB" -f ($_ / 1GB); break }
+                    { $_ -ge 1MB } { "{0:N1} MB" -f ($_ / 1MB); break }
+                    { $_ -ge 1KB } { "{0:N1} KB" -f ($_ / 1KB); break }
+                    default        { "$_ B" }
+                }
+            } catch {
+                $userInfo.ProfileSize = "Access denied"
+            }
+        }
+
         $LogBox.AppendText("[$timestamp] User found: $($userInfo.DisplayName)`r`n")
         $LogBox.AppendText("[$timestamp]   Email: $($userInfo.Email)`r`n")
         $LogBox.AppendText("[$timestamp]   Locked: $($userInfo.IsLocked)    Disabled: $($userInfo.IsDisabled)`r`n")
+        $LogBox.AppendText("[$timestamp]   Profile size: $($userInfo.ProfileSize)`r`n")
         Write-SessionLog -Message "AD Search: Found user ($Username - $($userInfo.DisplayName))" -Category "AD Tools"
 
         return $userInfo
@@ -466,6 +490,10 @@ Status:
 Activity:
   Last Logon:     $($userResult.LastLogon)
   Password Set:   $($userResult.PasswordLastSet)
+
+Local Profile:
+  Path:           $($userResult.ProfilePath)
+  Size:           $($userResult.ProfileSize)
 
 Groups ($($userResult.Groups.Count)):
 $($userResult.Groups | ForEach-Object { "  - $_" } | Out-String)

@@ -8,9 +8,8 @@
                },
     "modules":  {
                     "SoftwareInstaller":  {
-                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software",
-                                              "networkPathUNC":  "",
-                                              "networkPathUNCDefault":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+                                              "networkPath":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+                                              "networkUncPath":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
                                               "localPath":  "..\\Repository\\LocalInstallers",
                                               "favoritesLocalPath":  "C:\\Users\\luisa\\KILA Strategies\\projects\\Rush_IT\\Repository\\Favorites"
                                           }
