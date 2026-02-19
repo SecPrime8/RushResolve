@@ -183,7 +183,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.6.0"  # DISM/SFC overhaul, printer mgmt, HPIA driver fix, Win10 compat
+$script:AppVersion = "2.6.1-beta.1"
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -202,8 +202,12 @@ $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
 $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
-$script:ConnectedSharePath = $null       # UNC root of active net use session
-$script:NetworkShareCredential = $null   # Session-cached PSCredential for share access (separate from elevation creds)
+
+# Share credential caching (separate from admin creds — used for UNC share access)
+$script:ShareCredentialFile = Join-Path $script:ConfigPath "share-credential.dat"
+$script:SharePINFile = Join-Path $script:ConfigPath "share-credential.pin"
+$script:CachedShareCredential = $null    # PSCredential for network share access
+$script:ShareCredentialPINHash = $null  # SHA256 hash of share credential PIN
 
 # Session logging
 $script:LogsPath = Join-Path $script:AppPath "Logs"
@@ -2315,6 +2319,197 @@ function Set-ManualCredentials {
         # User cancelled credential dialog
     }
 }
+#endregion
+
+#region Share Credential Management
+
+function Get-UncShareRoot {
+    <#
+    .SYNOPSIS
+        Returns the UNC share root path for net use authentication.
+        Reads networkUncPath from settings; falls back to networkPath.
+    #>
+    $unc = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkUncPath" -Default ""
+    if (-not $unc) {
+        $unc = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
+    }
+    return $unc
+}
+
+function Load-ShareEncryptedCredential {
+    if (-not (Test-Path $script:ShareCredentialFile) -or -not (Test-Path $script:SharePINFile)) {
+        return $null
+    }
+    try {
+        $pinHash = (Get-Content $script:SharePINFile -Raw).Trim()
+        $encrypted = Get-Content $script:ShareCredentialFile -Raw
+        return @{ Encrypted = $encrypted; PINHash = $pinHash }
+    }
+    catch { return $null }
+}
+
+function Save-ShareEncryptedCredential {
+    param(
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$PIN
+    )
+    try {
+        $encrypted = Protect-Credential -Credential $Credential -PIN $PIN
+        if ($encrypted) {
+            Set-Content -Path $script:ShareCredentialFile -Value $encrypted -Force
+            $pinHash = Get-PINHash -PIN $PIN
+            Set-Content -Path $script:SharePINFile -Value $pinHash -Force
+            return $true
+        }
+    }
+    catch { Write-SessionLog "Error saving share credential: $_" }
+    return $false
+}
+
+function Remove-ShareEncryptedCredential {
+    if (Test-Path $script:ShareCredentialFile) { Remove-Item $script:ShareCredentialFile -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $script:SharePINFile) { Remove-Item $script:SharePINFile -Force -ErrorAction SilentlyContinue }
+    $script:CachedShareCredential = $null
+    $script:ShareCredentialPINHash = $null
+}
+
+function Get-ShareCredential {
+    <#
+    .SYNOPSIS
+        Returns a PSCredential for share access.
+        Uses cached credential if available, otherwise loads from disk (PIN-protected)
+        or prompts the user to enter and optionally save credentials.
+        Returns $null if user cancels.
+    #>
+    # Return in-memory cached credential
+    if ($script:CachedShareCredential) { return $script:CachedShareCredential }
+
+    # Try loading PIN-protected credential from disk
+    $stored = Load-ShareEncryptedCredential
+    if ($stored) {
+        $pin = Show-PINEntryDialog -Title "Share Credentials" -Message "Enter PIN to unlock share credentials:"
+        if (-not $pin) { return $null }
+        $hash = Get-PINHash -PIN $pin
+        if ($hash -ne $stored.PINHash) {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Incorrect PIN.",
+                "Authentication Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return $null
+        }
+        try {
+            $cred = Unprotect-Credential -EncryptedData $stored.Encrypted -PIN $pin
+            $script:CachedShareCredential = $cred
+            $script:ShareCredentialPINHash = $hash
+            return $cred
+        }
+        catch {
+            Write-SessionLog "Failed to decrypt share credential: $_"
+            return $null
+        }
+    }
+
+    # No stored credential — prompt user to enter credentials
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        "Share credentials are not saved.`n`nClick OK to enter credentials for the software share.",
+        "Share Credentials Required",
+        [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+
+    try {
+        $uncShare = Get-UncShareRoot
+        $cred = $host.UI.PromptForCredential(
+            "Software Share Credentials",
+            "Enter credentials to access $uncShare`n(Format: DOMAIN\username)",
+            "",
+            "RUSH"
+        )
+        if (-not $cred) { return $null }
+
+        # Offer to save with PIN protection
+        $saveResult = [System.Windows.Forms.MessageBox]::Show(
+            "Save credentials for future sessions?`n(Stored with PIN protection on this machine)",
+            "Save Credentials",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($saveResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $pin = Show-PINEntryDialog -Title "Set Share Credential PIN" -Message "Set a PIN to protect share credentials:`n(4-8 digits)"
+            if ($pin) {
+                Save-ShareEncryptedCredential -Credential $cred -PIN $pin | Out-Null
+                Write-SessionLog "Share credentials saved (PIN-encrypted)"
+            }
+        }
+
+        $script:CachedShareCredential = $cred
+        return $cred
+    }
+    catch {
+        Write-SessionLog "Error prompting for share credential: $_"
+        return $null
+    }
+}
+
+function Connect-ShareWithPIN {
+    <#
+    .SYNOPSIS
+        Authenticates to the UNC share using PIN-protected stored share credentials.
+        Returns $true on success, $false on failure.
+    #>
+    $uncShare = Get-UncShareRoot
+    if (-not $uncShare) {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "No network share path configured.`n`nSet 'networkUncPath' in Config\settings.json.",
+            "Configuration Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        return $false
+    }
+
+    # Remove any existing connection to this share first
+    & net use $uncShare /delete 2>&1 | Out-Null
+
+    $cred = Get-ShareCredential
+    if (-not $cred) { return $false }
+
+    $username = $cred.UserName
+    $password = $cred.GetNetworkCredential().Password
+
+    try {
+        $output = & net use $uncShare "/user:$username" $password 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-SessionLog "Connected to share: $uncShare as $username"
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Connected to $uncShare`n`nYou can now browse the software library.",
+                "Share Connected",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return $true
+        }
+        else {
+            Write-SessionLog "net use failed (exit $LASTEXITCODE): $output"
+            $script:CachedShareCredential = $null  # Clear bad credential from cache
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Failed to connect to $uncShare`n`nError: $output`n`nCheck your credentials and try again.",
+                "Connection Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return $false
+        }
+    }
+    catch {
+        Write-SessionLog "Connect-NetworkShare exception: $_"
+        return $false
+    }
+}
+
 #endregion
 
 #region Module Loading

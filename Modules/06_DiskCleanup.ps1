@@ -377,7 +377,8 @@ $script:GetAllProfiles = {
         $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop | Where-Object {
             -not $_.Special -and
             $_.LocalPath -notmatch '\\(Default|Public|Default User|All Users)$' -and
-            $_.LocalPath -notmatch "\\$currentUser$"
+            $_.LocalPath -notmatch "\\$currentUser$" -and
+            $_.LocalPath -notmatch '\\install$'
         }
 
         foreach ($profile in $profiles) {
