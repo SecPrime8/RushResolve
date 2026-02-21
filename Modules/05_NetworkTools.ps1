@@ -479,13 +479,15 @@ $script:RunWlanReport = {
 
     try {
         $tempOut = "$env:TEMP\wlanreport-output.txt"
-        $proc = Start-Process -FilePath "netsh" -ArgumentList "wlan show wlanreport" `
-            -Verb RunAs -Wait -WindowStyle Hidden `
-            -RedirectStandardOutput $tempOut -PassThru
+        $tempScript = "$env:TEMP\wlan-run.ps1"
+        Set-Content $tempScript "netsh wlan show wlanreport | Out-File '$tempOut' -Encoding UTF8" -Encoding UTF8
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" `
+            -Verb RunAs -Wait -WindowStyle Hidden
         $timestamp = Get-Date -Format "HH:mm:ss"
         if (Test-Path $tempOut) {
-            $lines = Get-Content $tempOut
+            $lines = Get-Content $tempOut -Encoding UTF8
             Remove-Item $tempOut -Force
+            Remove-Item $tempScript -Force
             foreach ($line in $lines) {
                 if ($line -and $line.Trim()) {
                     $LogBox.AppendText("[$timestamp] $line`r`n")
