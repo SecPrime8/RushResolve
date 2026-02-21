@@ -491,16 +491,15 @@ $script:RunWlanReport = {
                 }
             }
         } else {
-            $cred = Get-ElevatedCredential -Message "Enter ENT credentials to generate WLAN report"
-            if (-not $cred) {
-                $LogBox.AppendText("[$timestamp] Cancelled - no credentials provided`r`n")
-                return
-            }
+            $LogBox.AppendText("[$timestamp] Not running as admin — requesting elevation via UAC...`r`n")
+            $LogBox.AppendText("[$timestamp] Tip: Launch RushResolve as Administrator to skip this prompt.`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
             $tempOut = "C:\Windows\Temp\wlanreport-output.txt"
             $tempScript = "C:\Windows\Temp\wlan-run.ps1"
             Set-Content $tempScript "netsh wlan show wlanreport | Out-File -FilePath '$tempOut' -Encoding UTF8" -Encoding UTF8
             Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" `
-                -Credential $cred -Wait -WorkingDirectory "C:\Windows\Temp"
+                -Verb RunAs -Wait
             if (Test-Path $tempOut) {
                 $lines = Get-Content $tempOut -Encoding UTF8
                 Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
