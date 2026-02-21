@@ -479,15 +479,27 @@ $script:RunWlanReport = {
 
     try {
         $tempOut = "$env:TEMP\wlanreport-output.txt"
-        $tempScript = "$env:TEMP\wlan-run.ps1"
-        Set-Content $tempScript "netsh wlan show wlanreport | Out-File '$tempOut' -Encoding UTF8" -Encoding UTF8
-        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" `
-            -Verb RunAs -Wait
+        $taskName = "RushResolve-WlanReport-$(Get-Random)"
+        $cmd = "netsh wlan show wlanreport | Out-File -FilePath '$tempOut' -Encoding UTF8"
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-ExecutionPolicy Bypass -NoProfile -Command `"$cmd`""
+        $principal = New-ScheduledTaskPrincipal `
+            -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+            -RunLevel Highest
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        $elapsed = 0
+        while ($elapsed -lt 15) {
+            Start-Sleep -Seconds 1
+            $elapsed++
+            $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+            if ($state -eq "Ready") { break }
+        }
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null
         $timestamp = Get-Date -Format "HH:mm:ss"
         if (Test-Path $tempOut) {
             $lines = Get-Content $tempOut -Encoding UTF8
             Remove-Item $tempOut -Force
-            Remove-Item $tempScript -Force
             foreach ($line in $lines) {
                 if ($line -and $line.Trim()) {
                     $LogBox.AppendText("[$timestamp] $line`r`n")
