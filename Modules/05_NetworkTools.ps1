@@ -482,7 +482,7 @@ $script:RunWlanReport = {
         $tempScript = "$env:TEMP\wlan-run.ps1"
         Set-Content $tempScript "netsh wlan show wlanreport | Out-File '$tempOut' -Encoding UTF8" -Encoding UTF8
         Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" `
-            -Verb RunAs -Wait -WindowStyle Hidden
+            -Verb RunAs -Wait
         $timestamp = Get-Date -Format "HH:mm:ss"
         if (Test-Path $tempOut) {
             $lines = Get-Content $tempOut -Encoding UTF8
