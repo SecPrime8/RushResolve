@@ -3,12 +3,70 @@
     Rush Resolve - Portable IT Technician Toolbox
 .DESCRIPTION
     Modular PowerShell GUI application for IT technicians.
-    Modular IT toolkit — run as Administrator for full feature access.
+    Self-elevates using cached ENT credentials on launch for full feature access.
 .NOTES
     Version: 2.0
     Author: Rush IT Field Services
     Requires: PowerShell 5.1+, Windows 10/11
 #>
+
+#region Self-Elevation
+$_isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $_isAdmin) {
+    # Try to relaunch using cached ENT credentials
+    $_configPath = Join-Path $PSScriptRoot "Config"
+    $_credFile   = Join-Path $_configPath "credential.dat"
+    $_pinFile    = Join-Path $_configPath "credential.pin"
+    $_cred       = $null
+
+    if ((Test-Path $_credFile) -and (Test-Path $_pinFile)) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $_pin = [Microsoft.VisualBasic.Interaction]::InputBox("Enter your PIN to launch RushResolve elevated:", "RushResolve — ENT Elevation", "")
+        if ($_pin) {
+            $_storedHash = (Get-Content $_pinFile -Raw).Trim()
+            $_pinHash    = [System.BitConverter]::ToString(
+                [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                    [System.Text.Encoding]::UTF8.GetBytes($_pin)
+                )
+            ).Replace("-","")
+
+            if ($_pinHash -eq $_storedHash) {
+                $_encrypted     = [System.IO.File]::ReadAllBytes($_credFile)
+                $_salt          = $_encrypted[0..15]
+                $_iv            = $_encrypted[16..31]
+                $_cipher        = $_encrypted[32..($_encrypted.Length - 1)]
+                $_derive        = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($_pin, $_salt, 10000)
+                $_key           = $_derive.GetBytes(32)
+                $_derive.Dispose()
+                $_aes           = [System.Security.Cryptography.Aes]::Create()
+                $_aes.Key       = $_key; $_aes.IV = $_iv
+                $_aes.Mode      = [System.Security.Cryptography.CipherMode]::CBC
+                $_aes.Padding   = [System.Security.Cryptography.PaddingMode]::PKCS7
+                $_dec           = $_aes.CreateDecryptor()
+                $_plain         = [System.Text.Encoding]::UTF8.GetString($_dec.TransformFinalBlock($_cipher, 0, $_cipher.Length))
+                $_aes.Dispose(); $_dec.Dispose()
+                $_parts         = $_plain -split '\|', 2
+                if ($_parts.Count -eq 2) {
+                    $_cred = New-Object System.Management.Automation.PSCredential(
+                        $_parts[0],
+                        (ConvertTo-SecureString $_parts[1] -AsPlainText -Force)
+                    )
+                }
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Incorrect PIN.", "RushResolve", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            }
+        }
+    }
+
+    if ($_cred) {
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Credential $_cred
+    } else {
+        # No cached creds — fall back to standard UAC
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    }
+    exit
+}
+#endregion
 
 #region Assembly Loading
 Add-Type -AssemblyName System.Windows.Forms
