@@ -478,15 +478,42 @@ $script:RunWlanReport = {
     [System.Windows.Forms.Application]::DoEvents()
 
     try {
-        $output = netsh wlan show wlanreport 2>&1
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         $timestamp = Get-Date -Format "HH:mm:ss"
-        foreach ($line in $output) {
-            if ($line -and $line.Trim()) {
-                $LogBox.AppendText("[$timestamp] $line`r`n")
-                $LogBox.ScrollToCaret()
-                [System.Windows.Forms.Application]::DoEvents()
+
+        if ($isAdmin) {
+            $output = netsh wlan show wlanreport 2>&1
+            foreach ($line in $output) {
+                if ($line -and $line.Trim()) {
+                    $LogBox.AppendText("[$timestamp] $line`r`n")
+                    $LogBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+            }
+        } else {
+            $LogBox.AppendText("[$timestamp] Not running as admin — requesting elevation via UAC...`r`n")
+            $LogBox.AppendText("[$timestamp] Tip: Launch RushResolve as Administrator to skip this prompt.`r`n")
+            $LogBox.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+            $tempOut = "C:\Windows\Temp\wlanreport-output.txt"
+            $tempScript = "C:\Windows\Temp\wlan-run.ps1"
+            Set-Content $tempScript "netsh wlan show wlanreport | Out-File -FilePath '$tempOut' -Encoding UTF8" -Encoding UTF8
+            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" `
+                -Verb RunAs -Wait
+            if (Test-Path $tempOut) {
+                $lines = Get-Content $tempOut -Encoding UTF8
+                Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
+                Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+                foreach ($line in $lines) {
+                    if ($line -and $line.Trim()) {
+                        $LogBox.AppendText("[$timestamp] $line`r`n")
+                        $LogBox.ScrollToCaret()
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
+                }
             }
         }
+
         $LogBox.AppendText("`r`n[$timestamp] WLAN report complete.`r`n")
     }
     catch {
