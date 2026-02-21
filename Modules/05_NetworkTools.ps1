@@ -478,13 +478,20 @@ $script:RunWlanReport = {
     [System.Windows.Forms.Application]::DoEvents()
 
     try {
-        $output = netsh wlan show wlanreport 2>&1
+        $tempOut = "$env:TEMP\wlanreport-output.txt"
+        $proc = Start-Process -FilePath "netsh" -ArgumentList "wlan show wlanreport" `
+            -Verb RunAs -Wait -WindowStyle Hidden `
+            -RedirectStandardOutput $tempOut -PassThru
         $timestamp = Get-Date -Format "HH:mm:ss"
-        foreach ($line in $output) {
-            if ($line -and $line.Trim()) {
-                $LogBox.AppendText("[$timestamp] $line`r`n")
-                $LogBox.ScrollToCaret()
-                [System.Windows.Forms.Application]::DoEvents()
+        if (Test-Path $tempOut) {
+            $lines = Get-Content $tempOut
+            Remove-Item $tempOut -Force
+            foreach ($line in $lines) {
+                if ($line -and $line.Trim()) {
+                    $LogBox.AppendText("[$timestamp] $line`r`n")
+                    $LogBox.ScrollToCaret()
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
             }
         }
         $LogBox.AppendText("`r`n[$timestamp] WLAN report complete.`r`n")
