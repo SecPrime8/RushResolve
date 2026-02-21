@@ -3,19 +3,12 @@
     Rush Resolve - Portable IT Technician Toolbox
 .DESCRIPTION
     Modular PowerShell GUI application for IT technicians.
-    Self-elevates to administrator on launch for full feature access.
+    Modular IT toolkit — run as Administrator for full feature access.
 .NOTES
     Version: 2.0
     Author: Rush IT Field Services
     Requires: PowerShell 5.1+, Windows 10/11
 #>
-
-#region Self-Elevation
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    exit
-}
-#endregion
 
 #region Assembly Loading
 Add-Type -AssemblyName System.Windows.Forms
