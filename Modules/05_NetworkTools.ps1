@@ -491,10 +491,16 @@ $script:RunWlanReport = {
                 }
             }
         } else {
+            $cred = Get-ElevatedCredential -Message "Enter ENT credentials to generate WLAN report"
+            if (-not $cred) {
+                $LogBox.AppendText("[$timestamp] Cancelled - no credentials provided`r`n")
+                return
+            }
             $tempOut = "$env:TEMP\wlanreport-output.txt"
             $tempScript = "$env:TEMP\wlan-run.ps1"
             Set-Content $tempScript "netsh wlan show wlanreport | Out-File -FilePath '$tempOut' -Encoding UTF8" -Encoding UTF8
-            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" -Verb RunAs -Wait
+            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$tempScript`"" `
+                -Credential $cred -Wait -WorkingDirectory $env:TEMP
             if (Test-Path $tempOut) {
                 $lines = Get-Content $tempOut -Encoding UTF8
                 Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
