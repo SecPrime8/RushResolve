@@ -1020,7 +1020,7 @@ function Initialize-Module {
     $copyReportBtn.Add_Click({
         $reportText = $diagLogBoxRef.Text
         if ($reportText.Trim()) {
-            $header = "=== WLAN Report — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===`r`n"
+            $header = "=== WLAN Report - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===`r`n"
             [System.Windows.Forms.Clipboard]::SetText($header + $reportText)
             [System.Windows.Forms.MessageBox]::Show("Report copied to clipboard.", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         } else {
