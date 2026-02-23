@@ -512,7 +512,7 @@ $script:ScanForUpdates = {
         }
         if (-not $installedVersion) { continue }
 
-        # Compare versions — only surface if share has a newer build
+        # Compare versions  - only surface if share has a newer build
         try {
             $shareVer = [System.Version]::Parse(($shareVersion -replace '[^\d\.]', ''))
             $instVer  = [System.Version]::Parse(($installedVersion -replace '[^\d\.]', ''))
@@ -524,11 +524,11 @@ $script:ScanForUpdates = {
                     InstallerPath    = $installer.FullName
                     Source           = "share"
                 }
-                & $logMsg "Update available: $appName ($installedVersion → $shareVersion)"
+                & $logMsg "Update available: $appName ($installedVersion -> $shareVersion)"
             }
         }
         catch {
-            # Version string unparseable — skip
+            # Version string unparseable  - skip
         }
     }
 
@@ -544,7 +544,7 @@ $script:UpdateApp = {
     )
 
     $timestamp = Get-Date -Format "HH:mm:ss"
-    $LogBox.AppendText("[$timestamp] Updating $($App.Name) ($($App.CurrentVersion) → $($App.AvailableVersion))...`r`n")
+    $LogBox.AppendText("[$timestamp] Updating $($App.Name) ($($App.CurrentVersion) -> $($App.AvailableVersion))...`r`n")
     $LogBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
 
@@ -608,7 +608,7 @@ function Initialize-Module {
     $installTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($installTab)
 
-    # Tab 2: Check for Updates — compares installed versions against Useful_Software share
+    # Tab 2: Check for Updates  - compares installed versions against Useful_Software share
     $updatesTab = New-Object System.Windows.Forms.TabPage
     $updatesTab.Text = "Check for Updates"
     $updatesTab.UseVisualStyleBackColor = $true
@@ -1092,7 +1092,7 @@ function Initialize-Module {
             if ($isNetwork) {
                 $script:installerLogBox.AppendText("[$timestamp] Cannot access share: $path`r`n")
                 $script:installerLogBox.AppendText("[$timestamp] Click 'Connect to Share' to authenticate with share credentials.`r`n")
-                Set-AppError "Network share inaccessible — click Connect to Share"
+                Set-AppError "Network share inaccessible  - click Connect to Share"
             }
             else {
                 $script:installerLogBox.AppendText("[$timestamp] Invalid path: $path`r`n")
