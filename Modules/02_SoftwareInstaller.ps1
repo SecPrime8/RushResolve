@@ -9,250 +9,18 @@
 $script:ModuleName = "Software Installer"
 $script:ModuleDescription = "Install applications from network share or check for updates"
 
-#region HP Detection & HPIA Script Blocks
-
-$script:IsHPMachine = $null
-$script:HPIAPath = $null
-
-$script:DetectHP = {
-    if ($null -eq $script:IsHPMachine) {
-        try {
-            $manufacturer = (Get-CimInstance -ClassName Win32_ComputerSystem -Property Manufacturer -ErrorAction Stop).Manufacturer
-            $script:IsHPMachine = ($manufacturer -match "HP|Hewlett")
-        }
-        catch {
-            $script:IsHPMachine = $false
-        }
-    }
-    return $script:IsHPMachine
-}
-
-$script:GetHPIAPath = {
-    if ($null -eq $script:HPIAPath) {
-        $repoHPIADir = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\HPIA"
-        $repoHPIA = Join-Path $repoHPIADir "HPImageAssistant.exe"
-
-        $possiblePaths = @(
-            $repoHPIA,
-            "${env:ProgramFiles(x86)}\HP\HPIA\HPImageAssistant.exe",
-            "${env:ProgramFiles}\HP\HPIA\HPImageAssistant.exe",
-            "C:\HPIA\HPImageAssistant.exe"
-        )
-        foreach ($path in $possiblePaths) {
-            if (Test-Path $path) {
-                $script:HPIAPath = $path
-                break
-            }
-        }
-
-        # If not found, check if the installer exe (hp-hpia-*.exe) is in the Tools\HPIA folder and extract it
-        if ($null -eq $script:HPIAPath -and (Test-Path $repoHPIADir)) {
-            $installer = Get-ChildItem -Path $repoHPIADir -Filter "hp-hpia-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($installer) {
-                Write-Host "Found HPIA installer: $($installer.Name). Extracting..."
-                $extractDir = Join-Path $repoHPIADir "extracted"
-                try {
-                    Start-Process -FilePath $installer.FullName -ArgumentList "/s /e /f `"$extractDir`"" -Wait -NoNewWindow
-                    $extracted = Get-ChildItem -Path $extractDir -Filter "HPImageAssistant.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($extracted) {
-                        Get-ChildItem -Path $extracted.DirectoryName -ErrorAction SilentlyContinue | Copy-Item -Destination $repoHPIADir -Recurse -Force
-                        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-                        if (Test-Path $repoHPIA) {
-                            $script:HPIAPath = $repoHPIA
-                            Write-Host "HPIA extracted successfully to: $repoHPIADir"
-                        }
-                    }
-                } catch {
-                    Write-Warning "Failed to extract HPIA installer: $_"
-                }
-            }
-        }
-    }
-    return $script:HPIAPath
-}
-
-$script:RunHPIAAnalysis = {
-    param([scriptblock]$Log)
-
-    $findings = @()
-
-    if (-not (& $script:DetectHP)) {
-        if ($Log) { & $Log "Not an HP machine - skipping HPIA" }
-        return $findings
-    }
-
-    $hpiaPath = & $script:GetHPIAPath
-    if (-not $hpiaPath) {
-        if ($Log) { & $Log "HPIA not found. Place hp-hpia-*.exe in Tools\HPIA or install HPIA." }
-        return $findings
-    }
-
-    if ($Log) { & $Log "Running HP Image Assistant analysis..." }
-
-    $reportPath = "$env:TEMP\HPIA_Report"
-    if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
-    New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
-
-    try {
-        $hpiaArgs = "/Operation:Analyze /Action:List /Category:Drivers /Silent /ReportFolder:`"$reportPath`""
-        if ($Log) { & $Log "  Command: HPImageAssistant.exe $hpiaArgs" }
-
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = $hpiaPath
-        $pinfo.Arguments = $hpiaArgs
-        $pinfo.UseShellExecute = $false
-        $pinfo.CreateNoWindow = $true
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-
-        $proc = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $pinfo
-        $proc.Start() | Out-Null
-        $proc.WaitForExit(120000)
-
-        $jsonReport = Get-ChildItem $reportPath -Filter "*.json" -Recurse | Select-Object -First 1
-
-        if ($jsonReport) {
-            $report = Get-Content $jsonReport.FullName -Raw | ConvertFrom-Json
-
-            $outdated = @()
-            if ($report.HPIA.Recommendations) {
-                foreach ($rec in $report.HPIA.Recommendations) {
-                    if ($rec.RecommendationValue -eq "Install") {
-                        $outdated += $rec
-                    }
-                }
-            }
-
-            foreach ($driver in $outdated) {
-                $priority = if ($driver.CvaPackageInformation.Priority) { $driver.CvaPackageInformation.Priority } else { "Recommended" }
-                $severity = switch ($priority) {
-                    "Critical" { "Critical" }
-                    "Recommended" { "Warning" }
-                    default { "Info" }
-                }
-                $softpaqId = if ($driver.Id) { $driver.Id } else { "N/A" }
-                $version = if ($driver.Version) { $driver.Version } else { "N/A" }
-
-                $findings += @{
-                    Name     = $driver.Name
-                    Priority = $priority
-                    Severity = $severity
-                    SoftPaq  = $softpaqId
-                    Version  = $version
-                }
-                if ($Log) { & $Log "  [$priority] $($driver.Name) - $softpaqId" }
-            }
-
-            if ($outdated.Count -eq 0) {
-                if ($Log) { & $Log "  All HP drivers are up to date." }
-            } else {
-                $critCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Critical" }).Count
-                $recCount = @($outdated | Where-Object { $_.CvaPackageInformation.Priority -eq "Recommended" }).Count
-                $routineCount = $outdated.Count - $critCount - $recCount
-                if ($Log) { & $Log "  Summary: $critCount critical, $recCount recommended, $routineCount routine" }
-            }
-        }
-        else {
-            if ($Log) { & $Log "  No HPIA report generated" }
-        }
-    }
-    catch {
-        if ($Log) { & $Log "  HPIA analysis failed: $($_.Exception.Message)" }
-    }
-    finally {
-        if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-
-    return $findings
-}
-
-$script:RunHPIAUpdate = {
-    param(
-        [scriptblock]$Log,
-        [PSCredential]$Credential,
-        [ValidateSet("All", "Critical", "Recommended")]
-        [string]$Selection = "All"
-    )
-
-    if (-not (& $script:DetectHP)) {
-        [System.Windows.Forms.MessageBox]::Show("This is not an HP machine.", "Not HP", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        return
-    }
-
-    $hpiaPath = & $script:GetHPIAPath
-    if (-not $hpiaPath) {
-        [System.Windows.Forms.MessageBox]::Show("HP Image Assistant is not installed.`n`nDownload from:`nhttps://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html", "HPIA Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        return
-    }
-
-    $selectionDesc = switch ($Selection) {
-        "Critical" { "CRITICAL drivers only" }
-        "Recommended" { "CRITICAL and RECOMMENDED drivers" }
-        default { "ALL available drivers" }
-    }
-
-    $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "This will download and install $selectionDesc.`n`nThe system may require a reboot after updates.`n`nContinue?",
-        "Install HP Driver Updates",
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Question
-    )
-
-    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-
-    if ($Log) { & $Log "Starting HP driver update (Selection: $Selection)..." }
-
-    $reportPath = "$env:TEMP\HPIA_Update"
-    if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force }
-    New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
-
-    try {
-        $selectionArg = if ($Selection -eq "Recommended") { "Critical,Recommended" } else { $Selection }
-        $hpiaArgs = "/Operation:Analyze /Action:Install /Category:Drivers /Selection:$selectionArg /Silent /ReportFolder:`"$reportPath`""
-
-        if ($Log) { & $Log "  Running HPIA with /Action:Install..." }
-
-        if ($Credential) {
-            $result = Invoke-Elevated -ScriptBlock {
-                param($path, $arguments)
-                $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-                $pinfo.FileName = $path
-                $pinfo.Arguments = $arguments
-                $pinfo.UseShellExecute = $false
-                $pinfo.CreateNoWindow = $true
-
-                $proc = New-Object System.Diagnostics.Process
-                $proc.StartInfo = $pinfo
-                $proc.Start() | Out-Null
-                $proc.WaitForExit(600000)
-                return $proc.ExitCode
-            } -ArgumentList $hpiaPath, $hpiaArgs -Credential $Credential -OperationName "install HP drivers"
-
-            if ($result.Success) {
-                if ($Log) { & $Log "  HPIA update completed" }
-                [System.Windows.Forms.MessageBox]::Show("HP driver updates completed.`n`nA reboot may be required.", "Update Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-            }
-            else {
-                if ($Log) { & $Log "  HPIA update failed: $($result.Error)" }
-                [System.Windows.Forms.MessageBox]::Show("HP driver update failed.`n`n$($result.Error)", "Update Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
-        }
-        else {
-            Start-Process -FilePath $hpiaPath -ArgumentList $hpiaArgs -Wait -NoNewWindow
-            if ($Log) { & $Log "  HPIA update completed (non-elevated)" }
-        }
-    }
-    catch {
-        if ($Log) { & $Log "  HPIA update error: $($_.Exception.Message)" }
-        [System.Windows.Forms.MessageBox]::Show("Error running HPIA: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-    finally {
-        if (Test-Path $reportPath) { Remove-Item $reportPath -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-}
-
-#endregion
+# ==============================================================================
+# NOTE: GPO (Group Policy Object) Deployment Not Available
+# ==============================================================================
+# This module does not include Group Policy-based software deployment.
+# GPO deployment requires domain admin permissions and GPMC (Group Policy
+# Management Console), which are typically restricted in hospital environments.
+#
+# For enterprise software deployment, use:
+#  - Manual installation via network share (this module)
+#  - SCCM/Intune (if available in your environment)
+#  - Third-party deployment tools (PDQ Deploy, etc.)
+# ==============================================================================
 
 #region Script Blocks (defined first to avoid scope issues)
 
@@ -672,14 +440,14 @@ $script:InstallApp = {
 #  3. Uncomment the function calls at lines ~1378, ~1442, ~1479
 # ==============================================================================
 
-<#
-# Scan for available updates using WinGet
+# Scan for available updates by comparing installed versions against the Useful_Software share
 $script:ScanForUpdates = {
     param(
         [System.Windows.Forms.TextBox]$LogBox = $null
     )
 
     $updates = @()
+    $sharePath = $script:networkUncPath
 
     $logMsg = {
         param([string]$Msg)
@@ -691,136 +459,84 @@ $script:ScanForUpdates = {
         }
     }
 
-    # Check if WinGet is available
-    $wingetFound = $false
-    $script:wingetPath = $null
-
-    # Try Get-Command first (checks PATH)
-    try {
-        $script:wingetPath = (Get-Command winget -ErrorAction Stop).Source
-        & $logMsg "Found WinGet at: $($script:wingetPath)"
-        $wingetFound = $true
-    }
-    catch {
-        # Try known location (WindowsApps folder)
-        $knownPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
-        if (Test-Path $knownPath) {
-            $script:wingetPath = $knownPath
-            & $logMsg "Found WinGet at: $($script:wingetPath)"
-            $wingetFound = $true
-        }
-        else {
-            & $logMsg "WinGet not found. Attempting to install from USB..."
-        }
-    }
-
-    if (-not $wingetFound) {
-
-        # Try to install from Tools/WinGet folder
-        $installerPath = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\WinGet\Install-WinGet.ps1"
-
-        if (Test-Path $installerPath) {
-            try {
-                & $logMsg "Running WinGet installer..."
-                $installOutput = & powershell -ExecutionPolicy Bypass -File $installerPath 2>&1
-
-                # Log installer output
-                foreach ($line in $installOutput) {
-                    & $logMsg "  $line"
-                }
-
-                # Check if WinGet now available
-                try {
-                    $null = Get-Command winget -ErrorAction Stop
-                    & $logMsg "WinGet installed successfully!"
-                    $wingetFound = $true
-                }
-                catch {
-                    & $logMsg "ERROR: WinGet installation completed but command not found."
-                    & $logMsg "You may need to restart PowerShell. Close and reopen RushResolve."
-                }
-            }
-            catch {
-                & $logMsg "ERROR: WinGet installation failed: $($_.Exception.Message)"
-            }
-        }
-        else {
-            & $logMsg "ERROR: WinGet installer not found at Tools\WinGet\"
-            & $logMsg "See Tools\WinGet\README.md for setup instructions."
-        }
-    }
-
-    if (-not $wingetFound) {
-        & $logMsg ""
-        & $logMsg "Cannot scan for updates without WinGet."
+    if (-not $sharePath -or -not (Test-Path $sharePath)) {
+        & $logMsg "ERROR: Network share not available: $sharePath"
+        & $logMsg "Connect to the network share in the 'Install Software' tab first."
         return $updates
     }
 
-    & $logMsg "Scanning for available updates..."
-    & $logMsg "This may take 30-60 seconds..."
+    & $logMsg "Scanning share: $sharePath"
 
-    try {
-        # Run winget upgrade and parse output
-        $output = & $script:wingetPath upgrade --include-unknown 2>&1 | Out-String
-
-        # Parse the table output
-        $lines = $output -split "`n"
-        $inTable = $false
-        $headerProcessed = $false
-
-        foreach ($line in $lines) {
-            # Detect start of results table
-            if ($line -match "^Name\s+Id\s+Version\s+Available") {
-                $inTable = $true
-                $headerProcessed = $true
-                continue
-            }
-
-            # Detect separator line (dashes)
-            if ($inTable -and $line -match "^-+") {
-                continue
-            }
-
-            # Detect end of table
-            if ($inTable -and ($line.Trim() -eq "" -or $line -match "^\d+ upgrades available")) {
-                break
-            }
-
-            # Parse data rows
-            if ($inTable -and $headerProcessed -and $line.Trim() -ne "") {
-                # WinGet output format: Name  Id  Version  Available  Source
-                # Use regex to extract fields (handles spaces in names)
-                if ($line -match "^(.+?)\s{2,}([\w\.\-]+)\s+(\S+)\s+(\S+)\s*(\S*)") {
-                    $name = $matches[1].Trim()
-                    $id = $matches[2].Trim()
-                    $currentVersion = $matches[3].Trim()
-                    $availableVersion = $matches[4].Trim()
-                    $source = if ($matches[5]) { $matches[5].Trim() } else { "winget" }
-
-                    # Skip if versions are the same or unknown
-                    if ($currentVersion -ne $availableVersion -and $currentVersion -ne "Unknown") {
-                        $updates += @{
-                            Name = $name
-                            Id = $id
-                            CurrentVersion = $currentVersion
-                            AvailableVersion = $availableVersion
-                            Source = $source
-                        }
-                    }
+    # Build installed app lookup from registry (all users, 32+64 bit)
+    $installedApps = @{}
+    $regPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    foreach ($path in $regPaths) {
+        Get-ItemProperty $path -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -and $_.DisplayVersion } |
+            ForEach-Object {
+                $key = $_.DisplayName.Trim().ToLower()
+                if (-not $installedApps.ContainsKey($key)) {
+                    $installedApps[$key] = $_.DisplayVersion
                 }
             }
+    }
+    & $logMsg "Found $($installedApps.Count) installed applications in registry"
+
+    # Each subfolder in the share = one app. Grab the first .exe/.msi as the installer.
+    $appDirs = Get-ChildItem -Path $sharePath -Directory -ErrorAction SilentlyContinue
+    foreach ($dir in $appDirs) {
+        $installer = Get-ChildItem -Path $dir.FullName -File -Include "*.exe","*.msi" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $installer) { continue }
+
+        $appName = $dir.Name
+
+        # Pull version from file metadata
+        $shareVersion = $installer.VersionInfo.FileVersion
+        if (-not $shareVersion) { $shareVersion = $installer.VersionInfo.ProductVersion }
+        if (-not $shareVersion) { continue }
+        $shareVersion = ($shareVersion -replace ',', '.').Trim()
+
+        # Match against installed apps (substring match on name)
+        $nameKey = $appName.ToLower()
+        $installedVersion = $null
+        foreach ($key in $installedApps.Keys) {
+            if ($key -like "*$nameKey*" -or $nameKey -like "*$key*") {
+                $installedVersion = $installedApps[$key]
+                break
+            }
         }
+        if (-not $installedVersion) { continue }
 
-        & $logMsg "Found $($updates.Count) application(s) with available updates"
-    }
-    catch {
-        & $logMsg "ERROR scanning for updates: $_"
+        # Compare versions — only surface if share has a newer build
+        try {
+            $shareVer = [System.Version]::Parse(($shareVersion -replace '[^\d\.]', ''))
+            $instVer  = [System.Version]::Parse(($installedVersion -replace '[^\d\.]', ''))
+            if ($shareVer -gt $instVer) {
+                $updates += @{
+                    Name             = $appName
+                    CurrentVersion   = $installedVersion
+                    AvailableVersion = $shareVersion
+                    InstallerPath    = $installer.FullName
+                    Source           = "share"
+                }
+                & $logMsg "Update available: $appName ($installedVersion → $shareVersion)"
+            }
+        }
+        catch {
+            # Version string unparseable — skip
+        }
     }
 
+    & $logMsg "Scan complete. Found $($updates.Count) update(s)."
     return $updates
 }
 
-# Update selected applications using WinGet
+# Install an update from the share (silent install)
 $script:UpdateApp = {
     param(
         [hashtable]$App,
@@ -832,26 +548,30 @@ $script:UpdateApp = {
     $LogBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
 
+    $installerPath = $App.InstallerPath
+    $ext = [System.IO.Path]::GetExtension($installerPath).ToLower()
+
     try {
-        # Run winget upgrade for this specific app
-        $LogBox.AppendText("[$timestamp] Running: winget upgrade --id $($App.Id) --silent --accept-source-agreements --accept-package-agreements`r`n")
-        $LogBox.ScrollToCaret()
-
-        $result = & $script:wingetPath upgrade --id $App.Id --silent --accept-source-agreements --accept-package-agreements 2>&1
-
-        $timestamp = Get-Date -Format "HH:mm:ss"
-
-        # Check if successful (WinGet returns 0 on success)
-        if ($LASTEXITCODE -eq 0) {
-            $LogBox.AppendText("[$timestamp] SUCCESS: $($App.Name) updated to $($App.AvailableVersion)`r`n")
+        if ($ext -eq ".msi") {
+            $proc = Start-Process -FilePath "msiexec.exe" `
+                -ArgumentList "/i `"$installerPath`" /qn /norestart" `
+                -Wait -PassThru
         }
         else {
-            $LogBox.AppendText("[$timestamp] WARNING: Update completed with exit code $LASTEXITCODE`r`n")
-            # Show relevant output lines
-            $outputLines = $result | Select-Object -Last 5
-            foreach ($line in $outputLines) {
-                $LogBox.AppendText("    $line`r`n")
-            }
+            $proc = Start-Process -FilePath $installerPath `
+                -ArgumentList "/S /s /silent /quiet /norestart" `
+                -Wait -PassThru
+        }
+
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        if ($proc.ExitCode -eq 0) {
+            $LogBox.AppendText("[$timestamp] SUCCESS: $($App.Name) updated to $($App.AvailableVersion)`r`n")
+        }
+        elseif ($proc.ExitCode -eq 3010) {
+            $LogBox.AppendText("[$timestamp] SUCCESS: $($App.Name) updated (reboot required)`r`n")
+        }
+        else {
+            $LogBox.AppendText("[$timestamp] WARNING: $($App.Name) exit code $($proc.ExitCode)`r`n")
         }
     }
     catch {
@@ -862,215 +582,9 @@ $script:UpdateApp = {
     $LogBox.AppendText("`r`n")
     $LogBox.ScrollToCaret()
 }
-#>
 
 # WinGet functions above are commented out for stable branch
 # Use manual installer scanning (folder browse) instead
-
-# Query All Available GPO Software Packages from Active Directory
-$script:QueryGPOSoftware = {
-    param(
-        [System.Windows.Forms.TextBox]$LogBox = $null,
-        [System.Management.Automation.PSCredential]$Credential = $null
-    )
-
-    $packages = @()
-
-    $logMsg = {
-        param([string]$Msg)
-        if ($LogBox) {
-            $ts = Get-Date -Format "HH:mm:ss"
-            $LogBox.AppendText("[$ts]   $Msg`r`n")
-            $LogBox.ScrollToCaret()
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-    }
-
-    & $logMsg "Querying Active Directory for all available GPO software packages..."
-    if ($Credential) {
-        & $logMsg "Using provided credentials: $($Credential.UserName)"
-    }
-
-    try {
-        # Check if ActiveDirectory module is available
-        if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-            & $logMsg "ERROR: ActiveDirectory PowerShell module not installed"
-            & $logMsg "This feature requires the Active Directory module."
-            & $logMsg "Install with: Add-WindowsFeature RSAT-AD-PowerShell"
-            return $packages
-        }
-
-        # Import AD module
-        Import-Module ActiveDirectory -ErrorAction Stop
-
-        # Get domain info
-        & $logMsg "Connecting to Active Directory domain..."
-
-        # Build AD cmdlet parameters with credentials if provided
-        $adParams = @{}
-        if ($Credential) {
-            $adParams['Credential'] = $Credential
-        }
-
-        # Get all GPOs in the domain
-        & $logMsg "Retrieving all Group Policy Objects..."
-        $allGPOs = Get-GPO -All @adParams -ErrorAction Stop
-        & $logMsg "Found $($allGPOs.Count) GPO(s) in domain"
-
-        # Parse each GPO for software installation policies
-        foreach ($gpo in $allGPOs) {
-            try {
-                & $logMsg "Scanning GPO: $($gpo.DisplayName)"
-
-                # Get GPO report in XML format
-                $gpoReport = Get-GPOReport -Guid $gpo.Id -ReportType Xml @adParams -ErrorAction Stop
-                [xml]$xml = $gpoReport
-
-                # Define namespace for GPO XML
-                $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
-                $ns.AddNamespace("gpo", "http://www.microsoft.com/GroupPolicy/Settings")
-                $ns.AddNamespace("q1", "http://www.microsoft.com/GroupPolicy/Settings/SoftwareInstallation")
-
-                # Find software installation extensions
-                $softwareNodes = $xml.SelectNodes("//q1:MsiApplication", $ns)
-
-                if ($softwareNodes -and $softwareNodes.Count -gt 0) {
-                    & $logMsg "  Found $($softwareNodes.Count) package(s) in this GPO"
-
-                    foreach ($msi in $softwareNodes) {
-                        $name = $msi.Name
-                        $packagePath = $msi.Path
-                        $deploymentType = $msi.DeploymentType  # "Assigned" or "Published"
-
-                        if ($name -and $packagePath) {
-                            # Check if we already have this package (avoid duplicates)
-                            $exists = $packages | Where-Object { $_.Path -eq $packagePath }
-                            if (-not $exists) {
-                                $packages += @{
-                                    Name = $name
-                                    Path = $packagePath
-                                    DeploymentType = $deploymentType
-                                    GPOName = $gpo.DisplayName
-                                    Source = "AD-GPO"
-                                }
-                                & $logMsg "    -> $name ($deploymentType)"
-                            }
-                        }
-                    }
-                }
-            }
-            catch {
-                # Skip GPOs that fail to parse
-                & $logMsg "  Warning: Could not parse GPO '$($gpo.DisplayName)': $($_.Exception.Message)"
-            }
-        }
-
-        if ($packages.Count -eq 0) {
-            & $logMsg ""
-            & $logMsg "No software packages found in any GPO."
-            & $logMsg "Possible reasons:"
-            & $logMsg "  - No software deployment policies configured in domain GPOs"
-            & $logMsg "  - Insufficient permissions to read GPO settings"
-            & $logMsg "  - Software packages stored in different location"
-        }
-        else {
-            & $logMsg ""
-            & $logMsg "Total unique packages found: $($packages.Count)"
-        }
-    }
-    catch {
-        & $logMsg "ERROR querying Active Directory: $($_.Exception.Message)"
-        & $logMsg "Make sure you have:"
-        & $logMsg "  - Active Directory PowerShell module installed"
-        & $logMsg "  - Network connectivity to domain controller"
-        & $logMsg "  - Sufficient AD permissions (enterprise admin credentials)"
-    }
-
-    return $packages
-}
-
-# Install package from GPO network share
-$script:InstallGPOPackage = {
-    param(
-        [hashtable]$Package,
-        [System.Windows.Forms.TextBox]$LogBox
-    )
-
-    $timestamp = Get-Date -Format "HH:mm:ss"
-    $LogBox.AppendText("[$timestamp] Installing $($Package.Name) from GPO share...`r`n")
-    $LogBox.ScrollToCaret()
-    [System.Windows.Forms.Application]::DoEvents()
-
-    try {
-        $msiPath = $Package.Path
-
-        # Verify network path accessible
-        if (-not (Test-Path $msiPath)) {
-            $LogBox.AppendText("[$timestamp] ERROR: Cannot access $msiPath`r`n")
-            $LogBox.AppendText("[$timestamp] Check network connectivity and share permissions.`r`n")
-            $LogBox.ScrollToCaret()
-            return
-        }
-
-        $LogBox.AppendText("[$timestamp] Source: $msiPath`r`n")
-        $LogBox.ScrollToCaret()
-
-        # Create log path
-        $logPath = "$env:TEMP\RushResolve_GPO_Install_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-
-        # Build msiexec arguments
-        $arguments = @(
-            "/i"
-            "`"$msiPath`""
-            "/quiet"
-            "/norestart"
-            "/l*v"
-            "`"$logPath`""
-        )
-
-        $LogBox.AppendText("[$timestamp] Running msiexec (silent install)...`r`n")
-        $LogBox.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-
-        # Run elevated install
-        $result = Start-ElevatedProcess -FilePath "msiexec.exe" `
-            -ArgumentList ($arguments -join " ") `
-            -Wait -Hidden:$true `
-            -OperationName "install $($Package.Name)"
-
-        $timestamp = Get-Date -Format "HH:mm:ss"
-
-        if ($result.Success) {
-            if ($result.ExitCode -eq 0) {
-                $LogBox.AppendText("[$timestamp] SUCCESS: $($Package.Name) installed`r`n")
-                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
-            }
-            elseif ($result.ExitCode -eq 3010) {
-                $LogBox.AppendText("[$timestamp] SUCCESS: $($Package.Name) installed (reboot required)`r`n")
-                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
-            }
-            elseif ($result.ExitCode -eq 1641) {
-                $LogBox.AppendText("[$timestamp] SUCCESS: $($Package.Name) installed (restart initiated)`r`n")
-                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
-            }
-            else {
-                $LogBox.AppendText("[$timestamp] WARNING: Install completed with exit code $($result.ExitCode)`r`n")
-                $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
-            }
-        }
-        else {
-            $LogBox.AppendText("[$timestamp] FAILED: $($Package.Name) - $($result.Error)`r`n")
-            $LogBox.AppendText("[$timestamp] Log: $logPath`r`n")
-        }
-    }
-    catch {
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $LogBox.AppendText("[$timestamp] ERROR: $($Package.Name) - $_`r`n")
-    }
-
-    $LogBox.AppendText("`r`n")
-    $LogBox.ScrollToCaret()
-}
 
 #endregion
 
@@ -1094,13 +608,7 @@ function Initialize-Module {
     $installTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($installTab)
 
-    # Tab 2: GPO Software Packages
-    $gpoTab = New-Object System.Windows.Forms.TabPage
-    $gpoTab.Text = "GPO Software Packages"
-    $gpoTab.UseVisualStyleBackColor = $true
-    $tabControl.TabPages.Add($gpoTab)
-
-    # Tab 3: Check for Updates
+    # Tab 2: Check for Updates — compares installed versions against Useful_Software share
     $updatesTab = New-Object System.Windows.Forms.TabPage
     $updatesTab.Text = "Check for Updates"
     $updatesTab.UseVisualStyleBackColor = $true
@@ -1168,6 +676,16 @@ function Initialize-Module {
     $refreshBtn.Width = 70
     $refreshBtn.Height = 30
     $sourcePanel.Controls.Add($refreshBtn)
+
+    $script:connectShareBtn = New-Object System.Windows.Forms.Button
+    $script:connectShareBtn.Text = "Connect to Share"
+    $script:connectShareBtn.Width = 120
+    $script:connectShareBtn.Height = 30
+    $script:connectShareBtn.Visible = $false  # Shown only when Network Share source is selected
+    $script:connectShareBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
+    $script:connectShareBtn.ForeColor = [System.Drawing.Color]::White
+    $script:connectShareBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $sourcePanel.Controls.Add($script:connectShareBtn)
 
     $mainPanel.Controls.Add($sourcePanel, 0, 0)
     #endregion
@@ -1550,6 +1068,7 @@ function Initialize-Module {
     $script:currentPath = ""
     $script:networkPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
     $script:localPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "localPath" -Default ""
+    $script:networkUncPath = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkUncPath" -Default $script:networkPath
 
     # Function to refresh app list (uses $script: scoped variables)
     $script:RefreshAppList = {
@@ -1560,11 +1079,26 @@ function Initialize-Module {
         $path = $script:pathTextBox.Text.Trim()
         $script:currentPath = $path
 
-        if (-not $path -or -not (Test-Path $path)) {
+        if (-not $path) {
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:installerLogBox.AppendText("[$timestamp] Invalid path: $path`r`n")
-            $script:installerLogBox.AppendText("[$timestamp] Enter a valid local or network path (e.g., C:\Installers or \\server\share)`r`n")
-            Set-AppError "Invalid path: $path"
+            $script:installerLogBox.AppendText("[$timestamp] No path specified.`r`n")
+            Set-AppError "No path specified."
+            return
+        }
+
+        if (-not (Test-Path $path -ErrorAction SilentlyContinue)) {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $isNetwork = ($script:sourceCombo.SelectedIndex -eq 0) -or $path.StartsWith("\\")
+            if ($isNetwork) {
+                $script:installerLogBox.AppendText("[$timestamp] Cannot access share: $path`r`n")
+                $script:installerLogBox.AppendText("[$timestamp] Click 'Connect to Share' to authenticate with share credentials.`r`n")
+                Set-AppError "Network share inaccessible — click Connect to Share"
+            }
+            else {
+                $script:installerLogBox.AppendText("[$timestamp] Invalid path: $path`r`n")
+                $script:installerLogBox.AppendText("[$timestamp] Enter a valid local or USB path (e.g., C:\Installers)`r`n")
+                Set-AppError "Invalid path: $path"
+            }
             return
         }
 
@@ -1647,12 +1181,21 @@ function Initialize-Module {
         if ($script:sourceCombo.SelectedIndex -eq 0) {
             $script:pathTextBox.Text = $script:networkPath
             $script:currentPath = $script:networkPath
+            $script:connectShareBtn.Visible = $true
         }
         else {
             $script:pathTextBox.Text = $script:localPath
             $script:currentPath = $script:localPath
+            $script:connectShareBtn.Visible = $false
         }
         & $script:RefreshAppList
+    })
+
+    $script:connectShareBtn.Add_Click({
+        $connected = Connect-NetworkShare
+        if ($connected) {
+            & $script:RefreshAppList
+        }
     })
 
     # Enter key in path textbox triggers refresh
@@ -1791,292 +1334,6 @@ Requires Elevation: $elevText
 
     #endregion Install Software Tab
 
-    #region GPO Software Packages Tab
-
-    $script:GPOPackagesList = @()
-
-    # GPO panel layout
-    $gpoPanel = New-Object System.Windows.Forms.TableLayoutPanel
-    $gpoPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $gpoPanel.RowCount = 4
-    $gpoPanel.ColumnCount = 1
-    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80))) | Out-Null
-    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
-    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
-    $gpoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
-
-    # Row 0: Info and Query button
-    $gpoHeaderPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $gpoHeaderPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $gpoHeaderPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-    $gpoHeaderPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
-
-    $gpoInfoLabel = New-Object System.Windows.Forms.Label
-    $gpoInfoLabel.Text = "Query all software packages available in Active Directory Group Policies"
-    $gpoInfoLabel.AutoSize = $true
-    $gpoInfoLabel.ForeColor = [System.Drawing.Color]::Gray
-    $gpoHeaderPanel.Controls.Add($gpoInfoLabel)
-
-    $gpoButtonRow = New-Object System.Windows.Forms.FlowLayoutPanel
-    $gpoButtonRow.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-    $gpoButtonRow.AutoSize = $true
-
-    $queryGPOBtn = New-Object System.Windows.Forms.Button
-    $queryGPOBtn.Text = "Query GPO Packages"
-    $queryGPOBtn.Width = 150
-    $queryGPOBtn.Height = 35
-    $queryGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
-    $gpoButtonRow.Controls.Add($queryGPOBtn)
-
-    $credentialBtn = New-Object System.Windows.Forms.Button
-    $credentialBtn.Text = "Set Credentials..."
-    $credentialBtn.Width = 120
-    $credentialBtn.Height = 35
-    $gpoButtonRow.Controls.Add($credentialBtn)
-
-    $forceGPOBtn = New-Object System.Windows.Forms.Button
-    $forceGPOBtn.Text = "Force GPO Update"
-    $forceGPOBtn.Width = 140
-    $forceGPOBtn.Height = 35
-    $forceGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
-    $gpoButtonRow.Controls.Add($forceGPOBtn)
-
-    # Store credentials at script level
-    $script:GPOCredential = $null
-    $script:credentialLabel = New-Object System.Windows.Forms.Label
-    $script:credentialLabel.Text = "Using current user credentials"
-    $script:credentialLabel.AutoSize = $true
-    $script:credentialLabel.ForeColor = [System.Drawing.Color]::Gray
-    $script:credentialLabel.Padding = New-Object System.Windows.Forms.Padding(5, 8, 0, 0)
-    $gpoButtonRow.Controls.Add($script:credentialLabel)
-
-    $gpoHeaderPanel.Controls.Add($gpoButtonRow)
-    $gpoPanel.Controls.Add($gpoHeaderPanel, 0, 0)
-
-    # Row 1: GPO Packages ListView
-    $gpoListGroup = New-Object System.Windows.Forms.GroupBox
-    $gpoListGroup.Text = "GPO Software Packages"
-    $gpoListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $gpoListGroup.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $script:gpoListView = New-Object System.Windows.Forms.ListView
-    $script:gpoListView.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $script:gpoListView.View = [System.Windows.Forms.View]::Details
-    $script:gpoListView.CheckBoxes = $true
-    $script:gpoListView.FullRowSelect = $true
-    $script:gpoListView.GridLines = $true
-    $script:gpoListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-
-    $script:gpoListView.Columns.Add("Package Name", 250) | Out-Null
-    $script:gpoListView.Columns.Add("Deployment", 100) | Out-Null
-    $script:gpoListView.Columns.Add("GPO Name", 200) | Out-Null
-    $script:gpoListView.Columns.Add("Network Path", 300) | Out-Null
-
-    $gpoListGroup.Controls.Add($script:gpoListView)
-    $gpoPanel.Controls.Add($gpoListGroup, 0, 1)
-
-    # Row 2: Action buttons
-    $gpoActionPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $gpoActionPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $gpoActionPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $installGPOBtn = New-Object System.Windows.Forms.Button
-    $installGPOBtn.Text = "Install Selected"
-    $installGPOBtn.Width = 135
-    $installGPOBtn.Height = 30
-    $installGPOBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
-    $gpoActionPanel.Controls.Add($installGPOBtn)
-
-    $selectAllGPOBtn = New-Object System.Windows.Forms.Button
-    $selectAllGPOBtn.Text = "Select All"
-    $selectAllGPOBtn.Width = 80
-    $selectAllGPOBtn.Height = 30
-    $gpoActionPanel.Controls.Add($selectAllGPOBtn)
-
-    $clearGPOBtn = New-Object System.Windows.Forms.Button
-    $clearGPOBtn.Text = "Clear"
-    $clearGPOBtn.Width = 60
-    $clearGPOBtn.Height = 30
-    $gpoActionPanel.Controls.Add($clearGPOBtn)
-
-    $gpoPanel.Controls.Add($gpoActionPanel, 0, 2)
-
-    # Row 3: GPO log
-    $gpoLogGroup = New-Object System.Windows.Forms.GroupBox
-    $gpoLogGroup.Text = "GPO Log"
-    $gpoLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $gpoLogGroup.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $script:gpoLogBox = New-Object System.Windows.Forms.TextBox
-    $script:gpoLogBox.Multiline = $true
-    $script:gpoLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:gpoLogBox.ReadOnly = $true
-    $script:gpoLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:gpoLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    $script:gpoLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
-    $script:gpoLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-
-    $gpoLogGroup.Controls.Add($script:gpoLogBox)
-    $gpoPanel.Controls.Add($gpoLogGroup, 0, 3)
-
-    # Event handlers for GPO tab
-
-    # Credential button
-    $credentialBtn.Add_Click({
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:gpoLogBox.AppendText("[$timestamp] Prompting for enterprise admin credentials...`r`n")
-
-        # Use the credential wrapper from main script
-        $cred = Get-ElevatedCredential -Message "Enter enterprise admin credentials for GPO query"
-
-        if ($cred) {
-            $script:GPOCredential = $cred
-            $script:credentialLabel.Text = "Using: $($cred.UserName)"
-            $script:credentialLabel.ForeColor = [System.Drawing.Color]::Green
-            $script:gpoLogBox.AppendText("[$timestamp] Credentials set: $($cred.UserName)`r`n")
-        }
-        else {
-            $script:gpoLogBox.AppendText("[$timestamp] Credential prompt cancelled`r`n")
-        }
-        $script:gpoLogBox.ScrollToCaret()
-    })
-
-    # Query GPO button
-    $queryGPOBtn.Add_Click({
-        $script:gpoListView.Items.Clear()
-        $script:GPOPackagesList = @()
-
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:gpoLogBox.AppendText("[$timestamp] Querying Group Policy software assignments...`r`n")
-        Start-AppActivity "Querying GPO..."
-
-        $packages = & $script:QueryGPOSoftware -LogBox $script:gpoLogBox -Credential $script:GPOCredential
-        $script:GPOPackagesList = $packages
-        Clear-AppStatus
-
-        # Populate ListView
-        foreach ($pkg in $packages) {
-            $item = New-Object System.Windows.Forms.ListViewItem($pkg.Name)
-            $item.SubItems.Add($pkg.DeploymentType) | Out-Null
-            $item.SubItems.Add($pkg.GPOName) | Out-Null
-            $item.SubItems.Add($pkg.Path) | Out-Null
-            $item.Tag = $pkg
-            $script:gpoListView.Items.Add($item) | Out-Null
-        }
-
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:gpoLogBox.AppendText("[$timestamp] Query complete. Found $($packages.Count) package(s).`r`n")
-        $script:gpoLogBox.ScrollToCaret()
-    })
-
-    # Force GPO Update button
-    $forceGPOBtn.Add_Click({
-        $confirm = [System.Windows.Forms.MessageBox]::Show(
-            "Force Group Policy update?`n`nThis will apply all GPO settings immediately, including software installations assigned via GPO.`n`nThis may take several minutes.",
-            "Force GPO Update",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Question
-        )
-
-        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:gpoLogBox.AppendText("[$timestamp] Running gpupdate /force...`r`n")
-            $script:gpoLogBox.ScrollToCaret()
-            Start-AppActivity "Running GPO update..."
-
-            try {
-                # Run gpupdate with timeout
-                $result = Start-Process -FilePath "gpupdate.exe" -ArgumentList "/force", "/target:computer", "/wait:0" -Wait -PassThru -NoNewWindow
-
-                $timestamp = Get-Date -Format "HH:mm:ss"
-
-                if ($result.ExitCode -eq 0) {
-                    $script:gpoLogBox.AppendText("[$timestamp] SUCCESS: Group Policy updated`r`n")
-                    $script:gpoLogBox.AppendText("[$timestamp] Software installations should apply shortly.`r`n")
-                }
-                else {
-                    $script:gpoLogBox.AppendText("[$timestamp] WARNING: gpupdate completed with exit code $($result.ExitCode)`r`n")
-                }
-            }
-            catch {
-                $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:gpoLogBox.AppendText("[$timestamp] ERROR: $_`r`n")
-            }
-
-            Clear-AppStatus
-            $script:gpoLogBox.ScrollToCaret()
-        }
-    })
-
-    # Install Selected button
-    $installGPOBtn.Add_Click({
-        $selectedItems = @()
-        foreach ($item in $script:gpoListView.CheckedItems) {
-            $selectedItems += $item.Tag
-        }
-
-        if ($selectedItems.Count -eq 0) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Please select at least one package to install.",
-                "No Selection",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            return
-        }
-
-        $confirm = [System.Windows.Forms.MessageBox]::Show(
-            "Install $($selectedItems.Count) package(s) directly from GPO network share?`n`nThis bypasses GPO deployment but uses the same approved packages.",
-            "Confirm GPO Install",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Question
-        )
-
-        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            $total = $selectedItems.Count
-            $current = 0
-
-            foreach ($pkg in $selectedItems) {
-                $current++
-                Set-AppProgress -Value $current -Maximum $total -Message "Installing $current of $total`: $($pkg.Name)"
-                & $script:InstallGPOPackage -Package $pkg -LogBox $script:gpoLogBox
-            }
-
-            Clear-AppStatus
-            $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:gpoLogBox.AppendText("[$timestamp] --- Installation batch complete ---`r`n")
-            $script:gpoLogBox.AppendText("[$timestamp] Click 'Query GPO Packages' to refresh status.`r`n")
-            $script:gpoLogBox.ScrollToCaret()
-        }
-    })
-
-    # Select All button
-    $selectAllGPOBtn.Add_Click({
-        foreach ($item in $script:gpoListView.Items) {
-            $item.Checked = $true
-        }
-    })
-
-    # Clear button
-    $clearGPOBtn.Add_Click({
-        foreach ($item in $script:gpoListView.Items) {
-            $item.Checked = $false
-        }
-    })
-
-    $gpoTab.Controls.Add($gpoPanel)
-
-    # Initial log
-    $timestamp = Get-Date -Format "HH:mm:ss"
-    $script:gpoLogBox.AppendText("[$timestamp] GPO Software Packages ready.`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] Click 'Set Credentials...' to provide enterprise admin credentials.`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] Click 'Query GPO Packages' to scan all software in Active Directory GPOs.`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp]`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] NOTE: This feature queries ALL software packages in AD GPOs.`r`n")
-    $script:gpoLogBox.AppendText("[$timestamp] You can install any RUSH-approved package from the catalog.`r`n")
-
-    #endregion GPO Software Packages Tab
-
     #region Check for Updates Tab
 
     # Updates panel layout
@@ -2102,9 +1359,7 @@ Requires Elevation: $elevText
     $scanPanel.Controls.Add($scanBtn)
 
     $scanInfoLabel = New-Object System.Windows.Forms.Label
-    # WinGet disabled for stable branch - hospital environment blocks it
-    # $scanInfoLabel.Text = "Scan for application updates using Windows Package Manager (WinGet)"
-    $scanInfoLabel.Text = "Note: Automatic updates disabled. Use manual installer scanning (Browse Folder tab)"
+    $scanInfoLabel.Text = "Compare installed versions against Useful_Software share installers"
     $scanInfoLabel.AutoSize = $true
     $scanInfoLabel.Padding = New-Object System.Windows.Forms.Padding(10, 10, 0, 0)
     $scanInfoLabel.ForeColor = [System.Drawing.Color]::Gray
@@ -2196,11 +1451,7 @@ Requires Elevation: $elevText
         $script:updateLogBox.AppendText("[$timestamp] Checking for updates...`r`n")
         Start-AppActivity "Scanning for updates..."
 
-        # WinGet disabled for stable branch
-        # $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
-        $updates = @()
-        $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled for stable branch`r`n")
-        $script:updateLogBox.AppendText("[$timestamp] Use 'Browse Folder' tab to install software manually`r`n")
+        $updates = & $script:ScanForUpdates -LogBox $script:updateLogBox
         $script:UpdatesList = $updates
         Clear-AppStatus
 
@@ -2264,10 +1515,7 @@ Requires Elevation: $elevText
             foreach ($app in $selectedItems) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
-                # WinGet disabled for stable branch
-                # & $script:UpdateApp -App $app -LogBox $script:updateLogBox
-                $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled - cannot update $($app.Name)`r`n")
+                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
             }
 
             Clear-AppStatus
@@ -2304,10 +1552,7 @@ Requires Elevation: $elevText
             foreach ($app in $script:UpdatesList) {
                 $current++
                 Set-AppProgress -Value $current -Maximum $total -Message "Updating $current of $total`: $($app.Name)"
-                # WinGet disabled for stable branch
-                # & $script:UpdateApp -App $app -LogBox $script:updateLogBox
-                $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:updateLogBox.AppendText("[$timestamp] WinGet updates disabled - cannot update $($app.Name)`r`n")
+                & $script:UpdateApp -App $app -LogBox $script:updateLogBox
             }
 
             Clear-AppStatus
@@ -2324,243 +1569,8 @@ Requires Elevation: $elevText
     $timestamp = Get-Date -Format "HH:mm:ss"
     $script:updateLogBox.AppendText("[$timestamp] Software Updates ready.`r`n")
     $script:updateLogBox.AppendText("[$timestamp] Click 'Check for Updates' to scan for available updates.`r`n")
-    #>
+
     #endregion Check for Updates Tab
-
-    #region HP Drivers (HPIA) Tab
-
-    $hpiaTab = New-Object System.Windows.Forms.TabPage
-    $hpiaTab.Text = "HP Drivers (HPIA)"
-    $hpiaTab.UseVisualStyleBackColor = $true
-    $tabControl.TabPages.Add($hpiaTab)
-
-    $hpiaPanel = New-Object System.Windows.Forms.TableLayoutPanel
-    $hpiaPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $hpiaPanel.RowCount = 4
-    $hpiaPanel.ColumnCount = 1
-    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80))) | Out-Null
-    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
-    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50))) | Out-Null
-    $hpiaPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null
-
-    # Row 0: Status + Scan button
-    $hpiaScanPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $hpiaScanPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $hpiaScanPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $script:hpiaStatusLabel = New-Object System.Windows.Forms.Label
-    $script:hpiaStatusLabel.AutoSize = $true
-    $script:hpiaStatusLabel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 15, 0)
-    $script:hpiaStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
-
-    # Detect status on load
-    $isHP = & $script:DetectHP
-    $hpiaPath = & $script:GetHPIAPath
-    if (-not $isHP) {
-        $script:hpiaStatusLabel.Text = "Status: Not an HP machine"
-        $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::Gray
-    } elseif (-not $hpiaPath) {
-        $script:hpiaStatusLabel.Text = "Status: HPIA not found - place hp-hpia-*.exe in Tools\HPIA"
-        $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::OrangeRed
-    } else {
-        $script:hpiaStatusLabel.Text = "Status: HPIA ready ($hpiaPath)"
-        $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::Green
-    }
-    $hpiaScanPanel.Controls.Add($script:hpiaStatusLabel)
-
-    # Force new row in FlowLayoutPanel
-    $hpiaSpacer = New-Object System.Windows.Forms.Label
-    $hpiaSpacer.Text = ""
-    $hpiaSpacer.Width = 2000
-    $hpiaSpacer.Height = 1
-    $hpiaScanPanel.Controls.Add($hpiaSpacer)
-
-    $hpiaScanBtn = New-Object System.Windows.Forms.Button
-    $hpiaScanBtn.Text = "Scan Drivers"
-    $hpiaScanBtn.Width = 120
-    $hpiaScanBtn.Height = 30
-    $hpiaScanBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
-    $hpiaScanPanel.Controls.Add($hpiaScanBtn)
-
-    $hpiaDownloadLink = New-Object System.Windows.Forms.LinkLabel
-    $hpiaDownloadLink.Text = "Download HPIA"
-    $hpiaDownloadLink.AutoSize = $true
-    $hpiaDownloadLink.Padding = New-Object System.Windows.Forms.Padding(15, 8, 0, 0)
-    $hpiaDownloadLink.Add_LinkClicked({
-        Start-Process "https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html"
-    })
-    $hpiaScanPanel.Controls.Add($hpiaDownloadLink)
-
-    $hpiaPanel.Controls.Add($hpiaScanPanel, 0, 0)
-
-    # Row 1: Driver ListView
-    $hpiaListGroup = New-Object System.Windows.Forms.GroupBox
-    $hpiaListGroup.Text = "HP Driver Status"
-    $hpiaListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $hpiaListGroup.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $script:hpiaListView = New-Object System.Windows.Forms.ListView
-    $script:hpiaListView.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $script:hpiaListView.View = [System.Windows.Forms.View]::Details
-    $script:hpiaListView.FullRowSelect = $true
-    $script:hpiaListView.GridLines = $true
-    $script:hpiaListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-
-    $script:hpiaListView.Columns.Add("Driver", 300) | Out-Null
-    $script:hpiaListView.Columns.Add("Priority", 100) | Out-Null
-    $script:hpiaListView.Columns.Add("SoftPaq", 100) | Out-Null
-    $script:hpiaListView.Columns.Add("Version", 120) | Out-Null
-
-    $hpiaListGroup.Controls.Add($script:hpiaListView)
-    $hpiaPanel.Controls.Add($hpiaListGroup, 0, 1)
-
-    # Row 2: Install buttons
-    $hpiaButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $hpiaButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $hpiaButtonPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $hpiaInstallAllBtn = New-Object System.Windows.Forms.Button
-    $hpiaInstallAllBtn.Text = "Install All"
-    $hpiaInstallAllBtn.Width = 100
-    $hpiaInstallAllBtn.Height = 30
-    $hpiaInstallAllBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 250, 230)
-    $hpiaButtonPanel.Controls.Add($hpiaInstallAllBtn)
-
-    $hpiaInstallCritBtn = New-Object System.Windows.Forms.Button
-    $hpiaInstallCritBtn.Text = "Install Critical"
-    $hpiaInstallCritBtn.Width = 120
-    $hpiaInstallCritBtn.Height = 30
-    $hpiaInstallCritBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
-    $hpiaButtonPanel.Controls.Add($hpiaInstallCritBtn)
-
-    $hpiaInstallRecBtn = New-Object System.Windows.Forms.Button
-    $hpiaInstallRecBtn.Text = "Install Critical + Recommended"
-    $hpiaInstallRecBtn.Width = 210
-    $hpiaInstallRecBtn.Height = 30
-    $hpiaInstallRecBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
-    $hpiaButtonPanel.Controls.Add($hpiaInstallRecBtn)
-
-    $hpiaPanel.Controls.Add($hpiaButtonPanel, 0, 2)
-
-    # Row 3: HPIA Log
-    $hpiaLogGroup = New-Object System.Windows.Forms.GroupBox
-    $hpiaLogGroup.Text = "HPIA Log"
-    $hpiaLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $hpiaLogGroup.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $script:hpiaLogBox = New-Object System.Windows.Forms.TextBox
-    $script:hpiaLogBox.Multiline = $true
-    $script:hpiaLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:hpiaLogBox.ReadOnly = $true
-    $script:hpiaLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:hpiaLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    $script:hpiaLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
-    $script:hpiaLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-
-    $hpiaLogGroup.Controls.Add($script:hpiaLogBox)
-    $hpiaPanel.Controls.Add($hpiaLogGroup, 0, 3)
-
-    # HPIA log helper
-    $script:hpiaLog = {
-        param([string]$Message)
-        $ts = Get-Date -Format "HH:mm:ss"
-        $script:hpiaLogBox.AppendText("[$ts] $Message`r`n")
-        $script:hpiaLogBox.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-    }
-
-    # Event: Scan Drivers
-    $hpiaScanBtn.Add_Click({
-        $script:hpiaListView.Items.Clear()
-        $script:hpiaLogBox.Clear()
-
-        if (-not (& $script:DetectHP)) {
-            & $script:hpiaLog "This is not an HP machine. HP driver scanning is not available."
-            return
-        }
-
-        # Re-check HPIA path (in case user just dropped the installer)
-        $script:HPIAPath = $null
-        $hpiaPath = & $script:GetHPIAPath
-        if ($hpiaPath) {
-            $script:hpiaStatusLabel.Text = "Status: HPIA ready ($hpiaPath)"
-            $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::Green
-        } else {
-            $script:hpiaStatusLabel.Text = "Status: HPIA not found - place hp-hpia-*.exe in Tools\HPIA"
-            $script:hpiaStatusLabel.ForeColor = [System.Drawing.Color]::OrangeRed
-            & $script:hpiaLog "HPIA not found. Download from https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html"
-            & $script:hpiaLog "Or place hp-hpia-*.exe in the Tools\HPIA folder and click Scan again."
-            return
-        }
-
-        Start-AppActivity "Scanning HP drivers..."
-        $findings = & $script:RunHPIAAnalysis -Log $script:hpiaLog
-        $script:HPIAFindings = $findings
-
-        foreach ($f in $findings) {
-            $item = New-Object System.Windows.Forms.ListViewItem($f.Name)
-            $item.SubItems.Add($f.Priority) | Out-Null
-            $item.SubItems.Add($f.SoftPaq) | Out-Null
-            $item.SubItems.Add($f.Version) | Out-Null
-
-            # Color by priority
-            switch ($f.Priority) {
-                "Critical" { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220) }
-                "Recommended" { $item.BackColor = [System.Drawing.Color]::FromArgb(255, 245, 220) }
-            }
-
-            $script:hpiaListView.Items.Add($item) | Out-Null
-        }
-
-        Clear-AppStatus
-
-        if ($findings.Count -eq 0) {
-            & $script:hpiaLog "Scan complete. All HP drivers are up to date."
-        } else {
-            & $script:hpiaLog "Scan complete. Found $($findings.Count) driver(s) needing updates."
-        }
-
-        Write-SessionLog -Message "HPIA scan: $($findings.Count) drivers need updates" -Category "Software"
-    })
-
-    # Event: Install All
-    $hpiaInstallAllBtn.Add_Click({
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
-        if ($cred) {
-            & $script:RunHPIAUpdate -Log $script:hpiaLog -Credential $cred -Selection "All"
-        }
-    })
-
-    # Event: Install Critical
-    $hpiaInstallCritBtn.Add_Click({
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
-        if ($cred) {
-            & $script:RunHPIAUpdate -Log $script:hpiaLog -Credential $cred -Selection "Critical"
-        }
-    })
-
-    # Event: Install Critical + Recommended
-    $hpiaInstallRecBtn.Add_Click({
-        $cred = Get-ElevatedCredential -Message "Enter admin credentials for HP driver updates"
-        if ($cred) {
-            & $script:RunHPIAUpdate -Log $script:hpiaLog -Credential $cred -Selection "Recommended"
-        }
-    })
-
-    # Initial log message
-    $hpiaTimestamp = Get-Date -Format "HH:mm:ss"
-    $script:hpiaLogBox.AppendText("[$hpiaTimestamp] HP Drivers (HPIA) ready.`r`n")
-    if ($isHP -and $hpiaPath) {
-        $script:hpiaLogBox.AppendText("[$hpiaTimestamp] Click 'Scan Drivers' to check for HP driver updates.`r`n")
-    } elseif ($isHP) {
-        $script:hpiaLogBox.AppendText("[$hpiaTimestamp] HPIA not found. Place hp-hpia-5.3.3.exe (or newer) in Tools\HPIA and click Scan.`r`n")
-    } else {
-        $script:hpiaLogBox.AppendText("[$hpiaTimestamp] Not an HP machine - HP driver features are unavailable.`r`n")
-    }
-
-    $hpiaTab.Controls.Add($hpiaPanel)
-
-    #endregion HP Drivers (HPIA) Tab
 
     # Add TabControl to main tab
     $tab.Controls.Add($tabControl)

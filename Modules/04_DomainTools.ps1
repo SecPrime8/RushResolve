@@ -302,14 +302,24 @@ $script:RunGPUpdate = {
     [System.Windows.Forms.Application]::DoEvents()
 
     try {
-        $output = gpupdate $args.Split(' ') 2>&1
-        foreach ($line in $output) {
-            if ($line -and $line.ToString().Trim()) {
-                $LogBox.AppendText("[$timestamp]   $line`r`n")
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "gpupdate.exe"
+        $psi.Arguments = $args
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        while (-not $proc.StandardOutput.EndOfStream) {
+            $line = $proc.StandardOutput.ReadLine()
+            if ($line -and $line.Trim()) {
+                $ts = Get-Date -Format "HH:mm:ss"
+                $LogBox.AppendText("[$ts]   $line`r`n")
                 $LogBox.ScrollToCaret()
                 [System.Windows.Forms.Application]::DoEvents()
             }
         }
+        $proc.WaitForExit()
         $LogBox.AppendText("[$timestamp] GPUpdate complete`r`n")
         return @{ Success = $true; Message = "Group policy updated" }
     }
