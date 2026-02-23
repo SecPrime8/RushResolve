@@ -468,6 +468,33 @@ $script:ReconnectWifi = {
     $LogBox.ScrollToCaret()
 }
 
+# Run WLAN report
+$script:RunWlanReport = {
+    param([System.Windows.Forms.TextBox]$LogBox)
+
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $LogBox.AppendText("[$timestamp] Generating WLAN report...`r`n")
+    $LogBox.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+
+    try {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $output = netsh wlan show wlanreport 2>&1
+        foreach ($line in $output) {
+            if ($line -and $line.Trim()) {
+                $LogBox.AppendText("[$timestamp] $line`r`n")
+                $LogBox.ScrollToCaret()
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+        $LogBox.AppendText("`r`n[$timestamp] WLAN report complete.`r`n")
+    }
+    catch {
+        $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+    }
+    $LogBox.ScrollToCaret()
+}
+
 #endregion
 
 #region Initialize Module
@@ -490,6 +517,7 @@ function Initialize-Module {
     $getWirelessRef = $script:GetWirelessInfo
     $scanNetworksRef = $script:ScanNetworks
     $reconnectWifiRef = $script:ReconnectWifi
+    $runWlanReportRef = $script:RunWlanReport
 
     # Create diag log FIRST so all buttons can reference it
     $script:diagLogBox = New-Object System.Windows.Forms.TextBox
@@ -917,7 +945,7 @@ function Initialize-Module {
 
     $networksBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $networksBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
-    $networksBtnPanel.Height = 35
+    $networksBtnPanel.Height = 70
 
     $scanBtn = New-Object System.Windows.Forms.Button
     $scanBtn.Text = "Scan Networks"
@@ -975,6 +1003,45 @@ function Initialize-Module {
         )
     }.GetNewClosure())
     $networksBtnPanel.Controls.Add($copyNetworksBtn)
+
+    # WLAN Report button
+    $wlanReportBtn = New-Object System.Windows.Forms.Button
+    $wlanReportBtn.Text = "WLAN Report"
+    $wlanReportBtn.Width = 100
+    $wlanReportBtn.Add_Click({
+        & $runWlanReportRef -LogBox $diagLogBoxRef
+    }.GetNewClosure())
+    $networksBtnPanel.Controls.Add($wlanReportBtn)
+
+    # Copy Report button
+    $copyReportBtn = New-Object System.Windows.Forms.Button
+    $copyReportBtn.Text = "Copy Report"
+    $copyReportBtn.Width = 90
+    $copyReportBtn.Add_Click({
+        $reportText = $diagLogBoxRef.Text
+        if ($reportText.Trim()) {
+            $header = "=== WLAN Report - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===`r`n"
+            [System.Windows.Forms.Clipboard]::SetText($header + $reportText)
+            [System.Windows.Forms.MessageBox]::Show("Report copied to clipboard.", "Copied", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("No report data to copy. Run WLAN Report first.", "Empty", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    }.GetNewClosure())
+    $networksBtnPanel.Controls.Add($copyReportBtn)
+
+    # Open HTML Report button
+    $openHtmlBtn = New-Object System.Windows.Forms.Button
+    $openHtmlBtn.Text = "Open HTML"
+    $openHtmlBtn.Width = 85
+    $openHtmlBtn.Add_Click({
+        $htmlPath = "C:\ProgramData\Microsoft\Windows\WlanReport\wlan-report-latest.html"
+        if (Test-Path $htmlPath) {
+            Start-Process $htmlPath
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("HTML report not found. Run WLAN Report first.", "Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    }.GetNewClosure())
+    $networksBtnPanel.Controls.Add($openHtmlBtn)
 
     $networksPanel.Controls.Add($script:networksListView)
     $networksPanel.Controls.Add($networksBtnPanel)

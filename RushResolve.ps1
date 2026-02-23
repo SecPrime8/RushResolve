@@ -3,12 +3,79 @@
     Rush Resolve - Portable IT Technician Toolbox
 .DESCRIPTION
     Modular PowerShell GUI application for IT technicians.
-    Runs as standard user with on-demand credential elevation.
+    Self-elevates using cached ENT credentials on launch for full feature access.
 .NOTES
     Version: 2.0
     Author: Rush IT Field Services
     Requires: PowerShell 5.1+, Windows 10/11
 #>
+
+#region Self-Elevation
+$_isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $_isAdmin) {
+    $_logFile = Join-Path $PSScriptRoot "elevation-error.log"
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName Microsoft.VisualBasic
+
+        $_configPath = Join-Path $PSScriptRoot "Config"
+        $_credFile   = Join-Path $_configPath "credential.dat"
+        $_pinFile    = Join-Path $_configPath "credential.pin"
+        $_cred       = $null
+
+        if ((Test-Path $_credFile) -and (Test-Path $_pinFile)) {
+            $_pin = [Microsoft.VisualBasic.Interaction]::InputBox("Enter your PIN to launch RushResolve elevated:", "RushResolve - ENT Elevation", "")
+            if ($_pin) {
+                $_storedHash = (Get-Content $_pinFile -Raw).Trim()
+                $_pinHash    = [System.BitConverter]::ToString(
+                    [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                        [System.Text.Encoding]::UTF8.GetBytes($_pin)
+                    )
+                ).Replace("-","")
+
+                if ($_pinHash -eq $_storedHash) {
+                    $_encrypted  = [System.IO.File]::ReadAllBytes($_credFile)
+                    $_salt       = [byte[]]$_encrypted[0..15]
+                    $_iv         = [byte[]]$_encrypted[16..31]
+                    $_cipher     = [byte[]]$_encrypted[32..($_encrypted.Length - 1)]
+                    $_derive     = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($_pin, $_salt, 10000)
+                    $_key        = $_derive.GetBytes(32)
+                    $_derive.Dispose()
+                    $_aes        = [System.Security.Cryptography.Aes]::Create()
+                    $_aes.Key    = $_key
+                    $_aes.IV     = $_iv
+                    $_aes.Mode   = [System.Security.Cryptography.CipherMode]::CBC
+                    $_aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+                    $_dec        = $_aes.CreateDecryptor()
+                    $_plain      = [System.Text.Encoding]::UTF8.GetString($_dec.TransformFinalBlock($_cipher, 0, $_cipher.Length))
+                    $_aes.Dispose(); $_dec.Dispose()
+                    $_parts      = $_plain -split '\|', 2
+                    if ($_parts.Count -eq 2) {
+                        $_cred = New-Object System.Management.Automation.PSCredential(
+                            $_parts[0],
+                            (ConvertTo-SecureString $_parts[1] -AsPlainText -Force)
+                        )
+                    }
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show("Incorrect PIN.", "RushResolve", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+                }
+            }
+        }
+
+        if ($_cred) {
+            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Credential $_cred
+        } else {
+            Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+        }
+    }
+    catch {
+        $_ | Out-File $_logFile -Force
+        [System.Windows.Forms.MessageBox]::Show("Elevation error: $_`n`nSee: $_logFile", "RushResolve", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    }
+    exit
+}
+#endregion
 
 #region Assembly Loading
 Add-Type -AssemblyName System.Windows.Forms
@@ -183,7 +250,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.5.0"  # Stability & TDD release
+$script:AppVersion = "2.6.1-beta.1"
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -202,6 +269,12 @@ $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
 $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
+
+# Share credential caching (separate from admin creds — used for UNC share access)
+$script:ShareCredentialFile = Join-Path $script:ConfigPath "share-credential.dat"
+$script:SharePINFile = Join-Path $script:ConfigPath "share-credential.pin"
+$script:CachedShareCredential = $null    # PSCredential for network share access
+$script:ShareCredentialPINHash = $null  # SHA256 hash of share credential PIN
 
 # Session logging
 $script:LogsPath = Join-Path $script:AppPath "Logs"
@@ -1892,10 +1965,16 @@ function Start-ElevatedProcess {
             }
             if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
             if ($Hidden) { $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
-            if ($Wait) { $startParams.Wait = $true }
+            # Don't use -Wait switch, we'll wait manually with DoEvents
+            # if ($Wait) { $startParams.Wait = $true }
 
             $process = Start-Process @startParams
             if ($Wait -and $process) {
+                # Wait for process with UI responsiveness
+                while (-not $process.HasExited) {
+                    Start-Sleep -Milliseconds 100
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
                 $result.ExitCode = $process.ExitCode
                 $result.Success = ($process.ExitCode -eq 0)
                 if (-not $result.Success) { $result.Error = "Process exited with code $($process.ExitCode)" }
@@ -1937,11 +2016,17 @@ function Start-ElevatedProcess {
         }
         if ($ArgumentList) { $startParams.ArgumentList = $ArgumentList }
         if ($Hidden) { $startParams.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden }
-        if ($Wait) { $startParams.Wait = $true }
+        # Don't use -Wait switch, we'll wait manually with DoEvents
+        # if ($Wait) { $startParams.Wait = $true }
 
         $process = Start-Process @startParams
 
         if ($Wait -and $process) {
+            # Wait for process with UI responsiveness
+            while (-not $process.HasExited) {
+                Start-Sleep -Milliseconds 100
+                [System.Windows.Forms.Application]::DoEvents()
+            }
             $result.ExitCode = $process.ExitCode
             $result.Success = ($process.ExitCode -eq 0)
             if (-not $result.Success) { $result.Error = "Process exited with code $($process.ExitCode)" }
@@ -1978,7 +2063,19 @@ function Start-ElevatedProcess {
         }
 
         $job = Start-Job -ScriptBlock $scriptBlock -Credential $Credential -ArgumentList $FilePath, $ArgumentList, $Hidden, $Wait, $workDir
-        $jobResult = $job | Wait-Job | Receive-Job
+
+        # Poll with DoEvents to keep UI responsive (replaces blocking Wait-Job)
+        $jobStart = Get-Date
+        while ($job.State -eq 'Running') {
+            Start-Sleep -Milliseconds 100
+            [System.Windows.Forms.Application]::DoEvents()
+            if (((Get-Date) - $jobStart).TotalMinutes -gt 5) {
+                Stop-Job $job -ErrorAction SilentlyContinue
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+                throw "Elevated process timed out after 5 minutes"
+            }
+        }
+        $jobResult = Receive-Job $job
         Remove-Job $job -Force
 
         if ($null -eq $jobResult) { $jobResult = 0 }
@@ -1994,12 +2091,181 @@ function Start-ElevatedProcess {
     return $result
 }
 
+function Resolve-ToUNCPath {
+    <#
+    .SYNOPSIS
+        Converts a mapped drive letter to its UNC path.
+    .PARAMETER Path
+        The path to resolve (e.g., "K:\FLDTECH\..." or "\\server\share\...")
+    .OUTPUTS
+        Returns the UNC path if the drive is a network drive, or $null if it's not.
+    #>
+    param([string]$Path)
+
+    # Already UNC? Return as-is
+    if ($Path -match '^\\\\') { return $Path }
+
+    # Extract drive letter
+    if ($Path -notmatch '^([A-Z]):') { return $null }
+    $driveLetter = $matches[1] + ':'
+
+    try {
+        $drive = Get-WmiObject -Class Win32_LogicalDisk -Filter "DeviceID='$driveLetter'" -ErrorAction Stop
+        if ($drive.DriveType -eq 4) {  # Network drive
+            # Replace drive letter with UNC path
+            $uncPath = $Path -replace "^$([regex]::Escape($driveLetter))", $drive.ProviderName
+            return $uncPath
+        }
+    }
+    catch {
+        Write-SessionLog -Message "Failed to resolve drive $driveLetter to UNC: $($_.Exception.Message)" -Category "NetworkShare" -Level "Warning"
+    }
+
+    return $null
+}
+
+function Connect-NetworkShare {
+    <#
+    .SYNOPSIS
+        Establishes an authenticated SMB session to a network share using net use.
+    .PARAMETER SharePath
+        Full UNC path to connect to (e.g., "\\server\share\folder\file.exe")
+    .PARAMETER Credential
+        Optional PSCredential to use. If not provided, will try cached session creds or prompt.
+    .OUTPUTS
+        Hashtable with Success (bool), Error (string), ShareRoot (string)
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$SharePath,
+        [PSCredential]$Credential = $null
+    )
+
+    $result = @{
+        Success = $false
+        Error = $null
+        ShareRoot = $null
+    }
+
+    # Extract share root (\\server\share)
+    if ($SharePath -notmatch '^(\\\\[^\\]+\\[^\\]+)') {
+        $result.Error = "Invalid UNC path: $SharePath"
+        return $result
+    }
+    $shareRoot = $matches[1]
+    $result.ShareRoot = $shareRoot
+
+    # Quick check: already accessible?
+    if (Test-Path $shareRoot -ErrorAction SilentlyContinue) {
+        Write-SessionLog -Message "Share $shareRoot is already accessible (no auth needed)" -Category "NetworkShare"
+        $result.Success = $true
+        $script:ConnectedSharePath = $shareRoot
+        return $result
+    }
+
+    # Disconnect any stale session to this share
+    $existingSession = net use | Select-String -Pattern "^OK\s+$([regex]::Escape($shareRoot))"
+    if ($existingSession) {
+        Write-SessionLog -Message "Disconnecting existing session to $shareRoot" -Category "NetworkShare"
+        net use $shareRoot /delete /yes 2>&1 | Out-Null
+    }
+
+    # Credential cascade
+    $credToUse = $null
+    $isRetry = $false
+
+    if ($Credential) {
+        $credToUse = $Credential
+    }
+    elseif ($script:NetworkShareCredential) {
+        $credToUse = $script:NetworkShareCredential
+        $isRetry = $true  # Mark as retry in case it fails
+        Write-SessionLog -Message "Using cached network share credentials for $shareRoot" -Category "NetworkShare"
+    }
+    else {
+        # Prompt for new credentials
+        $credToUse = Get-Credential -Message "Enter credentials to access $shareRoot"
+        if (-not $credToUse) {
+            $result.Error = "Authentication cancelled by user"
+            return $result
+        }
+    }
+
+    # Extract username and password
+    $username = $credToUse.UserName
+    $password = $credToUse.GetNetworkCredential().Password
+
+    # Auto-prepend domain if username lacks \ or @
+    if ($username -notmatch '\\|@') {
+        $username = "RUSH\$username"
+        Write-SessionLog -Message "Prepending default domain: $username" -Category "NetworkShare"
+    }
+
+    # Attempt connection
+    try {
+        Write-SessionLog -Message "Connecting to $shareRoot as $username..." -Category "NetworkShare"
+        $output = net use $shareRoot /user:$username $password 2>&1
+        $password = $null  # Clear immediately
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-SessionLog -Message "Successfully connected to $shareRoot" -Category "NetworkShare"
+            $result.Success = $true
+            $script:ConnectedSharePath = $shareRoot
+            $script:NetworkShareCredential = $credToUse
+            return $result
+        }
+        else {
+            $result.Error = "net use failed: $($output -join ' ')"
+        }
+    }
+    catch {
+        $password = $null  # Clear on error too
+        $result.Error = "Connection failed: $($_.Exception.Message)"
+    }
+
+    # If we used cached creds and they failed, clear cache and retry once with fresh prompt
+    if ($isRetry -and -not $result.Success) {
+        Write-SessionLog -Message "Cached credentials failed, clearing cache and re-prompting" -Category "NetworkShare" -Level "Warning"
+        $script:NetworkShareCredential = $null
+
+        $newCred = Get-Credential -Message "Previous credentials failed. Enter credentials to access $shareRoot"
+        if ($newCred) {
+            return Connect-NetworkShare -SharePath $SharePath -Credential $newCred
+        }
+        else {
+            $result.Error = "Authentication cancelled after failed retry"
+        }
+    }
+
+    if (-not $result.Success) {
+        Write-SessionLog -Message "Failed to connect to $shareRoot : $($result.Error)" -Category "NetworkShare" -Level "Error"
+    }
+
+    return $result
+}
+
+function Disconnect-NetworkShare {
+    <#
+    .SYNOPSIS
+        Disconnects the active network share session.
+    #>
+    if ($script:ConnectedSharePath) {
+        Write-SessionLog -Message "Disconnecting from $script:ConnectedSharePath" -Category "NetworkShare"
+        net use $script:ConnectedSharePath /delete /yes 2>&1 | Out-Null
+        $script:ConnectedSharePath = $null
+    }
+}
+
 function Clear-CachedCredentials {
     # Clear in-memory credential
     $script:CachedCredential = $null
     $script:CredentialPINHash = $null
     $script:PINLastVerified = $null
     $script:PINFailCount = 0
+
+    # Clear network share credentials and disconnect
+    $script:NetworkShareCredential = $null
+    Disconnect-NetworkShare
 
     # Delete encrypted files from disk
     Remove-EncryptedCredential
@@ -2120,6 +2386,197 @@ function Set-ManualCredentials {
         # User cancelled credential dialog
     }
 }
+#endregion
+
+#region Share Credential Management
+
+function Get-UncShareRoot {
+    <#
+    .SYNOPSIS
+        Returns the UNC share root path for net use authentication.
+        Reads networkUncPath from settings; falls back to networkPath.
+    #>
+    $unc = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkUncPath" -Default ""
+    if (-not $unc) {
+        $unc = Get-ModuleSetting -ModuleName "SoftwareInstaller" -Key "networkPath" -Default ""
+    }
+    return $unc
+}
+
+function Load-ShareEncryptedCredential {
+    if (-not (Test-Path $script:ShareCredentialFile) -or -not (Test-Path $script:SharePINFile)) {
+        return $null
+    }
+    try {
+        $pinHash = (Get-Content $script:SharePINFile -Raw).Trim()
+        $encrypted = Get-Content $script:ShareCredentialFile -Raw
+        return @{ Encrypted = $encrypted; PINHash = $pinHash }
+    }
+    catch { return $null }
+}
+
+function Save-ShareEncryptedCredential {
+    param(
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$PIN
+    )
+    try {
+        $encrypted = Protect-Credential -Credential $Credential -PIN $PIN
+        if ($encrypted) {
+            Set-Content -Path $script:ShareCredentialFile -Value $encrypted -Force
+            $pinHash = Get-PINHash -PIN $PIN
+            Set-Content -Path $script:SharePINFile -Value $pinHash -Force
+            return $true
+        }
+    }
+    catch { Write-SessionLog "Error saving share credential: $_" }
+    return $false
+}
+
+function Remove-ShareEncryptedCredential {
+    if (Test-Path $script:ShareCredentialFile) { Remove-Item $script:ShareCredentialFile -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $script:SharePINFile) { Remove-Item $script:SharePINFile -Force -ErrorAction SilentlyContinue }
+    $script:CachedShareCredential = $null
+    $script:ShareCredentialPINHash = $null
+}
+
+function Get-ShareCredential {
+    <#
+    .SYNOPSIS
+        Returns a PSCredential for share access.
+        Uses cached credential if available, otherwise loads from disk (PIN-protected)
+        or prompts the user to enter and optionally save credentials.
+        Returns $null if user cancels.
+    #>
+    # Return in-memory cached credential
+    if ($script:CachedShareCredential) { return $script:CachedShareCredential }
+
+    # Try loading PIN-protected credential from disk
+    $stored = Load-ShareEncryptedCredential
+    if ($stored) {
+        $pin = Show-PINEntryDialog -Title "Share Credentials" -Message "Enter PIN to unlock share credentials:"
+        if (-not $pin) { return $null }
+        $hash = Get-PINHash -PIN $pin
+        if ($hash -ne $stored.PINHash) {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Incorrect PIN.",
+                "Authentication Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return $null
+        }
+        try {
+            $cred = Unprotect-Credential -EncryptedData $stored.Encrypted -PIN $pin
+            $script:CachedShareCredential = $cred
+            $script:ShareCredentialPINHash = $hash
+            return $cred
+        }
+        catch {
+            Write-SessionLog "Failed to decrypt share credential: $_"
+            return $null
+        }
+    }
+
+    # No stored credential — prompt user to enter credentials
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        "Share credentials are not saved.`n`nClick OK to enter credentials for the software share.",
+        "Share Credentials Required",
+        [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+
+    try {
+        $uncShare = Get-UncShareRoot
+        $cred = $host.UI.PromptForCredential(
+            "Software Share Credentials",
+            "Enter credentials to access $uncShare`n(Format: DOMAIN\username)",
+            "",
+            "RUSH"
+        )
+        if (-not $cred) { return $null }
+
+        # Offer to save with PIN protection
+        $saveResult = [System.Windows.Forms.MessageBox]::Show(
+            "Save credentials for future sessions?`n(Stored with PIN protection on this machine)",
+            "Save Credentials",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($saveResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $pin = Show-PINEntryDialog -Title "Set Share Credential PIN" -Message "Set a PIN to protect share credentials:`n(4-8 digits)"
+            if ($pin) {
+                Save-ShareEncryptedCredential -Credential $cred -PIN $pin | Out-Null
+                Write-SessionLog "Share credentials saved (PIN-encrypted)"
+            }
+        }
+
+        $script:CachedShareCredential = $cred
+        return $cred
+    }
+    catch {
+        Write-SessionLog "Error prompting for share credential: $_"
+        return $null
+    }
+}
+
+function Connect-ShareWithPIN {
+    <#
+    .SYNOPSIS
+        Authenticates to the UNC share using PIN-protected stored share credentials.
+        Returns $true on success, $false on failure.
+    #>
+    $uncShare = Get-UncShareRoot
+    if (-not $uncShare) {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "No network share path configured.`n`nSet 'networkUncPath' in Config\settings.json.",
+            "Configuration Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        return $false
+    }
+
+    # Remove any existing connection to this share first
+    & net use $uncShare /delete 2>&1 | Out-Null
+
+    $cred = Get-ShareCredential
+    if (-not $cred) { return $false }
+
+    $username = $cred.UserName
+    $password = $cred.GetNetworkCredential().Password
+
+    try {
+        $output = & net use $uncShare "/user:$username" $password 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-SessionLog "Connected to share: $uncShare as $username"
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Connected to $uncShare`n`nYou can now browse the software library.",
+                "Share Connected",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            return $true
+        }
+        else {
+            Write-SessionLog "net use failed (exit $LASTEXITCODE): $output"
+            $script:CachedShareCredential = $null  # Clear bad credential from cache
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Failed to connect to $uncShare`n`nError: $output`n`nCheck your credentials and try again.",
+                "Connection Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return $false
+        }
+    }
+    catch {
+        Write-SessionLog "Connect-NetworkShare exception: $_"
+        return $false
+    }
+}
+
 #endregion
 
 #region Module Loading
@@ -3641,6 +4098,7 @@ function Initialize-Module {
         if ($tabControl.SelectedTab) {
             $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
         }
+        Disconnect-NetworkShare
         Save-Settings
         Close-SessionLog
     })
