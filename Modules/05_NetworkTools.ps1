@@ -900,6 +900,7 @@ function Initialize-Module {
     $script:wlanReportBtn = New-Object System.Windows.Forms.Button
     $script:wlanReportBtn.Text = "WLAN Report"
     $script:wlanReportBtn.AutoSize = $true
+    $script:wlanReportBtn.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowOnly
     $script:wlanReportBtn.Add_Click({
         $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Generating WLAN report (requires elevation)...`r`n")
         $diagLogBoxRef.ScrollToCaret()
