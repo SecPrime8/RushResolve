@@ -396,16 +396,6 @@ $script:GetAllProfiles = {
             }
 
             $username = Split-Path $profile.LocalPath -Leaf
-            $profileSize = 0
-
-            if (Test-Path $profile.LocalPath) {
-                try {
-                    $profileSize = (Get-ChildItem -Path $profile.LocalPath -Recurse -Force -ErrorAction SilentlyContinue |
-                        Measure-Object -Property Length -Sum).Sum
-                    if (-not $profileSize) { $profileSize = 0 }
-                } catch { }
-            }
-
             $daysOld = if ($lastUsed -eq [datetime]::MinValue) { 9999 } else { [math]::Floor(((Get-Date) - $lastUsed).TotalDays) }
 
             $results += [PSCustomObject]@{
@@ -413,8 +403,8 @@ $script:GetAllProfiles = {
                 Path = $profile.LocalPath
                 SID = $profile.SID
                 LastUsed = $lastUsed
-                Size = $profileSize
-                SizeFormatted = & $script:FormatFileSize -Bytes $profileSize
+                Size = [long]0
+                SizeFormatted = "..."
                 DaysOld = $daysOld
             }
         }
@@ -597,6 +587,83 @@ function Initialize-Module {
         Start-AppActivity "Scanning cleanup categories..."
         $script:safeLogBox.Clear()
 
+        # Check if any categories need elevation
+        $needsElevation = $false
+        foreach ($item in $script:categoryListView.Items) {
+            $cat = if ($item.Tag.Category) { $item.Tag.Category } else { $item.Tag }
+            if ($cat.RequiresElevation) { $needsElevation = $true; break }
+        }
+
+        # Batch scan elevated categories in one elevated call for efficiency
+        $elevatedSizes = @{}
+        if ($needsElevation) {
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:safeLogBox.AppendText("[$timestamp] Some categories require admin access for accurate sizes...`r`n")
+            [System.Windows.Forms.Application]::DoEvents()
+
+            # Build list of elevated scan targets
+            $elevatedTargets = @()
+            foreach ($item in $script:categoryListView.Items) {
+                $cat = if ($item.Tag.Category) { $item.Tag.Category } else { $item.Tag }
+                if ($cat.RequiresElevation -and -not $cat.IsRecycleBin) {
+                    $elevatedTargets += @{
+                        Name = $cat.Name
+                        Paths = $cat.Paths
+                        Pattern = $cat.Pattern
+                        MaxAgeDays = $cat.MaxAgeDays
+                        Recurse = [bool]$cat.Recurse
+                        AdditionalPatterns = $cat.AdditionalPatterns
+                        IncludeFiles = $cat.IncludeFiles
+                    }
+                }
+            }
+
+            if ($elevatedTargets.Count -gt 0) {
+                $elevResult = Invoke-Elevated -ScriptBlock {
+                    param($targets)
+                    $results = @{}
+                    foreach ($t in $targets) {
+                        $totalBytes = 0
+                        $fileCount = 0
+                        foreach ($basePath in $t.Paths) {
+                            $expandedPath = [Environment]::ExpandEnvironmentVariables($basePath)
+                            if (-not (Test-Path $expandedPath)) { continue }
+                            $pattern = if ($t.Pattern) { $t.Pattern } else { "*" }
+                            $recurse = $t.Recurse
+                            $cutoffDate = if ($t.MaxAgeDays -gt 0) { (Get-Date).AddDays(-$t.MaxAgeDays) } else { $null }
+                            $files = @(Get-ChildItem -Path $expandedPath -Filter $pattern -File -Recurse:$recurse -Force -ErrorAction SilentlyContinue)
+                            if ($t.AdditionalPatterns) {
+                                foreach ($ap in $t.AdditionalPatterns) {
+                                    $files += @(Get-ChildItem -Path $expandedPath -Filter $ap -File -Recurse:$recurse -Force -ErrorAction SilentlyContinue)
+                                }
+                            }
+                            foreach ($f in $files) {
+                                if ($cutoffDate -and $f.LastWriteTime -gt $cutoffDate) { continue }
+                                $totalBytes += $f.Length
+                                $fileCount++
+                            }
+                        }
+                        if ($t.IncludeFiles) {
+                            foreach ($fp in $t.IncludeFiles) {
+                                if (Test-Path $fp) {
+                                    try {
+                                        $fi = Get-Item $fp -Force -ErrorAction SilentlyContinue
+                                        if ($fi) { $totalBytes += $fi.Length; $fileCount++ }
+                                    } catch {}
+                                }
+                            }
+                        }
+                        $results[$t.Name] = @{ TotalBytes = $totalBytes; FileCount = $fileCount }
+                    }
+                    return $results
+                } -ArgumentList @(,$elevatedTargets) -OperationName "scan system folders"
+
+                if ($elevResult.Success -and $elevResult.Output) {
+                    $elevatedSizes = $elevResult.Output
+                }
+            }
+        }
+
         $totalSize = 0
         $totalFiles = 0
         $index = 0
@@ -610,7 +677,17 @@ function Initialize-Module {
             $script:safeLogBox.AppendText("[$timestamp] Scanning $($cat.Name)...`r`n")
             [System.Windows.Forms.Application]::DoEvents()
 
-            $sizeInfo = & $script:GetCategorySize -Category $cat
+            # Use elevated results for elevated categories, local scan for others
+            if ($cat.RequiresElevation -and -not $cat.IsRecycleBin -and $elevatedSizes.ContainsKey($cat.Name)) {
+                $sizeInfo = @{
+                    TotalBytes = $elevatedSizes[$cat.Name].TotalBytes
+                    FileCount = $elevatedSizes[$cat.Name].FileCount
+                    AccessDenied = $false
+                    DebugInfo = "  Scanned with elevation"
+                }
+            } else {
+                $sizeInfo = & $script:GetCategorySize -Category $cat
+            }
 
             # Show debug info from the scan
             if ($sizeInfo.DebugInfo) {
@@ -808,7 +885,49 @@ function Initialize-Module {
         $script:profileLogBox.AppendText("[$timestamp] Excluding: current user ($env:USERNAME), system profiles, loaded profiles`r`n")
         [System.Windows.Forms.Application]::DoEvents()
 
+        # Get profile list (works without elevation)
         $profiles = & $script:GetAllProfiles
+
+        if ($profiles -and $profiles.Count -gt 0) {
+            # Get elevation for accurate size calculation on other users' folders
+            $timestamp = Get-Date -Format "HH:mm:ss"
+            $script:profileLogBox.AppendText("[$timestamp] Calculating profile sizes (requires elevation)...`r`n")
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $profilePaths = @($profiles | ForEach-Object { $_.Path })
+            $sizeResult = Invoke-Elevated -ScriptBlock {
+                param($paths)
+                $sizes = @{}
+                foreach ($p in $paths) {
+                    if (Test-Path $p) {
+                        try {
+                            $sum = (Get-ChildItem -Path $p -Recurse -Force -ErrorAction SilentlyContinue |
+                                Measure-Object -Property Length -Sum).Sum
+                            $sizes[$p] = if ($sum) { $sum } else { 0 }
+                        } catch {
+                            $sizes[$p] = 0
+                        }
+                    } else {
+                        $sizes[$p] = 0
+                    }
+                }
+                return $sizes
+            } -ArgumentList @(,$profilePaths) -OperationName "calculate profile sizes"
+
+            # Apply sizes back to profile objects
+            if ($sizeResult.Success -and $sizeResult.Output) {
+                $sizeMap = $sizeResult.Output
+                foreach ($profile in $profiles) {
+                    if ($sizeMap.ContainsKey($profile.Path)) {
+                        $profile.Size = [long]$sizeMap[$profile.Path]
+                        $profile.SizeFormatted = & $script:FormatFileSize -Bytes $profile.Size
+                    }
+                }
+            } else {
+                $timestamp = Get-Date -Format "HH:mm:ss"
+                $script:profileLogBox.AppendText("[$timestamp] Warning: Could not calculate sizes - $($sizeResult.Error)`r`n")
+            }
+        }
 
         # Populate ListView with ALL profiles
         $script:profileListView.BeginUpdate()
