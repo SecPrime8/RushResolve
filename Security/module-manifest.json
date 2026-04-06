@@ -29,6 +29,11 @@
                         "name":  "07_Diagnostics.ps1",
                         "added":  "2026-02-18",
                         "hash":  "rUaNrCJKaut0HouJt+kkzDc+9uvv7KYsVL72uL43xys="
+                    },
+                    {
+                        "name":  "08_AppLocker.ps1",
+                        "added":  "2026-04-06",
+                        "hash":  "MSMjuvwTAPhBSxZ74rpLP3jOVDx7zeabCqVNQhOo1J0="
                     }
                 ],
     "description":  "Whitelist of authorized modules with SHA256 hashes",
