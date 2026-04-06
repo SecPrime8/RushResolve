@@ -831,34 +831,37 @@ function Initialize-Module {
     $wirelessPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 40))) | Out-Null
     $wirelessPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 60))) | Out-Null
 
-    # Left - Current connection info
-    $wifiInfoPanel = New-Object System.Windows.Forms.Panel
+    # Left - Current connection info (TableLayoutPanel for proper resizing)
+    $wifiInfoPanel = New-Object System.Windows.Forms.TableLayoutPanel
     $wifiInfoPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $wifiInfoPanel.Padding = New-Object System.Windows.Forms.Padding(10)
+    $wifiInfoPanel.RowCount = 3
+    $wifiInfoPanel.ColumnCount = 1
+    $wifiInfoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null  # Label fills
+    $wifiInfoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 26))) | Out-Null  # Signal bar
+    $wifiInfoPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40))) | Out-Null  # Buttons
 
     $script:wifiInfoLabel = New-Object System.Windows.Forms.Label
     $script:wifiInfoLabel.Text = "Loading..."
     $script:wifiInfoLabel.AutoSize = $true
     $script:wifiInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:wifiInfoLabel.Location = New-Object System.Drawing.Point(10, 10)
-    $wifiInfoPanel.Controls.Add($script:wifiInfoLabel)
+    $script:wifiInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $wifiInfoPanel.Controls.Add($script:wifiInfoLabel, 0, 0)
 
     $wifiInfoLabelRef = $script:wifiInfoLabel
 
     # Signal bar
     $script:signalBar = New-Object System.Windows.Forms.ProgressBar
-    $script:signalBar.Location = New-Object System.Drawing.Point(10, 100)
-    $script:signalBar.Size = New-Object System.Drawing.Size(150, 20)
+    $script:signalBar.Dock = [System.Windows.Forms.DockStyle]::Fill
     $script:signalBar.Minimum = 0
     $script:signalBar.Maximum = 100
-    $wifiInfoPanel.Controls.Add($script:signalBar)
+    $wifiInfoPanel.Controls.Add($script:signalBar, 0, 1)
 
     $signalBarRef = $script:signalBar
 
     # WiFi buttons
     $wifiBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $wifiBtnPanel.Location = New-Object System.Drawing.Point(10, 130)
-    $wifiBtnPanel.Size = New-Object System.Drawing.Size(200, 70)
+    $wifiBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $wifiBtnPanel.WrapContents = $true
 
     $refreshWifiBtn = New-Object System.Windows.Forms.Button
@@ -894,7 +897,44 @@ function Initialize-Module {
     }.GetNewClosure())
     $wifiBtnPanel.Controls.Add($copyWifiBtn)
 
-    $wifiInfoPanel.Controls.Add($wifiBtnPanel)
+    $script:wlanReportBtn = New-Object System.Windows.Forms.Button
+    $script:wlanReportBtn.Text = "WLAN Report"
+    $script:wlanReportBtn.AutoSize = $true
+    $script:wlanReportBtn.Add_Click({
+        $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Generating WLAN report (requires elevation)...`r`n")
+        $diagLogBoxRef.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $result = Invoke-Elevated -ScriptBlock {
+            netsh wlan show wlanreport 2>&1
+        } -OperationName "generate WLAN report"
+
+        if ($result.Success) {
+            $sourcePath = "C:\ProgramData\Microsoft\Windows\WlanReport\wlan-report-latest.html"
+            if (Test-Path $sourcePath) {
+                $logsDir = Join-Path $PSScriptRoot "..\Logs"
+                if (-not (Test-Path $logsDir)) {
+                    New-Item -Path $logsDir -ItemType Directory -Force | Out-Null
+                }
+                $destName = "WLAN-$env:COMPUTERNAME-$(Get-Date -Format 'yyyy-MM-dd_HHmmss').html"
+                $destPath = Join-Path $logsDir $destName
+                Copy-Item -Path $sourcePath -Destination $destPath -Force
+                Write-SessionLog -Message "WLAN report saved to Logs/$destName" -Category "Network Tools"
+                $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WLAN report saved: $destName`r`n")
+                $diagLogBoxRef.ScrollToCaret()
+                Start-Process $destPath
+            } else {
+                $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: Report file not found at $sourcePath`r`n")
+                $diagLogBoxRef.ScrollToCaret()
+            }
+        } else {
+            $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: $($result.Error)`r`n")
+            $diagLogBoxRef.ScrollToCaret()
+        }
+    })
+    $wifiBtnPanel.Controls.Add($script:wlanReportBtn)
+
+    $wifiInfoPanel.Controls.Add($wifiBtnPanel, 0, 2)
 
     # Right - Available networks
     $networksPanel = New-Object System.Windows.Forms.Panel

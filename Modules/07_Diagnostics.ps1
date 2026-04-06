@@ -995,7 +995,7 @@ function Initialize-Module {
     $mainLayout.RowCount = 4
     $mainLayout.ColumnCount = 1
     $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null   # Diagnostic buttons
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 60))) | Out-Null   # Quick Tools
+    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 75))) | Out-Null   # Quick Tools
     $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null    # Findings
     $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null    # Log
 
@@ -1217,16 +1217,6 @@ function Initialize-Module {
         $script:diagLogBox.AppendText("[$ts] $OpName - launching elevated (UAC prompt)...`r`n")
         $script:diagLogBox.ScrollToCaret()
 
-        # Track dism.log for verbose output (readable without elevation)
-        $dismLogPath = "C:\Windows\Logs\DISM\dism.log"
-        $isDism = $Command -match "DISM"
-        $dismLogStartPos = 0
-        if ($isDism -and (Test-Path $dismLogPath)) {
-            $dismLogStartPos = (Get-Item $dismLogPath).Length
-        }
-        $dismReader = $null
-        $lastDismCheck = [DateTime]::MinValue
-
         # Run wrapper elevated, hidden (no visible window)
         try {
             $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$wrapperFile`"" -Verb RunAs -WindowStyle Hidden -PassThru
@@ -1274,39 +1264,6 @@ function Initialize-Module {
                 }
             }
 
-            # Also tail dism.log for verbose detail (every 3 seconds to avoid flood)
-            if ($isDism -and ((Get-Date) - $lastDismCheck).TotalSeconds -ge 3) {
-                $lastDismCheck = Get-Date
-                if (-not $dismReader -and (Test-Path $dismLogPath)) {
-                    try {
-                        $dfs = [System.IO.FileStream]::new(
-                            $dismLogPath,
-                            [System.IO.FileMode]::Open,
-                            [System.IO.FileAccess]::Read,
-                            [System.IO.FileShare]::ReadWrite
-                        )
-                        # Seek to where the log was when we started
-                        if ($dismLogStartPos -gt 0) { [void]$dfs.Seek($dismLogStartPos, [System.IO.SeekOrigin]::Begin) }
-                        $dismReader = [System.IO.StreamReader]::new($dfs)
-                    } catch {}
-                }
-                if ($dismReader) {
-                    while ($null -ne ($dline = $dismReader.ReadLine())) {
-                        $dt = $dline.Trim()
-                        if (-not $dt) { continue }
-                        # Filter for useful lines: progress, errors, warnings, actions, CBS state changes
-                        if ($dt -match 'Error|Warning|Fail|progress|percent|Repair|corrupt|download|CSI|repairable|component store|manifest|resolving|staging|installing') {
-                            # Strip the verbose timestamp prefix for readability
-                            $shortLine = $dt -replace '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\s*\w+\s+\w+\s+', ''
-                            if ($shortLine.Length -gt 120) { $shortLine = $shortLine.Substring(0, 120) + "..." }
-                            $lts = Get-Date -Format "HH:mm:ss"
-                            $script:diagLogBox.AppendText("[$lts]   [DISM] $shortLine`r`n")
-                            $script:diagLogBox.ScrollToCaret()
-                        }
-                    }
-                }
-            }
-
             # Timeout
             if (((Get-Date) - $startTime).TotalMinutes -gt $timeoutMin) {
                 $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WARNING: $OpName timed out after 60 minutes.`r`n")
@@ -1316,15 +1273,11 @@ function Initialize-Module {
         }
 
         if ($reader) { $reader.Close(); $reader.Dispose() }
-        if ($dismReader) { $dismReader.Close(); $dismReader.Dispose() }
 
         Clear-AppStatus
         $doneTs = Get-Date -Format "HH:mm:ss"
         $elapsed = [int]((Get-Date) - $startTime).TotalSeconds
         $script:diagLogBox.AppendText("[$doneTs] $OpName complete (${elapsed}s).`r`n")
-        if ($isDism) {
-            $script:diagLogBox.AppendText("[$doneTs] Full verbose log: C:\Windows\Logs\DISM\dism.log`r`n")
-        }
         $script:diagLogBox.ScrollToCaret()
         Write-SessionLog -Message "$OpName completed in ${elapsed}s" -Category "Diagnostics"
 
@@ -1343,70 +1296,6 @@ function Initialize-Module {
         & $script:RunElevatedInline -Command "sfc /scannow" -OpName "SFC Scan"
     })
     $quickToolsPanel.Controls.Add($sfcBtn)
-
-    # DISM dropdown button
-    $script:dismBtn = New-Object System.Windows.Forms.Button
-    $script:dismBtn.Text = "DISM Tools"
-    $script:dismBtn.AutoSize = $true
-    $script:dismBtn.Height = 30
-
-    $script:dismMenu = New-Object System.Windows.Forms.ContextMenuStrip
-
-    # 1. CheckHealth - quick flag check (seconds)
-    $dismCheck = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismCheck.Text = "CheckHealth (Quick)"
-    $dismCheck.Add_Click({
-        Write-SessionLog -Message "Launched DISM CheckHealth via Quick Tools" -Category "Diagnostics"
-        & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /CheckHealth /LogLevel:4" -OpName "DISM CheckHealth"
-    })
-    $script:dismMenu.Items.Add($dismCheck) | Out-Null
-
-    # 2. ScanHealth - full corruption scan (5-15 min)
-    $dismScan = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismScan.Text = "ScanHealth (Full Scan)"
-    $dismScan.Add_Click({
-        Write-SessionLog -Message "Launched DISM ScanHealth via Quick Tools" -Category "Diagnostics"
-        & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /ScanHealth /LogLevel:4" -OpName "DISM ScanHealth"
-    })
-    $script:dismMenu.Items.Add($dismScan) | Out-Null
-
-    # --- separator ---
-    $script:dismMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-
-    # 3. RestoreHealth from WIM - primary repair (WU blocked by hospital GPO)
-    $dismRestoreWim = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismRestoreWim.Text = "Repair from WIM (10-45 min)..."
-    $dismRestoreWim.Add_Click({
-        $ofd = New-Object System.Windows.Forms.OpenFileDialog
-        $ofd.Title = "Select Windows Image (install.wim or install.esd)"
-        $ofd.Filter = "Windows Image|install.wim;install.esd|All Files|*.*"
-        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $wimPath = $ofd.FileName
-            Write-SessionLog -Message "Launched DISM RestoreHealth from WIM: $wimPath" -Category "Diagnostics"
-            & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /RestoreHealth /Source:`"$wimPath`" /LimitAccess /LogLevel:4" -OpName "DISM RestoreHealth (WIM)"
-        }
-    })
-    $script:dismMenu.Items.Add($dismRestoreWim) | Out-Null
-
-    # --- separator ---
-    $script:dismMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-
-    # 4. StartComponentCleanup - shrink WinSxS store
-    $dismCleanup = New-Object System.Windows.Forms.ToolStripMenuItem
-    $dismCleanup.Text = "Component Cleanup"
-    $dismCleanup.Add_Click({
-        Write-SessionLog -Message "Launched DISM StartComponentCleanup via Quick Tools" -Category "Diagnostics"
-        & $script:RunElevatedInline -Command "DISM /Online /Cleanup-Image /StartComponentCleanup /LogLevel:4" -OpName "DISM Component Cleanup"
-    })
-    $script:dismMenu.Items.Add($dismCleanup) | Out-Null
-
-    # Show menu below button on click
-    $script:dismBtn.Add_Click({
-        $script:dismMenu.Show($script:dismBtn, (New-Object System.Drawing.Point(0, $script:dismBtn.Height)))
-    })
-    $script:dismBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::System
-    $script:toolTip.SetToolTip($script:dismBtn, "Requires ENT admin account (Run as Administrator)")
-    $quickToolsPanel.Controls.Add($script:dismBtn)
 
     # Separator
     $toolSep1 = New-Object System.Windows.Forms.Label

@@ -3,7 +3,7 @@
                     {
                         "name":  "01_SystemInfo.ps1",
                         "added":  "2026-02-18",
-                        "hash":  "qmbowOgEk1y9QP8xjUEn3spjjH/QSMluGyecmKv2vPA="
+                        "hash":  "GN7MNgHJwFPkJUAMweT6K6D5oabpsjka/WCvj4TUYYs="
                     },
                     {
                         "name":  "02_SoftwareInstaller.ps1",
@@ -16,14 +16,9 @@
                         "hash":  "yPhwc/LbPr6+PIHQzDGtHcOuKFlEbEvB21rIXJmWJQY="
                     },
                     {
-                        "name":  "04_DomainTools.ps1",
-                        "added":  "2026-02-18",
-                        "hash":  "vGazwxlDRzGUVKUxtiilDe251ZJZtqOj12sl6fLrQJY="
-                    },
-                    {
                         "name":  "05_NetworkTools.ps1",
                         "added":  "2026-02-18",
-                        "hash":  "fyuxwQei+ihx8CqifJYwuQCjNLt7wG3nzOV/1Blnjos="
+                        "hash":  "pODc+OrOx9YYb4lZ7cvO7o1HBoJ3bJ1bLU5OA8M7owE="
                     },
                     {
                         "name":  "06_DiskCleanup.ps1",
@@ -33,12 +28,7 @@
                     {
                         "name":  "07_Diagnostics.ps1",
                         "added":  "2026-02-18",
-                        "hash":  "Vj+wdqn5oDqxZ9+RJ/pal93SbQk9eyDsrsIrnScQt6g="
-                    },
-                    {
-                        "name":  "08_ADTools.ps1",
-                        "added":  "2026-02-18",
-                        "hash":  "6dI/HTOoQR15KlsH9ZpFxNO4P61pdf21UqLCoOwLa10="
+                        "hash":  "rUaNrCJKaut0HouJt+kkzDc+9uvv7KYsVL72uL43xys="
                     }
                 ],
     "description":  "Whitelist of authorized modules with SHA256 hashes",
