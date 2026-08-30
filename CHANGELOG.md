@@ -1,5 +1,37 @@
 # Rush Resolve Changelog
 
+## Unreleased
+### ✨ New Module: Network Escalation (Module 09)
+- **One-click escalation packet for the Networking team.** Field Services is
+  required to collect this information; the module removes the need to
+  remember which commands produce it.
+  - Device identity, per-adapter link state, speed/duplex, MAC, IP/mask,
+    gateway, DNS servers and suffix, DHCP server and lease times
+  - Switch name, chassis ID, management IP, port ID and VLAN via LLDP
+  - Wireless SSID, BSSID (AP radio MAC), channel, band, signal, auth, cipher
+  - Reachability tests for loopback, own IP, gateway, each DNS server,
+    domain resolution and the affected target, with pass/fail flags
+  - Traceroute, domain trust, logon server, AD site, proxy, VPN adapters
+  - ARP neighbor table and a raw `ipconfig /all` + `route print` appendix
+  - Automatic flags for APIPA, unreachable gateway, gateway-up-but-target-down
+    and weak wireless signal
+- **Structured intake form** so the packet arrives complete: ticket, site,
+  room, wall jack ID, asset tag, symptom picklist, blast radius, onset, port
+  light state, and a nine-item checklist of what the tech already verified.
+- **Look Up Device by IP** - resolves an IP to MAC, vendor hint, cache state,
+  reverse DNS and a service-port fingerprint. Falls back to a TCP touch when
+  ICMP is blocked, and explicitly warns when the target is off-subnet, where
+  the local ARP table would otherwise return the router's MAC.
+- **Optional IEEE OUI import** for full vendor lookup, offline. Multicast
+  addresses and locally administered (randomized) MACs are always identified
+  correctly without it.
+- Output actions: Copy for Ticket, Copy Short Summary, Save Report to `Logs`.
+- Registered in `Security/module-manifest.json`; loads under Enforced mode.
+- Docs: `docs/Network_Escalation_Module.md`.
+- Depends only on existing core helpers (`Invoke-Elevated`,
+  `Get-ElevatedCredential`, `Test-IsElevated`, `Write-SessionLog`,
+  `Start-AppActivity`, `Clear-AppStatus`, `Set-AppError`); no core changes.
+
 ## Planned (Next Version)
 - **AppLocker Packaged App Rules (Module 3 or new Security module)**
   - Launch Local Security Policy (`secpol.msc`) from within RushResolve

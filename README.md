@@ -13,7 +13,7 @@ RushResolve is a modular PowerShell GUI application designed for IT field techni
 ### Key Features
 
 - 🔒 **Security-First Design** - PIN-protected credential caching, SHA256 verification, TLS 1.2+ enforcement
-- 📦 **Modular Architecture** - 8 specialized modules for different IT tasks
+- 📦 **Modular Architecture** - 9 specialized modules for different IT tasks
 - 🎯 **Field-Tested** - Built for real-world hospital IT environments
 - 📊 **Session Logging** - Comprehensive logging for troubleshooting and auditing
 
@@ -115,6 +115,21 @@ On first launch:
 - Password reset (with proper permissions)
 - Computer object management
 - OU navigation
+
+### 9. Network Escalation (Module 09)
+- One-click collection of everything the Networking team asks for
+- Device identity, link state, speed/duplex, and per-adapter MAC
+- Switch name, port ID and VLAN via LLDP
+- IP, subnet mask, DHCP server and lease times, DNS servers and suffix
+- Wireless SSID, BSSID (AP radio MAC), channel, band, signal and auth
+- Reachability tests with pass/fail flags for gateway, DNS and target
+- ARP neighbor table, domain trust, proxy and VPN state
+- Field Services checklist of what was already verified before escalating
+- "Look Up Device by IP" - MAC, vendor and hostname for any device on the
+  subnet, with an explicit warning when the IP is off-subnet
+- Copy for ticket, copy short summary, or save to the Logs folder
+
+See [docs/Network_Escalation_Module.md](docs/Network_Escalation_Module.md).
 
 ---
 

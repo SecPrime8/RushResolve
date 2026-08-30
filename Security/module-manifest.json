@@ -39,6 +39,11 @@
                         "name":  "08_ADTools.ps1",
                         "added":  "2026-02-18",
                         "hash":  "6dI/HTOoQR15KlsH9ZpFxNO4P61pdf21UqLCoOwLa10="
+                    },
+                    {
+                        "name":  "09_NetworkEscalation.ps1",
+                        "added":  "2026-08-29",
+                        "hash":  "EcnxH/yvPwpwToo/XF1Ua7jnvWRQ37f4/zIn4aY2P5Q="
                     }
                 ],
     "description":  "Whitelist of authorized modules with SHA256 hashes",
