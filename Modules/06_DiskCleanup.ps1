@@ -122,6 +122,28 @@ $script:CleanupCategories = @(
 
 #region Helper Functions
 
+# Invoke-Elevated returns its payload via ConvertTo-Json | ConvertFrom-Json, so
+# .Output is a PSCustomObject - which has no .ContainsKey() and no string indexer.
+# Calling .ContainsKey() on it threw and broke BOTH scan buttons whenever the tech
+# actually supplied credentials (cancelling the prompt left the @{} literal in
+# place, so the buttons only "worked" when you declined to authenticate).
+# These helpers accept either shape.
+$script:MapHasKey = {
+    param($Map, [string]$Key)
+    if ($null -eq $Map) { return $false }
+    if ($Map -is [System.Collections.IDictionary]) { return $Map.Contains($Key) }
+    return ($null -ne $Map.PSObject.Properties[$Key])
+}
+
+$script:MapGet = {
+    param($Map, [string]$Key)
+    if ($null -eq $Map) { return $null }
+    if ($Map -is [System.Collections.IDictionary]) { return $Map[$Key] }
+    $prop = $Map.PSObject.Properties[$Key]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
 $script:FormatFileSize = {
     param([long]$Bytes)
 
@@ -380,14 +402,14 @@ $script:GetAllProfiles = {
             $_.LocalPath -notmatch "\\$currentUser$"
         }
 
-        foreach ($profile in $profiles) {
+        foreach ($userProfile in $profiles) {
             # Skip loaded profiles (user has active session)
-            if ($profile.Loaded) { continue }
+            if ($userProfile.Loaded) { continue }
 
             # Determine last use: prefer LastUseTime, fallback to folder modification date
-            $lastUsed = $profile.LastUseTime
-            if (-not $lastUsed -and $profile.LocalPath -and (Test-Path $profile.LocalPath)) {
-                $lastUsed = (Get-Item $profile.LocalPath -Force).LastWriteTime
+            $lastUsed = $userProfile.LastUseTime
+            if (-not $lastUsed -and $userProfile.LocalPath -and (Test-Path $userProfile.LocalPath)) {
+                $lastUsed = (Get-Item $userProfile.LocalPath -Force).LastWriteTime
             }
 
             # If we still can't determine, use a very old date
@@ -395,13 +417,13 @@ $script:GetAllProfiles = {
                 $lastUsed = [datetime]::MinValue
             }
 
-            $username = Split-Path $profile.LocalPath -Leaf
+            $username = Split-Path $userProfile.LocalPath -Leaf
             $daysOld = if ($lastUsed -eq [datetime]::MinValue) { 9999 } else { [math]::Floor(((Get-Date) - $lastUsed).TotalDays) }
 
             $results += [PSCustomObject]@{
                 Username = $username
-                Path = $profile.LocalPath
-                SID = $profile.SID
+                Path = $userProfile.LocalPath
+                SID = $userProfile.SID
                 LastUsed = $lastUsed
                 Size = [long]0
                 SizeFormatted = "..."
@@ -430,9 +452,9 @@ $script:RemoveUserProfile = {
     try {
         $deleteResult = Invoke-Elevated -ScriptBlock {
             param($sid)
-            $profile = Get-CimInstance -ClassName Win32_UserProfile | Where-Object { $_.SID -eq $sid }
-            if ($profile) {
-                Remove-CimInstance -InputObject $profile -ErrorAction Stop
+            $userProfile = Get-CimInstance -ClassName Win32_UserProfile | Where-Object { $_.SID -eq $sid }
+            if ($userProfile) {
+                Remove-CimInstance -InputObject $userProfile -ErrorAction Stop
                 return $true
             }
             return $false
@@ -678,10 +700,11 @@ function Initialize-Module {
             [System.Windows.Forms.Application]::DoEvents()
 
             # Use elevated results for elevated categories, local scan for others
-            if ($cat.RequiresElevation -and -not $cat.IsRecycleBin -and $elevatedSizes.ContainsKey($cat.Name)) {
+            if ($cat.RequiresElevation -and -not $cat.IsRecycleBin -and (& $script:MapHasKey $elevatedSizes $cat.Name)) {
+                $elevEntry = & $script:MapGet $elevatedSizes $cat.Name
                 $sizeInfo = @{
-                    TotalBytes = $elevatedSizes[$cat.Name].TotalBytes
-                    FileCount = $elevatedSizes[$cat.Name].FileCount
+                    TotalBytes = $elevEntry.TotalBytes
+                    FileCount = $elevEntry.FileCount
                     AccessDenied = $false
                     DebugInfo = "  Scanned with elevation"
                 }
@@ -917,10 +940,10 @@ function Initialize-Module {
             # Apply sizes back to profile objects
             if ($sizeResult.Success -and $sizeResult.Output) {
                 $sizeMap = $sizeResult.Output
-                foreach ($profile in $profiles) {
-                    if ($sizeMap.ContainsKey($profile.Path)) {
-                        $profile.Size = [long]$sizeMap[$profile.Path]
-                        $profile.SizeFormatted = & $script:FormatFileSize -Bytes $profile.Size
+                foreach ($userProfile in $profiles) {
+                    if (& $script:MapHasKey $sizeMap $userProfile.Path) {
+                        $userProfile.Size = [long](& $script:MapGet $sizeMap $userProfile.Path)
+                        $userProfile.SizeFormatted = & $script:FormatFileSize -Bytes $userProfile.Size
                     }
                 }
             } else {
@@ -931,13 +954,13 @@ function Initialize-Module {
 
         # Populate ListView with ALL profiles
         $script:profileListView.BeginUpdate()
-        foreach ($profile in $profiles) {
+        foreach ($userProfile in $profiles) {
             $item = New-Object System.Windows.Forms.ListViewItem("")
-            $item.SubItems.Add($profile.Username) | Out-Null
-            $item.SubItems.Add($profile.LastUsed.ToString("yyyy-MM-dd")) | Out-Null
-            $item.SubItems.Add($profile.SizeFormatted) | Out-Null
-            $item.SubItems.Add($profile.DaysOld.ToString()) | Out-Null
-            $item.Tag = $profile
+            $item.SubItems.Add($userProfile.Username) | Out-Null
+            $item.SubItems.Add($userProfile.LastUsed.ToString("yyyy-MM-dd")) | Out-Null
+            $item.SubItems.Add($userProfile.SizeFormatted) | Out-Null
+            $item.SubItems.Add($userProfile.DaysOld.ToString()) | Out-Null
+            $item.Tag = $userProfile
             $script:profileListView.Items.Add($item) | Out-Null
         }
         $script:profileListView.EndUpdate()
@@ -1126,26 +1149,26 @@ function Initialize-Module {
         $errors = @()
 
         foreach ($item in $checkedItems) {
-            $profile = $item.Tag
+            $userProfile = $item.Tag
 
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:profileLogBox.AppendText("[$timestamp] Deleting profile: $($profile.Username)...`r`n")
+            $script:profileLogBox.AppendText("[$timestamp] Deleting profile: $($userProfile.Username)...`r`n")
             [System.Windows.Forms.Application]::DoEvents()
 
-            $result = & $script:RemoveUserProfile -SID $profile.SID -Credential $cred
+            $result = & $script:RemoveUserProfile -SID $userProfile.SID -Credential $cred
 
             if ($result.Success) {
                 $deleted++
-                $freed += $profile.Size
+                $freed += $userProfile.Size
                 $script:profileListView.Items.Remove($item)
 
                 $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:profileLogBox.AppendText("[$timestamp]   SUCCESS: Deleted $($profile.Username)`r`n")
+                $script:profileLogBox.AppendText("[$timestamp]   SUCCESS: Deleted $($userProfile.Username)`r`n")
             }
             else {
-                $errors += $profile.Username
+                $errors += $userProfile.Username
                 $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:profileLogBox.AppendText("[$timestamp]   ERROR: $($profile.Username) - $($result.Error)`r`n")
+                $script:profileLogBox.AppendText("[$timestamp]   ERROR: $($userProfile.Username) - $($result.Error)`r`n")
             }
         }
 
