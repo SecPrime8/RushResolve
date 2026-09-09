@@ -10,6 +10,9 @@ $script:ModuleName = "Software Installer"
 $script:ModuleDescription = "Install applications from network share and manage favorites"
 $script:FavoritesList = @()
 $script:FavoritesFile = $null  # Set during init from $script:ConfigPath
+$script:GroupsList = @()       # Install groups (persisted in favorites.json)
+$script:CatalogFile = $null    # Cached scan results (Config\app-catalog.json)
+$script:QueueList = @()        # Install queue (Browse & Queue tab, session only)
 
 
 # ==============================================================================
@@ -118,9 +121,33 @@ $script:LoadFavorites = {
 
             $script:FavoritesList += $favHash
         }
+
+        # Install groups (bundles of installers installed together)
+        $script:GroupsList = @()
+        if ($json.groups) {
+            foreach ($grp in $json.groups) {
+                $items = @()
+                foreach ($it in $grp.items) {
+                    $items += @{
+                        Name = $it.name
+                        InstallerPath = $it.installerPath
+                        InstallerType = $it.installerType
+                        SilentArgs = $it.silentArgs
+                        InteractiveArgs = $it.interactiveArgs
+                        RequiresElevation = $true
+                        HasConfig = $false
+                        FolderPath = $it.folderPath
+                        Version = ""
+                        Description = "(group: $($grp.name))"
+                    }
+                }
+                $script:GroupsList += @{ Name = $grp.name; Items = $items }
+            }
+        }
     }
     catch {
         $script:FavoritesList = @()
+        $script:GroupsList = @()
     }
 }
 
@@ -148,14 +175,100 @@ $script:SaveFavorites = {
             }
         }
 
-        $output = @{
-            version = 1
-            favorites = $favArray
+        # Serialize install groups
+        $groupArray = @()
+        foreach ($grp in $script:GroupsList) {
+            $itemArray = @()
+            foreach ($it in $grp.Items) {
+                $itemArray += @{
+                    name = $it.Name
+                    installerPath = $it.InstallerPath
+                    installerType = $it.InstallerType
+                    silentArgs = $it.SilentArgs
+                    interactiveArgs = $it.InteractiveArgs
+                    folderPath = $it.FolderPath
+                }
+            }
+            $groupArray += @{ name = $grp.Name; items = $itemArray }
         }
 
-        $output | ConvertTo-Json -Depth 5 | Set-Content $script:FavoritesFile -Encoding UTF8
+        $output = @{
+            version = 2
+            favorites = $favArray
+            groups = $groupArray
+        }
+
+        $output | ConvertTo-Json -Depth 6 | Set-Content $script:FavoritesFile -Encoding UTF8
     }
     catch { }
+}
+
+# Persist the last scan's results so the app list loads instantly next time
+$script:SaveCatalog = {
+    param([string]$SourcePath)
+
+    if (-not $script:CatalogFile) { return }
+
+    try {
+        $appArray = @()
+        foreach ($app in $script:AppsList) {
+            $appArray += @{
+                name = $app.Name
+                version = $app.Version
+                description = $app.Description
+                installerPath = $app.InstallerPath
+                installerType = $app.InstallerType
+                silentArgs = $app.SilentArgs
+                interactiveArgs = $app.InteractiveArgs
+                requiresElevation = $app.RequiresElevation
+                hasConfig = $app.HasConfig
+                folderPath = $app.FolderPath
+            }
+        }
+
+        $output = @{
+            version = 1
+            sourcePath = $SourcePath
+            scannedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            apps = $appArray
+        }
+
+        $output | ConvertTo-Json -Depth 5 | Set-Content $script:CatalogFile -Encoding UTF8
+    }
+    catch { }
+}
+
+# Load the cached catalog; returns $null when no usable cache exists
+$script:LoadCatalog = {
+    if (-not $script:CatalogFile -or -not (Test-Path $script:CatalogFile)) { return $null }
+
+    try {
+        $json = Get-Content $script:CatalogFile -Raw | ConvertFrom-Json
+        $apps = @()
+        foreach ($app in $json.apps) {
+            $apps += @{
+                Name = $app.name
+                Version = $app.version
+                Description = $app.description
+                InstallerPath = $app.installerPath
+                InstallerType = $app.installerType
+                SilentArgs = $app.silentArgs
+                InteractiveArgs = $app.interactiveArgs
+                RequiresElevation = $app.requiresElevation
+                HasConfig = $app.hasConfig
+                FolderPath = $app.folderPath
+            }
+        }
+
+        return @{
+            SourcePath = $json.sourcePath
+            ScannedAt = $json.scannedAt
+            Apps = $apps
+        }
+    }
+    catch {
+        return $null
+    }
 }
 
 # Add app to favorites (deduplicates by InstallerPath)
@@ -446,11 +559,11 @@ $script:ScanForApps = {
 
     & $logMsg "Scanning root for standalone installers..."
 
-    # Scan root level for standalone installers
+    # Scan root level for standalone installers (and runnable scripts)
     try {
         $rootInstallers = Get-ChildItem -Path $Path -File -ErrorAction Stop |
-            Where-Object { $_.Extension -in '.msi', '.exe' }
-        & $logMsg "Found $($rootInstallers.Count) standalone installer(s) in root"
+            Where-Object { $_.Extension -in '.msi', '.exe', '.bat', '.cmd', '.ps1' }
+        & $logMsg "Found $($rootInstallers.Count) standalone installer(s)/script(s) in root"
     }
     catch {
         & $logMsg "ERROR reading root directory: $($_.Exception.Message)"
@@ -466,9 +579,15 @@ $script:ScanForApps = {
         & $logMsg "  Found: $($installer.Name)"
 
         # Determine args based on installer type
-        $isMsi = ($installer.Extension -eq '.msi')
-        $silentArgs = if ($isMsi) { "/qn /norestart" } else { "/S" }
-        $interactiveArgs = if ($isMsi) { "/qb" } else { "" }
+        $silentArgs = switch ($installer.Extension) {
+            '.msi'  { "/qn /norestart" }
+            '.exe'  { "/S" }
+            default { "" }   # scripts: no default args
+        }
+        $interactiveArgs = switch ($installer.Extension) {
+            '.msi'  { "/qb" }
+            default { "" }
+        }
 
         $apps += @{
             Name = $installer.BaseName
@@ -484,26 +603,25 @@ $script:ScanForApps = {
         }
     }
 
-    # Scan subfolders level-by-level (up to 2 levels deep for performance)
-    # Incremental enumeration with DoEvents to keep UI responsive on network shares
+    # Scan subfolders level-by-level (up to 2 levels deep)
+    # NO time cutoff - the scan runs to completion however long it takes.
+    # Cancel button + DoEvents keep the UI responsive; results are cached
+    # to app-catalog.json so full rescans are rare.
     & $logMsg "Scanning subfolders (incremental, up to 2 levels)..."
 
-    # Record scan start time for timeout check
+    # Record scan start time for elapsed reporting
     $scanStart = [DateTime]::Now
     $allFolders = @()
 
     try {
-        # Level 0: immediate children
+        # Level 0: immediate children ([System.IO] enumeration - much faster over SMB)
         & $logMsg "Enumerating top-level folders..."
-        $level0 = @(Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue)
+        $level0 = @()
+        foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($Path)) {
+            $level0 += [System.IO.DirectoryInfo]::new($dirPath)
+        }
         $allFolders += $level0
         [System.Windows.Forms.Application]::DoEvents()
-
-        # Check timeout
-        if (([DateTime]::Now - $scanStart).TotalSeconds -gt 120) {
-            & $logMsg "Scan timed out after 2 minutes. Showing partial results."
-            return $apps
-        }
 
         # Level 1: children of each L0 folder
         & $logMsg "Scanning subfolder level 1 ($($level0.Count) folders)..."
@@ -512,14 +630,10 @@ $script:ScanForApps = {
                 & $logMsg "Scan cancelled by user."
                 break
             }
-            # Check timeout
-            if (([DateTime]::Now - $scanStart).TotalSeconds -gt 120) {
-                & $logMsg "Scan timed out after 2 minutes. Showing partial results."
-                return $apps
-            }
             try {
-                $children = @(Get-ChildItem -Path $dir.FullName -Directory -ErrorAction SilentlyContinue)
-                $allFolders += $children
+                foreach ($childPath in [System.IO.Directory]::EnumerateDirectories($dir.FullName)) {
+                    $allFolders += [System.IO.DirectoryInfo]::new($childPath)
+                }
             } catch {
                 & $logMsg "  Skipped (access denied): $($dir.Name)"
             }
@@ -535,14 +649,10 @@ $script:ScanForApps = {
                     & $logMsg "Scan cancelled by user."
                     break
                 }
-                # Check timeout
-                if (([DateTime]::Now - $scanStart).TotalSeconds -gt 120) {
-                    & $logMsg "Scan timed out after 2 minutes. Showing partial results."
-                    return $apps
-                }
                 try {
-                    $children = @(Get-ChildItem -Path $dir.FullName -Directory -ErrorAction SilentlyContinue)
-                    $allFolders += $children
+                    foreach ($childPath in [System.IO.Directory]::EnumerateDirectories($dir.FullName)) {
+                        $allFolders += [System.IO.DirectoryInfo]::new($childPath)
+                    }
                 } catch {
                     & $logMsg "  Skipped (access denied): $($dir.Name)"
                 }
@@ -567,12 +677,6 @@ $script:ScanForApps = {
         # Check cancel flag
         if ($script:scanCancelled) {
             & $logMsg "Scan cancelled by user."
-            break
-        }
-
-        # Check timeout
-        if (([DateTime]::Now - $scanStart).TotalSeconds -gt 120) {
-            & $logMsg "Scan timed out after 2 minutes. Showing partial results."
             break
         }
 
@@ -602,8 +706,56 @@ $script:ScanForApps = {
         }
     }
 
-    & $logMsg "Scan complete. Total apps found: $($apps.Count)"
+    $elapsedSec = [Math]::Round(([DateTime]::Now - $scanStart).TotalSeconds, 0)
+    & $logMsg "Scan complete in ${elapsedSec}s. Total apps found: $($apps.Count)"
     return $apps
+}
+
+# Populate the app ListView from $script:AppsList, honoring the current filter
+$script:PopulateAppListView = {
+    $filterText = $script:installerFilterBox.Text.Trim().ToLower()
+    $script:appListView.BeginUpdate()
+    $script:appListView.Items.Clear()
+
+    $matchCount = 0
+    foreach ($app in $script:AppsList) {
+        $match = $true
+        if ($filterText) {
+            $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
+                     ($app.InstallerPath -and $app.InstallerPath.ToLower().Contains($filterText))
+        }
+        if ($match) {
+            $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
+            $item.SubItems.Add($app.InstallerPath) | Out-Null
+            $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
+            $item.SubItems.Add($typeText) | Out-Null
+            $configText = if ($app.HasConfig) { "Yes" } else { "No" }
+            $item.SubItems.Add($configText) | Out-Null
+            $item.Tag = $app
+            $script:appListView.Items.Add($item) | Out-Null
+            $matchCount++
+        }
+    }
+    $script:appListView.EndUpdate()
+    $script:appListView.Refresh()
+    return $matchCount
+}
+
+# Resolve the Team Folder source: curated network folder first, USB Apps\ fallback
+$script:ResolveTeamFolder = {
+    $curated = $null
+    try { $curated = $script:Settings.modules.SoftwareInstaller.curatedNetworkPath } catch { }
+
+    if ($curated -and (Test-Path $curated -ErrorAction SilentlyContinue)) {
+        return @{ Path = $curated; Source = "Network" }
+    }
+
+    # Network unreachable (or not configured) - fall back to the USB Apps folder
+    $usbApps = Join-Path (Split-Path $PSScriptRoot -Parent) "Apps"
+    if (-not (Test-Path $usbApps)) {
+        try { New-Item -ItemType Directory -Path $usbApps -Force | Out-Null } catch { }
+    }
+    return @{ Path = $usbApps; Source = "USB" }
 }
 
 # Ensure network share access with credential authentication
@@ -869,6 +1021,20 @@ $script:InstallApp = {
                 -Wait -Hidden:$hideWindow `
                 -OperationName "install $($App.Name)"
         }
+        elseif ($App.InstallerType -eq '.ps1') {
+            # PowerShell script - run via powershell.exe with bypass
+            $result = Start-ElevatedProcess -FilePath "powershell.exe" `
+                -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$installerPath`" $installArgs" `
+                -Wait -Hidden:$hideWindow `
+                -OperationName "run $($App.Name)"
+        }
+        elseif ($App.InstallerType -in '.bat', '.cmd') {
+            # Batch script - run via cmd.exe
+            $result = Start-ElevatedProcess -FilePath "cmd.exe" `
+                -ArgumentList "/c `"`"$installerPath`" $installArgs`"" `
+                -Wait -Hidden:$hideWindow `
+                -OperationName "run $($App.Name)"
+        }
         else {
             # EXE installer - run directly
             $result = Start-ElevatedProcess -FilePath $installerPath `
@@ -1098,6 +1264,114 @@ $script:GetHPIAPath = {
     return $script:HPIAPath
 }
 
+# Find HPIA or bootstrap it: use a bundled softpaq on the USB if present,
+# otherwise offer to download the latest from HP and extract it to the USB
+# so every machine after this one has it ready. Returns the exe path or $null.
+$script:EnsureHPIA = {
+    param([scriptblock]$Log)
+
+    $existing = & $script:GetHPIAPath
+    if ($existing) { return $existing }
+
+    $toolsHPIA = Join-Path (Split-Path $PSScriptRoot -Parent) "Tools\HPIA"
+    try {
+        if (-not (Test-Path $toolsHPIA)) {
+            New-Item -ItemType Directory -Path $toolsHPIA -Force | Out-Null
+        }
+    } catch { }
+
+    # Bundled self-extracting softpaq already on the USB?
+    $bundled = Get-ChildItem $toolsHPIA -Filter "hp-hpia-*.exe" -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -First 1
+
+    if (-not $bundled) {
+        $choice = [System.Windows.Forms.MessageBox]::Show(
+            "HP Image Assistant is not on this USB.`n`nDownload the latest version from HP now (~50 MB)?`nIt will be saved to the USB so it's available offline next time.",
+            "HPIA Not Found",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+
+        if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) {
+            if ($Log) { & $Log "HPIA download declined. Manual download: https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html" }
+            Start-Process "https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html"
+            return $null
+        }
+
+        try {
+            if ($Log) { & $Log "Fetching HPIA download page..." }
+            $pageUrl = "https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html"
+            $page = Invoke-WebRequest -Uri $pageUrl -UseBasicParsing -TimeoutSec 30
+
+            # Find the hp-hpia-x.x.x.exe link on the page
+            $href = $null
+            $link = $page.Links | Where-Object { $_.href -match 'hp-hpia-.*\.exe$' } | Select-Object -First 1
+            if ($link) { $href = $link.href }
+            if (-not $href -and $page.Content -match '(?i)href="([^"]*hp-hpia-[^"]*\.exe)"') {
+                $href = $matches[1]
+            }
+            if (-not $href) {
+                if ($Log) { & $Log "Could not find the HPIA installer link on HP's page." }
+                Start-Process $pageUrl
+                return $null
+            }
+
+            # Make the URL absolute if the page used a relative link
+            if ($href -notmatch '^https?://') {
+                $href = "https://ftp.hp.com/pub/caps-softpaq/cmit/$($href.TrimStart('/').Split('/')[-1])"
+            }
+
+            $destFile = Join-Path $toolsHPIA (Split-Path $href -Leaf)
+            if ($Log) { & $Log "Downloading $href ..." }
+            Invoke-WebRequest -Uri $href -OutFile $destFile -UseBasicParsing -TimeoutSec 600
+            if ($Log) { & $Log "Downloaded to $destFile" }
+            $bundled = Get-Item $destFile
+        }
+        catch {
+            if ($Log) { & $Log "Download failed: $($_.Exception.Message)" }
+            [System.Windows.Forms.MessageBox]::Show(
+                "HPIA download failed: $($_.Exception.Message)`n`nDownload manually from:`nhttps://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html`nand place it in $toolsHPIA",
+                "Download Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return $null
+        }
+    }
+
+    # Extract the self-extracting softpaq to the USB (softpaq switches: /s /e /f <dir>)
+    try {
+        if ($Log) { & $Log "Extracting $($bundled.Name) to $toolsHPIA ..." }
+        $proc = Start-Process -FilePath $bundled.FullName -ArgumentList "/s /e /f `"$toolsHPIA`"" -PassThru
+        $extractStart = Get-Date
+        while (-not $proc.HasExited) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 300
+            if (((Get-Date) - $extractStart).TotalMinutes -gt 5) {
+                try { $proc.Kill() } catch { }
+                if ($Log) { & $Log "Extraction timed out." }
+                return $null
+            }
+        }
+
+        $script:HPIAPath = $null
+        $found = & $script:GetHPIAPath
+        if ($found) {
+            if ($Log) { & $Log "HPIA ready: $found" }
+            if ($script:hpiaPathLabel) { $script:hpiaPathLabel.Text = "HPIA: $found" }
+            Write-SessionLog -Message "HPIA bootstrapped to USB" -Category "Software Installer"
+        }
+        else {
+            if ($Log) { & $Log "Extraction finished but HPImageAssistant.exe was not found in $toolsHPIA" }
+        }
+        return $found
+    }
+    catch {
+        if ($Log) { & $Log "Extraction failed: $($_.Exception.Message)" }
+        return $null
+    }
+}
+
 $script:RunHPIAAnalysis = {
     param([scriptblock]$Log)
 
@@ -1109,15 +1383,16 @@ $script:RunHPIAAnalysis = {
         return $results
     }
 
-    $hpiaPath = & $script:GetHPIAPath
+    $hpiaPath = & $script:EnsureHPIA -Log $Log
     if (-not $hpiaPath) {
-        if ($Log) { & $Log "HPIA not installed. Download from: https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html" }
+        if ($Log) { & $Log "HPIA not available. Download from: https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html" }
         return $results
     }
 
     if ($Log) {
         & $Log "Running HP Image Assistant analysis..."
         & $Log "  HPIA path: $hpiaPath"
+        & $Log "  NOTE: If a UAC prompt appears, enter your ENT credentials."
     }
 
     # Use a shared location so the elevated process can write and we can read
@@ -1304,9 +1579,9 @@ $script:RunHPIAUpdate = {
         return
     }
 
-    $hpiaPath = & $script:GetHPIAPath
+    $hpiaPath = & $script:EnsureHPIA -Log $Log
     if (-not $hpiaPath) {
-        [System.Windows.Forms.MessageBox]::Show("HP Image Assistant is not installed.`n`nDownload from:`nhttps://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html", "HPIA Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        [System.Windows.Forms.MessageBox]::Show("HP Image Assistant is not available.`n`nDownload from:`nhttps://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html`nand place it in the USB Tools\HPIA folder.", "HPIA Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
 
@@ -1318,7 +1593,7 @@ $script:RunHPIAUpdate = {
     }
 
     $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "This will download and install $selectionDesc.`n`nA UAC prompt will appear for elevation.`nThe system may require a reboot after updates.`n`nContinue?",
+        "This will download and install $selectionDesc.`n`nA UAC prompt will appear for elevation - enter your ENT credentials there.`nThe system may require a reboot after updates.`n`nContinue?",
         "Install HP Driver Updates",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question
@@ -1567,7 +1842,13 @@ function Initialize-Module {
     $installTab.UseVisualStyleBackColor = $true
     $tabControl.TabPages.Add($installTab)
 
-    # Tab 2: Favorites
+    # Tab 2: Browse & Queue (Explorer-style navigation + install queue + groups)
+    $browseTab = New-Object System.Windows.Forms.TabPage
+    $browseTab.Text = "Browse && Queue"
+    $browseTab.UseVisualStyleBackColor = $true
+    $tabControl.TabPages.Add($browseTab)
+
+    # Tab 3: Favorites
     $favoritesTab = New-Object System.Windows.Forms.TabPage
     $favoritesTab.Text = "Favorites"
     $favoritesTab.UseVisualStyleBackColor = $true
@@ -1611,9 +1892,18 @@ function Initialize-Module {
     $script:sourceCombo.Width = 400
     $script:sourceCombo.Items.Add("Network Share (configure path)") | Out-Null
     $script:sourceCombo.Items.Add("Local/USB Directory") | Out-Null
+    $script:sourceCombo.Items.Add("Team Folder (network, USB fallback)") | Out-Null
     $script:sourceCombo.SelectedIndex = 1
 
     $sourcePanel.Controls.Add($script:sourceCombo)
+
+    # Catalog age indicator (cached scan results)
+    $script:catalogAgeLabel = New-Object System.Windows.Forms.Label
+    $script:catalogAgeLabel.Text = ""
+    $script:catalogAgeLabel.AutoSize = $true
+    $script:catalogAgeLabel.ForeColor = [System.Drawing.Color]::Gray
+    $script:catalogAgeLabel.Padding = New-Object System.Windows.Forms.Padding(15, 5, 0, 0)
+    $sourcePanel.Controls.Add($script:catalogAgeLabel)
 
     # Second row spacer (forces new line in FlowLayoutPanel)
     $pathRowSpacer = New-Object System.Windows.Forms.Label
@@ -1629,9 +1919,10 @@ function Initialize-Module {
     $pathLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
     $sourcePanel.Controls.Add($pathLabel)
 
-    $script:pathTextBox = New-Object System.Windows.Forms.TextBox
+    # Editable ComboBox: type a path or pick a saved one from the dropdown
+    $script:pathTextBox = New-Object System.Windows.Forms.ComboBox
+    $script:pathTextBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDown
     $script:pathTextBox.Width = 500
-    $script:pathTextBox.Height = 25
     $sourcePanel.Controls.Add($script:pathTextBox)
 
     $browseBtn = New-Object System.Windows.Forms.Button
@@ -1639,6 +1930,12 @@ function Initialize-Module {
     $browseBtn.Width = 75
     $browseBtn.Height = 30
     $sourcePanel.Controls.Add($browseBtn)
+
+    $savePathBtn = New-Object System.Windows.Forms.Button
+    $savePathBtn.Text = "Save Path"
+    $savePathBtn.Width = 80
+    $savePathBtn.Height = 30
+    $sourcePanel.Controls.Add($savePathBtn)
 
     $script:refreshBtn = New-Object System.Windows.Forms.Button
     $script:refreshBtn.Text = "Refresh"
@@ -1960,8 +2257,12 @@ function Initialize-Module {
             else { $countLabel.Text = "$($apps.Count) applications" }
         }
 
+        # Shared holder captured by BOTH closures below - $script: variables do
+        # NOT resolve inside GetNewClosure modules (each closure gets its own scope)
+        $appsHolder = @{ Apps = @() }
+
         $filterBox.Add_TextChanged({
-            & $applyFilter $script:allApps $filterBox.Text
+            & $applyFilter $appsHolder.Apps $filterBox.Text
         }.GetNewClosure())
 
         $clearBtn.Add_Click({
@@ -2004,8 +2305,8 @@ function Initialize-Module {
                 }
             }
             # Remove duplicates by Name+Version
-            $script:allApps = $apps | Sort-Object Name, Version -Unique
-            & $applyFilter $script:allApps ""
+            $appsHolder.Apps = @($apps | Sort-Object Name, Version -Unique)
+            & $applyFilter $appsHolder.Apps ""
         }.GetNewClosure())
 
         $appForm.ShowDialog() | Out-Null
@@ -2153,8 +2454,28 @@ function Initialize-Module {
         $script:Settings.modules.SoftwareInstaller | Add-Member -NotePropertyName 'networkPathUNCDefault' -NotePropertyValue "\\rush.edu\data\IS\Infosvcs\FLDTECH\New_Hire_Folder\Useful_Software" -Force
     }
 
-    # Initialize favorites
+    # Curated team folder (primary source for the Team Folder mode)
+    if (-not ($script:Settings.modules.SoftwareInstaller.PSObject.Properties.Name -contains 'curatedNetworkPath')) {
+        $script:Settings.modules.SoftwareInstaller | Add-Member -NotePropertyName 'curatedNetworkPath' -NotePropertyValue "" -Force
+    }
+
+    # Saved paths for the path dropdown (network + local, user-managed)
+    if (-not ($script:Settings.modules.SoftwareInstaller.PSObject.Properties.Name -contains 'savedPaths')) {
+        $script:Settings.modules.SoftwareInstaller | Add-Member -NotePropertyName 'savedPaths' -NotePropertyValue @() -Force
+    }
+
+    # Populate the path dropdown with saved + known paths
+    $knownPaths = @()
+    $knownPaths += @($script:Settings.modules.SoftwareInstaller.savedPaths)
+    if ($script:networkPath) { $knownPaths += $script:networkPath }
+    if ($script:localPath) { $knownPaths += $script:localPath }
+    foreach ($kp in ($knownPaths | Where-Object { $_ } | Select-Object -Unique)) {
+        $script:pathTextBox.Items.Add($kp) | Out-Null
+    }
+
+    # Initialize favorites and scan catalog
     $script:FavoritesFile = Join-Path $script:ConfigPath "favorites.json"
+    $script:CatalogFile = Join-Path $script:ConfigPath "app-catalog.json"
 
     # Ensure favoritesLocalPath property exists
     if (-not ($script:Settings.modules.SoftwareInstaller.PSObject.Properties.Name -contains 'favoritesLocalPath')) {
@@ -2202,6 +2523,21 @@ function Initialize-Module {
             $path = $script:pathTextBox.Text.Trim()
             $script:currentPath = $path
         }
+        elseif ($script:sourceCombo.SelectedIndex -eq 2) {
+            # Team Folder: re-resolve if the current path went stale (network dropped)
+            if (-not $path -or -not (Test-Path $path -ErrorAction SilentlyContinue)) {
+                $resolved = & $script:ResolveTeamFolder
+                $path = $resolved.Path
+                $script:pathTextBox.Text = $path
+                $script:currentPath = $path
+                if ($resolved.Source -eq "USB") {
+                    $script:ShareStatusLabel.Text = "Source: USB (offline fallback)"
+                    $script:ShareStatusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+                    $timestamp = Get-Date -Format "HH:mm:ss"
+                    $script:installerLogBox.AppendText("[$timestamp] Team network folder unreachable - using USB Apps folder`r`n")
+                }
+            }
+        }
         else {
             # Local/USB: simple validation
             if (-not $path -or -not (Test-Path $path)) {
@@ -2232,35 +2568,19 @@ function Initialize-Module {
 
         Clear-AppStatus
 
-        # Populate ListView directly (inlined to avoid scriptblock issues)
+        # Populate ListView
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:installerLogBox.AppendText("[$timestamp] Populating ListView...`r`n")
+        & $script:PopulateAppListView | Out-Null
 
-        $filterText = $script:installerFilterBox.Text.Trim().ToLower()
-        $script:appListView.BeginUpdate()
-        $script:appListView.Items.Clear()
-
-        $matchCount = 0
-        foreach ($app in $script:AppsList) {
-            $match = $true
-            if ($filterText) {
-                $match = ($app.Name -and $app.Name.ToLower().Contains($filterText)) -or
-                         ($app.InstallerPath -and $app.InstallerPath.ToLower().Contains($filterText))
-            }
-            if ($match) {
-                $item = New-Object System.Windows.Forms.ListViewItem($app.Name)
-                $item.SubItems.Add($app.InstallerPath) | Out-Null
-                $typeText = if ($app.InstallerType) { $app.InstallerType.TrimStart('.').ToUpper() } else { "?" }
-                $item.SubItems.Add($typeText) | Out-Null
-                $configText = if ($app.HasConfig) { "Yes" } else { "No" }
-                $item.SubItems.Add($configText) | Out-Null
-                $item.Tag = $app
-                $script:appListView.Items.Add($item) | Out-Null
-                $matchCount++
+        # Cache the results so next launch loads instantly (skip partial/cancelled scans)
+        if (-not $script:scanCancelled -and $apps.Count -gt 0) {
+            & $script:SaveCatalog -SourcePath $path
+            if ($script:catalogAgeLabel) {
+                $script:catalogAgeLabel.Text = "Catalog: just scanned"
+                $script:catalogAgeLabel.ForeColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
             }
         }
-        $script:appListView.EndUpdate()
-        $script:appListView.Refresh()
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:installerLogBox.AppendText("[$timestamp] Found $($apps.Count) application(s)`r`n")
@@ -2333,6 +2653,22 @@ function Initialize-Module {
             $script:ConnectBtn.Visible = $true
             $script:ShareStatusLabel.Visible = $true
         }
+        elseif ($script:sourceCombo.SelectedIndex -eq 2) {
+            # Team Folder: curated network folder with automatic USB fallback
+            $resolved = & $script:ResolveTeamFolder
+            $script:pathTextBox.Text = $resolved.Path
+            $script:currentPath = $resolved.Path
+            $script:ConnectBtn.Visible = $false
+            $script:ShareStatusLabel.Visible = $true
+            if ($resolved.Source -eq "Network") {
+                $script:ShareStatusLabel.Text = "Source: Network (team folder)"
+                $script:ShareStatusLabel.ForeColor = [System.Drawing.Color]::Green
+            }
+            else {
+                $script:ShareStatusLabel.Text = "Source: USB (offline fallback)"
+                $script:ShareStatusLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+            }
+        }
         else {
             # Local/USB selected
             $script:pathTextBox.Text = $script:localPath
@@ -2353,6 +2689,37 @@ function Initialize-Module {
             $e.SuppressKeyPress = $true
             & $script:RefreshAppList
         }
+    })
+
+    # Picking a saved path from the dropdown scans it
+    $script:pathTextBox.Add_SelectionChangeCommitted({
+        & $script:RefreshAppList
+    })
+
+    # Save Path button - remember the current path in the dropdown
+    $savePathBtn.Add_Click({
+        $p = $script:pathTextBox.Text.Trim()
+        if (-not $p) { return }
+
+        $saved = @($script:Settings.modules.SoftwareInstaller.savedPaths | Where-Object { $_ })
+        if ($saved -contains $p) {
+            [System.Windows.Forms.MessageBox]::Show("That path is already saved.", "Save Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+
+        $saved += $p
+        $script:Settings.modules.SoftwareInstaller.savedPaths = $saved
+        Save-Settings
+
+        if (-not $script:pathTextBox.Items.Contains($p)) {
+            $script:pathTextBox.Items.Add($p) | Out-Null
+        }
+        if ($script:browsePathCombo -and -not $script:browsePathCombo.Items.Contains($p)) {
+            $script:browsePathCombo.Items.Add($p) | Out-Null
+        }
+
+        Write-SessionLog -Message "Saved installer path: $p" -Category "Software Installer"
+        [System.Windows.Forms.MessageBox]::Show("Path saved to your dropdown list.", "Save Path", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     })
 
     # Install button
@@ -2476,8 +2843,21 @@ Requires Elevation: $elevText
     $timestamp = Get-Date -Format "HH:mm:ss"
     $script:installerLogBox.AppendText("[$timestamp] Software Installer ready.`r`n")
 
-    # Auto-load if path exists
-    if ($script:currentPath -and (Test-Path $script:currentPath -ErrorAction SilentlyContinue)) {
+    # Load the cached catalog first - instant list, no scan needed
+    $catalog = & $script:LoadCatalog
+    if ($catalog -and $catalog.Apps.Count -gt 0) {
+        $script:AppsList = $catalog.Apps
+        if ($catalog.SourcePath) {
+            $script:pathTextBox.Text = $catalog.SourcePath
+            $script:currentPath = $catalog.SourcePath
+        }
+        & $script:PopulateAppListView | Out-Null
+        $script:catalogAgeLabel.Text = "Catalog: $($catalog.ScannedAt) - $($catalog.Apps.Count) apps"
+        $script:installerLogBox.AppendText("[$timestamp] Loaded cached catalog ($($catalog.Apps.Count) apps, scanned $($catalog.ScannedAt)).`r`n")
+        $script:installerLogBox.AppendText("[$timestamp] Click Refresh to rescan the source.`r`n")
+    }
+    # No catalog - auto-scan if the saved path exists
+    elseif ($script:currentPath -and (Test-Path $script:currentPath -ErrorAction SilentlyContinue)) {
         & $script:RefreshAppList
     }
     else {
@@ -2485,6 +2865,586 @@ Requires Elevation: $elevText
     }
 
     #endregion Install Software Tab
+
+    #region Browse & Queue Tab
+
+    # Lists one directory at a time (instant - no recursion, no timeout),
+    # queues selected installers/scripts, and installs the queue in order.
+    # Queues can be saved as named Groups (persisted in favorites.json).
+
+    $script:browsePath = ""
+
+    $brMainPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $brMainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brMainPanel.RowCount = 5
+    $brMainPanel.ColumnCount = 1
+    $brMainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 45))) | Out-Null   # Path bar
+    $brMainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 62))) | Out-Null    # Lists
+    $brMainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 42))) | Out-Null   # Queue buttons
+    $brMainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 42))) | Out-Null   # Groups bar
+    $brMainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 38))) | Out-Null    # Log
+
+    #region Browse Row 0: Path bar
+    $brPathPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $brPathPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brPathPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+    $brPathPanel.WrapContents = $false
+
+    $brPathLabel = New-Object System.Windows.Forms.Label
+    $brPathLabel.Text = "Path:"
+    $brPathLabel.AutoSize = $true
+    $brPathLabel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 5, 0)
+    $brPathPanel.Controls.Add($brPathLabel)
+
+    $script:browsePathCombo = New-Object System.Windows.Forms.ComboBox
+    $script:browsePathCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDown
+    $script:browsePathCombo.Width = 450
+    $brPathPanel.Controls.Add($script:browsePathCombo)
+
+    $brGoBtn = New-Object System.Windows.Forms.Button
+    $brGoBtn.Text = "Go"
+    $brGoBtn.Width = 45
+    $brGoBtn.Height = 28
+    $brPathPanel.Controls.Add($brGoBtn)
+
+    $brUpBtn = New-Object System.Windows.Forms.Button
+    $brUpBtn.Text = "Up"
+    $brUpBtn.Width = 45
+    $brUpBtn.Height = 28
+    $brPathPanel.Controls.Add($brUpBtn)
+
+    $brSavePathBtn = New-Object System.Windows.Forms.Button
+    $brSavePathBtn.Text = "Save Path"
+    $brSavePathBtn.Width = 80
+    $brSavePathBtn.Height = 28
+    $brPathPanel.Controls.Add($brSavePathBtn)
+
+    $script:browseHereLabel = New-Object System.Windows.Forms.Label
+    $script:browseHereLabel.Text = ""
+    $script:browseHereLabel.AutoSize = $true
+    $script:browseHereLabel.ForeColor = [System.Drawing.Color]::Gray
+    $script:browseHereLabel.Padding = New-Object System.Windows.Forms.Padding(10, 7, 0, 0)
+    $brPathPanel.Controls.Add($script:browseHereLabel)
+
+    $brMainPanel.Controls.Add($brPathPanel, 0, 0)
+    #endregion
+
+    #region Browse Row 1: Directory listing | Queue
+    $brListsPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $brListsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brListsPanel.RowCount = 1
+    $brListsPanel.ColumnCount = 2
+    $brListsPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
+    $brListsPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null
+    $brListsPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+
+    $brListGroup = New-Object System.Windows.Forms.GroupBox
+    $brListGroup.Text = "Folders && Installers (double-click folder to open, file to queue)"
+    $brListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brListGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:browseListView = New-Object System.Windows.Forms.ListView
+    $script:browseListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:browseListView.View = [System.Windows.Forms.View]::Details
+    $script:browseListView.FullRowSelect = $true
+    $script:browseListView.GridLines = $true
+    $script:browseListView.MultiSelect = $true
+    $script:browseListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:browseListView.Columns.Add("Name", 280) | Out-Null
+    $script:browseListView.Columns.Add("Type", 70) | Out-Null
+    $script:browseListView.Columns.Add("Size", 80) | Out-Null
+    $script:browseListView.Columns.Add("Modified", 120) | Out-Null
+
+    $brListGroup.Controls.Add($script:browseListView)
+    $brListsPanel.Controls.Add($brListGroup, 0, 0)
+
+    $brQueueGroup = New-Object System.Windows.Forms.GroupBox
+    $brQueueGroup.Text = "Install Queue (0)"
+    $brQueueGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brQueueGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+    $script:brQueueGroupRef = $brQueueGroup
+
+    $script:queueListView = New-Object System.Windows.Forms.ListView
+    $script:queueListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:queueListView.View = [System.Windows.Forms.View]::Details
+    $script:queueListView.FullRowSelect = $true
+    $script:queueListView.GridLines = $true
+    $script:queueListView.MultiSelect = $true
+    $script:queueListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:queueListView.Columns.Add("#", 30) | Out-Null
+    $script:queueListView.Columns.Add("Name", 200) | Out-Null
+    $script:queueListView.Columns.Add("Type", 55) | Out-Null
+    $script:queueListView.Columns.Add("Path", 320) | Out-Null
+
+    $brQueueGroup.Controls.Add($script:queueListView)
+    $brListsPanel.Controls.Add($brQueueGroup, 1, 0)
+
+    $brMainPanel.Controls.Add($brListsPanel, 0, 1)
+    #endregion
+
+    #region Browse script blocks
+
+    # Log helper for this tab
+    $script:BrowseLog = {
+        param([string]$Msg)
+        $ts = Get-Date -Format "HH:mm:ss"
+        $script:browseLogBox.AppendText("[$ts] $Msg`r`n")
+        $script:browseLogBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    # List one directory: folders first, then installable files. Single
+    # enumeration per level = instant even on huge shares.
+    $script:LoadBrowseList = {
+        param([string]$Path)
+
+        if (-not $Path) { return }
+        $Path = $Path.TrimEnd('\')
+
+        if (-not (Test-Path $Path -ErrorAction SilentlyContinue)) {
+            if ($Path -like "\\*") {
+                & $script:BrowseLog "Path not reachable - attempting authenticated connection..."
+                $connected = & $script:EnsureShareAccess -SharePath $Path -LogBox $script:browseLogBox
+                if (-not $connected) {
+                    & $script:BrowseLog "Cannot access: $Path"
+                    return
+                }
+            }
+            else {
+                & $script:BrowseLog "Path not found: $Path"
+                return
+            }
+        }
+
+        $script:browsePath = $Path
+        $script:browsePathCombo.Text = $Path
+        $script:browseHereLabel.Text = ""
+
+        $script:browseListView.BeginUpdate()
+        $script:browseListView.Items.Clear()
+
+        $folderCount = 0
+        $fileCount = 0
+
+        # Folders
+        try {
+            foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($Path)) {
+                $di = [System.IO.DirectoryInfo]::new($dirPath)
+                $item = New-Object System.Windows.Forms.ListViewItem($di.Name)
+                $item.SubItems.Add("Folder") | Out-Null
+                $item.SubItems.Add("") | Out-Null
+                $item.SubItems.Add($di.LastWriteTime.ToString("yyyy-MM-dd HH:mm")) | Out-Null
+                $item.ForeColor = [System.Drawing.Color]::FromArgb(0, 90, 158)
+                $item.Tag = @{ IsFolder = $true; Path = $di.FullName }
+                $script:browseListView.Items.Add($item) | Out-Null
+                $folderCount++
+            }
+        }
+        catch {
+            & $script:BrowseLog "Error listing folders: $($_.Exception.Message)"
+        }
+
+        # Installable files
+        $browseExtensions = @('.msi', '.exe', '.bat', '.cmd', '.ps1')
+        try {
+            foreach ($filePath in [System.IO.Directory]::EnumerateFiles($Path)) {
+                $fi = [System.IO.FileInfo]::new($filePath)
+                if ($browseExtensions -contains $fi.Extension.ToLower()) {
+                    $item = New-Object System.Windows.Forms.ListViewItem($fi.Name)
+                    $item.SubItems.Add($fi.Extension.TrimStart('.').ToUpper()) | Out-Null
+                    $sizeMB = [math]::Round($fi.Length / 1MB, 1)
+                    $item.SubItems.Add("$sizeMB MB") | Out-Null
+                    $item.SubItems.Add($fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm")) | Out-Null
+                    $item.Tag = @{ IsFolder = $false; Path = $fi.FullName }
+                    $script:browseListView.Items.Add($item) | Out-Null
+                    $fileCount++
+                }
+            }
+        }
+        catch {
+            & $script:BrowseLog "Error listing files: $($_.Exception.Message)"
+        }
+
+        $script:browseListView.EndUpdate()
+        $script:browseHereLabel.Text = "$folderCount folder(s), $fileCount installable(s)"
+    }
+
+    # Add a file to the install queue (dedup by full path)
+    $script:AddFileToQueue = {
+        param([string]$FilePath)
+
+        $existing = $script:QueueList | Where-Object { $_.InstallerPath -eq $FilePath }
+        if ($existing) { return $false }
+
+        $fi = [System.IO.FileInfo]::new($FilePath)
+        $ext = $fi.Extension.ToLower()
+        $silentArgs = switch ($ext) {
+            '.msi'  { "/qn /norestart" }
+            '.exe'  { "/S" }
+            default { "" }
+        }
+        $interactiveArgs = switch ($ext) {
+            '.msi'  { "/qb" }
+            default { "" }
+        }
+
+        $script:QueueList += @{
+            Name = $fi.BaseName
+            Version = ""
+            Description = "(queued from browser)"
+            InstallerPath = $fi.FullName
+            InstallerType = $ext
+            SilentArgs = $silentArgs
+            InteractiveArgs = $interactiveArgs
+            RequiresElevation = $true
+            HasConfig = $false
+            FolderPath = $fi.DirectoryName
+        }
+        return $true
+    }
+
+    # Rebuild the queue ListView from $script:QueueList
+    $script:RefreshQueueView = {
+        $script:queueListView.BeginUpdate()
+        $script:queueListView.Items.Clear()
+        $i = 0
+        foreach ($q in $script:QueueList) {
+            $i++
+            $item = New-Object System.Windows.Forms.ListViewItem("$i")
+            $item.SubItems.Add($q.Name) | Out-Null
+            $item.SubItems.Add($q.InstallerType.TrimStart('.').ToUpper()) | Out-Null
+            $item.SubItems.Add($q.InstallerPath) | Out-Null
+            $item.Tag = $q
+            $script:queueListView.Items.Add($item) | Out-Null
+        }
+        $script:queueListView.EndUpdate()
+        $script:brQueueGroupRef.Text = "Install Queue ($($script:QueueList.Count))"
+    }
+
+    # Rebuild the groups dropdown from $script:GroupsList
+    $script:RefreshGroupCombo = {
+        $script:groupCombo.Items.Clear()
+        foreach ($grp in $script:GroupsList) {
+            $script:groupCombo.Items.Add($grp.Name) | Out-Null
+        }
+        if ($script:groupCombo.Items.Count -gt 0) { $script:groupCombo.SelectedIndex = 0 }
+    }
+
+    #endregion
+
+    #region Browse Row 2: Queue action buttons
+    $brButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $brButtonPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brButtonPanel.Padding = New-Object System.Windows.Forms.Padding(5, 3, 5, 0)
+    $brButtonPanel.WrapContents = $false
+
+    $brAddBtn = New-Object System.Windows.Forms.Button
+    $brAddBtn.Text = "Add to Queue"
+    $brAddBtn.Width = 105
+    $brAddBtn.Height = 30
+    $brAddBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
+    $brButtonPanel.Controls.Add($brAddBtn)
+
+    $brRemoveBtn = New-Object System.Windows.Forms.Button
+    $brRemoveBtn.Text = "Remove"
+    $brRemoveBtn.Width = 70
+    $brRemoveBtn.Height = 30
+    $brButtonPanel.Controls.Add($brRemoveBtn)
+
+    $brClearBtn = New-Object System.Windows.Forms.Button
+    $brClearBtn.Text = "Clear Queue"
+    $brClearBtn.Width = 95
+    $brClearBtn.Height = 30
+    $brButtonPanel.Controls.Add($brClearBtn)
+
+    $brSep1 = New-Object System.Windows.Forms.Label
+    $brSep1.Text = "|"
+    $brSep1.AutoSize = $true
+    $brSep1.Padding = New-Object System.Windows.Forms.Padding(5, 8, 5, 0)
+    $brButtonPanel.Controls.Add($brSep1)
+
+    $script:brSilentRadio = New-Object System.Windows.Forms.RadioButton
+    $script:brSilentRadio.Text = "Silent"
+    $script:brSilentRadio.AutoSize = $true
+    $script:brSilentRadio.Checked = $true
+    $script:brSilentRadio.Padding = New-Object System.Windows.Forms.Padding(0, 5, 8, 0)
+    $brButtonPanel.Controls.Add($script:brSilentRadio)
+
+    $script:brInteractiveRadio = New-Object System.Windows.Forms.RadioButton
+    $script:brInteractiveRadio.Text = "Interactive"
+    $script:brInteractiveRadio.AutoSize = $true
+    $script:brInteractiveRadio.Padding = New-Object System.Windows.Forms.Padding(0, 5, 8, 0)
+    $brButtonPanel.Controls.Add($script:brInteractiveRadio)
+
+    $brInstallBtn = New-Object System.Windows.Forms.Button
+    $brInstallBtn.Text = "Install Queue"
+    $brInstallBtn.Width = 110
+    $brInstallBtn.Height = 30
+    $brInstallBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
+    $brButtonPanel.Controls.Add($brInstallBtn)
+
+    $brMainPanel.Controls.Add($brButtonPanel, 0, 2)
+    #endregion
+
+    #region Browse Row 3: Groups bar
+    $brGroupPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $brGroupPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brGroupPanel.Padding = New-Object System.Windows.Forms.Padding(5, 3, 5, 0)
+    $brGroupPanel.WrapContents = $false
+
+    $grpLabel = New-Object System.Windows.Forms.Label
+    $grpLabel.Text = "Groups:"
+    $grpLabel.AutoSize = $true
+    $grpLabel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 5, 0)
+    $brGroupPanel.Controls.Add($grpLabel)
+
+    $script:groupCombo = New-Object System.Windows.Forms.ComboBox
+    $script:groupCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $script:groupCombo.Width = 220
+    $brGroupPanel.Controls.Add($script:groupCombo)
+
+    $grpLoadBtn = New-Object System.Windows.Forms.Button
+    $grpLoadBtn.Text = "Load to Queue"
+    $grpLoadBtn.Width = 110
+    $grpLoadBtn.Height = 30
+    $brGroupPanel.Controls.Add($grpLoadBtn)
+
+    $grpSaveBtn = New-Object System.Windows.Forms.Button
+    $grpSaveBtn.Text = "Save Queue as Group..."
+    $grpSaveBtn.Width = 160
+    $grpSaveBtn.Height = 30
+    $grpSaveBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 248, 220)
+    $brGroupPanel.Controls.Add($grpSaveBtn)
+
+    $grpDeleteBtn = New-Object System.Windows.Forms.Button
+    $grpDeleteBtn.Text = "Delete Group"
+    $grpDeleteBtn.Width = 100
+    $grpDeleteBtn.Height = 30
+    $brGroupPanel.Controls.Add($grpDeleteBtn)
+
+    $brMainPanel.Controls.Add($brGroupPanel, 0, 3)
+    #endregion
+
+    #region Browse Row 4: Log
+    $brLogGroup = New-Object System.Windows.Forms.GroupBox
+    $brLogGroup.Text = "Log"
+    $brLogGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $brLogGroup.Padding = New-Object System.Windows.Forms.Padding(5)
+
+    $script:browseLogBox = New-Object System.Windows.Forms.TextBox
+    $script:browseLogBox.Multiline = $true
+    $script:browseLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:browseLogBox.ReadOnly = $true
+    $script:browseLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:browseLogBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $script:browseLogBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+    $script:browseLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $brLogGroup.Controls.Add($script:browseLogBox)
+    $brMainPanel.Controls.Add($brLogGroup, 0, 4)
+    #endregion
+
+    #region Browse event handlers
+
+    $brGoBtn.Add_Click({
+        & $script:LoadBrowseList -Path $script:browsePathCombo.Text.Trim()
+    })
+
+    $script:browsePathCombo.Add_KeyDown({
+        param($sender, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+            $e.SuppressKeyPress = $true
+            & $script:LoadBrowseList -Path $script:browsePathCombo.Text.Trim()
+        }
+    })
+
+    $script:browsePathCombo.Add_SelectionChangeCommitted({
+        & $script:LoadBrowseList -Path $script:browsePathCombo.Text.Trim()
+    })
+
+    $brUpBtn.Add_Click({
+        if ($script:browsePath) {
+            $parent = Split-Path $script:browsePath -Parent
+            if ($parent) {
+                & $script:LoadBrowseList -Path $parent
+            }
+        }
+    })
+
+    $brSavePathBtn.Add_Click({
+        $p = $script:browsePathCombo.Text.Trim()
+        if (-not $p) { return }
+
+        $saved = @($script:Settings.modules.SoftwareInstaller.savedPaths | Where-Object { $_ })
+        if ($saved -notcontains $p) {
+            $saved += $p
+            $script:Settings.modules.SoftwareInstaller.savedPaths = $saved
+            Save-Settings
+            if (-not $script:browsePathCombo.Items.Contains($p)) { $script:browsePathCombo.Items.Add($p) | Out-Null }
+            if (-not $script:pathTextBox.Items.Contains($p)) { $script:pathTextBox.Items.Add($p) | Out-Null }
+            & $script:BrowseLog "Path saved: $p"
+        }
+        else {
+            & $script:BrowseLog "Path already saved."
+        }
+    })
+
+    # Double-click: open folder / queue file
+    $script:browseListView.Add_DoubleClick({
+        if ($script:browseListView.SelectedItems.Count -eq 0) { return }
+        $tag = $script:browseListView.SelectedItems[0].Tag
+        if ($tag.IsFolder) {
+            & $script:LoadBrowseList -Path $tag.Path
+        }
+        else {
+            if (& $script:AddFileToQueue -FilePath $tag.Path) {
+                & $script:RefreshQueueView
+                & $script:BrowseLog "Queued: $(Split-Path $tag.Path -Leaf)"
+            }
+        }
+    })
+
+    $brAddBtn.Add_Click({
+        $added = 0
+        foreach ($item in $script:browseListView.SelectedItems) {
+            $tag = $item.Tag
+            if (-not $tag.IsFolder) {
+                if (& $script:AddFileToQueue -FilePath $tag.Path) { $added++ }
+            }
+        }
+        if ($added -gt 0) {
+            & $script:RefreshQueueView
+            & $script:BrowseLog "Queued $added item(s)."
+        }
+        else {
+            & $script:BrowseLog "Select one or more files (not folders) to queue."
+        }
+    })
+
+    $brRemoveBtn.Add_Click({
+        if ($script:queueListView.SelectedItems.Count -eq 0) { return }
+        $removePaths = @()
+        foreach ($item in $script:queueListView.SelectedItems) {
+            $removePaths += $item.Tag.InstallerPath
+        }
+        $script:QueueList = @($script:QueueList | Where-Object { $removePaths -notcontains $_.InstallerPath })
+        & $script:RefreshQueueView
+    })
+
+    $brClearBtn.Add_Click({
+        $script:QueueList = @()
+        & $script:RefreshQueueView
+    })
+
+    $brInstallBtn.Add_Click({
+        if ($script:QueueList.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("The queue is empty. Add installers first.", "Empty Queue", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+
+        $silent = $script:brSilentRadio.Checked
+        $modeText = if ($silent) { "silent" } else { "interactive" }
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Install $($script:QueueList.Count) queued item(s) in $modeText mode?",
+            "Confirm Installation",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        $total = $script:QueueList.Count
+        $current = 0
+        foreach ($app in @($script:QueueList)) {
+            $current++
+            Set-AppProgress -Value $current -Maximum $total -Message "Installing $current of $total`: $($app.Name)"
+            & $script:InstallApp -App $app -Silent $silent -LogBox $script:browseLogBox
+        }
+        Clear-AppStatus
+        & $script:BrowseLog "--- Queue installation complete ($total item(s)) ---"
+        Write-SessionLog -Message "Installed queue of $total item(s)" -Category "Software Installer"
+    })
+
+    $grpSaveBtn.Add_Click({
+        if ($script:QueueList.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("The queue is empty - add items before saving a group.", "Empty Queue", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        $name = [Microsoft.VisualBasic.Interaction]::InputBox("Name for this install group:", "Save Group", "")
+        if (-not $name -or -not $name.Trim()) { return }
+        $name = $name.Trim()
+
+        $existing = $script:GroupsList | Where-Object { $_.Name -eq $name }
+        if ($existing) {
+            $overwrite = [System.Windows.Forms.MessageBox]::Show("Group '$name' already exists. Overwrite it?", "Group Exists", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            if ($overwrite -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            $script:GroupsList = @($script:GroupsList | Where-Object { $_.Name -ne $name })
+        }
+
+        $script:GroupsList += @{ Name = $name; Items = @($script:QueueList) }
+        & $script:SaveFavorites
+        & $script:RefreshGroupCombo
+        $script:groupCombo.SelectedItem = $name
+        & $script:BrowseLog "Saved group '$name' ($($script:QueueList.Count) item(s))."
+        Write-SessionLog -Message "Saved install group '$name' ($($script:QueueList.Count) items)" -Category "Software Installer"
+    })
+
+    $grpLoadBtn.Add_Click({
+        if (-not $script:groupCombo.SelectedItem) { return }
+        $name = $script:groupCombo.SelectedItem.ToString()
+        $grp = $script:GroupsList | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if (-not $grp) { return }
+
+        $added = 0
+        $missing = 0
+        foreach ($it in $grp.Items) {
+            if (-not (Test-Path $it.InstallerPath -ErrorAction SilentlyContinue)) {
+                $missing++
+                & $script:BrowseLog "MISSING: $($it.InstallerPath)"
+                continue
+            }
+            $exists = $script:QueueList | Where-Object { $_.InstallerPath -eq $it.InstallerPath }
+            if (-not $exists) {
+                $script:QueueList += $it
+                $added++
+            }
+        }
+        & $script:RefreshQueueView
+        $msg = "Loaded group '$name': $added item(s) queued"
+        if ($missing -gt 0) { $msg += ", $missing missing (source unreachable?)" }
+        & $script:BrowseLog $msg
+    })
+
+    $grpDeleteBtn.Add_Click({
+        if (-not $script:groupCombo.SelectedItem) { return }
+        $name = $script:groupCombo.SelectedItem.ToString()
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show("Delete group '$name'?", "Delete Group", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        $script:GroupsList = @($script:GroupsList | Where-Object { $_.Name -ne $name })
+        & $script:SaveFavorites
+        & $script:RefreshGroupCombo
+        & $script:BrowseLog "Deleted group '$name'."
+    })
+
+    #endregion
+
+    $browseTab.Controls.Add($brMainPanel)
+
+    # Populate saved paths and groups; start in the Team Folder location
+    foreach ($kp in ($knownPaths | Where-Object { $_ } | Select-Object -Unique)) {
+        $script:browsePathCombo.Items.Add($kp) | Out-Null
+    }
+    & $script:RefreshGroupCombo
+
+    $teamStart = & $script:ResolveTeamFolder
+    & $script:BrowseLog "Browse && Queue ready. Starting in: $($teamStart.Path) ($($teamStart.Source))"
+    & $script:LoadBrowseList -Path $teamStart.Path
+
+    #endregion Browse & Queue Tab
 
     #region Favorites Tab
 
@@ -2563,6 +3523,7 @@ Requires Elevation: $elevText
     $script:favListView.Columns.Add("Source Path", 350) | Out-Null
 
     # Column click sorting
+    # ($sender is the ListView - $script: vars don't resolve inside GetNewClosure)
     $favSortColumn = 0
     $favSortAscending = $true
     $script:favListView.Add_ColumnClick({
@@ -2576,15 +3537,15 @@ Requires Elevation: $elevText
             $favSortAscending = $true
         }
 
-        $items = @($script:favListView.Items | ForEach-Object { $_ })
+        $items = @($sender.Items | ForEach-Object { $_ })
         $sorted = $items | Sort-Object { $_.SubItems[$col].Text } -Descending:(-not $favSortAscending)
 
-        $script:favListView.BeginUpdate()
-        $script:favListView.Items.Clear()
+        $sender.BeginUpdate()
+        $sender.Items.Clear()
         foreach ($item in $sorted) {
-            $script:favListView.Items.Add($item) | Out-Null
+            $sender.Items.Add($item) | Out-Null
         }
-        $script:favListView.EndUpdate()
+        $sender.EndUpdate()
     }.GetNewClosure())
 
     $favListGroup.Controls.Add($script:favListView)

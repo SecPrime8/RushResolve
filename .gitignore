@@ -17,3 +17,6 @@ Tools/*.msi
 *.tmp
 *.bak
 *.log
+
+# Per-machine scan cache, regenerated on first Refresh
+Config/app-catalog.json
