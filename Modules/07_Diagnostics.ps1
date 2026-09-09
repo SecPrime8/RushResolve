@@ -1334,19 +1334,41 @@ function Initialize-Module {
         $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Schedule Check Disk", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
             $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] Scheduling chkdsk /f /r for C: on next reboot...`r`n")
-            Write-SessionLog -Message "Scheduled chkdsk /f /r via Diagnostics Quick Tools" -Category "Diagnostics"
-            # Schedule chkdsk - requires elevation
+            # NOTE: the log line and Write-SessionLog used to fire HERE, before the
+            # credential prompt and before chkdsk ran, so the session log - the
+            # audit trail - recorded disk checks that were never scheduled. Both
+            # if-blocks also had no else, so a cancelled prompt or a failed
+            # elevation produced no dialog, no log line, and no clue.
+            $script:diagLogBox.AppendText("[$ts] Requesting elevation to schedule chkdsk /f /r for C:...`r`n")
+
             $cred = Get-ElevatedCredential -Message "Enter admin credentials to schedule Check Disk"
-            if ($cred) {
-                $result = Invoke-Elevated -ScriptBlock {
-                    # Schedule chkdsk on next boot
-                    $output = & cmd /c "echo Y | chkdsk C: /f /r" 2>&1
-                    return $output
-                } -Credential $cred -OperationName "schedule Check Disk"
-                if ($result.Success) {
-                    [System.Windows.Forms.MessageBox]::Show("Check Disk scheduled.`nReboot to run the disk check.", "Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            if (-not $cred) {
+                $script:diagLogBox.AppendText("[$ts] Cancelled - Check Disk was NOT scheduled.`r`n")
+                Write-SessionLog -Message "Check Disk scheduling cancelled at credential prompt" -Category "Diagnostics"
+                return
+            }
+
+            $result = Invoke-Elevated -ScriptBlock {
+                # Schedule chkdsk on next boot
+                $output = & cmd /c "echo Y | chkdsk C: /f /r" 2>&1
+                return $output
+            } -Credential $cred -OperationName "schedule Check Disk"
+
+            if ($result.Success) {
+                $script:diagLogBox.AppendText("[$ts] Check Disk scheduled for next reboot.`r`n")
+                if ($result.Output) {
+                    foreach ($line in (($result.Output | Out-String) -split "`r?`n")) {
+                        if ($line.Trim()) { $script:diagLogBox.AppendText("[$ts]   $($line.Trim())`r`n") }
+                    }
                 }
+                Write-SessionLog -Message "Scheduled chkdsk /f /r via Diagnostics Quick Tools" -Category "Diagnostics" -Result "Success"
+                [System.Windows.Forms.MessageBox]::Show("Check Disk scheduled.`nReboot to run the disk check.", "Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            }
+            else {
+                $errText = if ($result.Error) { $result.Error } else { "Unknown error" }
+                $script:diagLogBox.AppendText("[$ts] FAILED to schedule Check Disk: $errText`r`n")
+                Write-SessionLog -Message "Check Disk scheduling FAILED: $errText" -Category "Diagnostics" -Level "ERROR"
+                [System.Windows.Forms.MessageBox]::Show("Check Disk was NOT scheduled.`r`n`r`n$errText", "Not Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
             }
         }
     })

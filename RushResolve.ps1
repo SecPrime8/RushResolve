@@ -2378,20 +2378,45 @@ function Start-AsENTElevated {
             $escapedArgs = $ArgumentList.Replace("'", "''")
             $innerCommand += " -ArgumentList '$escapedArgs'"
         }
-        $innerCommand += " -Verb RunAs"
+        $innerCommand += " -Verb RunAs -ErrorAction Stop"
+
+        # Wrap hop 2 so its outcome is OBSERVABLE. Previously hop 2 ran blind
+        # and Success was set to $true the moment hop 1's logon worked, so the
+        # session log recorded "Launched as ENT (elevated)" for launches that
+        # never happened - a denied UAC prompt, an ENT account that is not a
+        # local admin, or a target ENT cannot reach all looked identical to
+        # success. Exit 3 = hop 2 failed.
+        $innerCommand = "try { $innerCommand; exit 0 } catch { exit 3 }"
 
         # Encode to survive quoting across the process boundary
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
 
         # Hop 1: PowerShell as ENT (working dir must be accessible to ENT)
-        Start-Process -FilePath "powershell.exe" `
+        $hop1 = Start-Process -FilePath "powershell.exe" `
             -ArgumentList "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded" `
             -Credential $Credential `
             -WorkingDirectory "C:\Windows\System32" `
-            -ErrorAction Stop | Out-Null
+            -PassThru `
+            -ErrorAction Stop
 
-        Write-SessionLog -Message "Launched as ENT (elevated): $FilePath $ArgumentList" -Category "Elevation"
-        $result.Success = $true
+        # Hop 1 exits as soon as it has handed off to hop 2, so this is short.
+        # If it has not exited in time, treat it as launched - the UAC prompt
+        # may simply still be on screen waiting for the tech.
+        $exited = $false
+        if ($hop1) { $exited = $hop1.WaitForExit(15000) }
+
+        if ($exited -and $hop1.ExitCode -eq 3) {
+            $result.Error = "Elevation was refused. The UAC prompt may have been denied, or the ENT account may not be a local administrator on this machine."
+            Write-SessionLog -Message "ENT elevated launch REFUSED at hop 2: $FilePath" -Category "Elevation" -Level "ERROR"
+        }
+        elseif ($exited -and $hop1.ExitCode -ne 0) {
+            $result.Error = "ENT launch failed (exit code $($hop1.ExitCode))."
+            Write-SessionLog -Message "ENT elevated launch failed at hop 1: $FilePath (exit $($hop1.ExitCode))" -Category "Elevation" -Level "ERROR"
+        }
+        else {
+            Write-SessionLog -Message "Launched as ENT (elevated): $FilePath $ArgumentList" -Category "Elevation"
+            $result.Success = $true
+        }
     }
     catch {
         $result.Error = "ENT elevated launch failed: $($_.Exception.Message)"
@@ -2898,7 +2923,7 @@ function Invoke-CheckForUpdates {
             return
         }
 
-        Write-SessionLog "Update available: v$($script:AppVersion) → $($release.tag_name)" -Category "Update"
+        Write-SessionLog "Update available: v$($script:AppVersion) -> $($release.tag_name)" -Category "Update"
 
         # Show update dialog with release notes
         Show-UpdateDialog -Release $release
@@ -2975,7 +3000,7 @@ function Test-NewVersionAvailable {
     )
 
     try {
-        # Normalize versions: "2.3" → "2.3.0", "v2.4.0" → "2.4.0"
+        # Normalize versions: "2.3" -> "2.3.0", "v2.4.0" -> "2.4.0"
         $currentVer = [version]($Current + ".0")
         $githubVer = [version]($GitHub -replace "^v", "")
 
@@ -3921,7 +3946,7 @@ function Show-MainWindow {
         $failureMsg += ($integrityResult.Failures -join "`n")
         $failureMsg += "`n`nThe application will not start to protect your system.`n`n"
         $failureMsg += "If you made legitimate changes, use:`n"
-        $failureMsg += "Tools → Security Options → Update Security Manifests"
+        $failureMsg += "Tools -> Security Options -> Update Security Manifests"
 
         [void][System.Windows.Forms.MessageBox]::Show(
             $failureMsg,

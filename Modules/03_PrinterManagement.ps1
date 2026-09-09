@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Printer Management Module for Rush Resolve
 .DESCRIPTION

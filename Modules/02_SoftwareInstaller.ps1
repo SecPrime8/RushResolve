@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Software Installer Module for Rush Resolve
 .DESCRIPTION
@@ -1182,7 +1182,7 @@ $script:UpdateApp = {
     )
 
     $timestamp = Get-Date -Format "HH:mm:ss"
-    $LogBox.AppendText("[$timestamp] Updating $($App.Name) ($($App.CurrentVersion) â†’ $($App.AvailableVersion))...`r`n")
+    $LogBox.AppendText("[$timestamp] Updating $($App.Name) ($($App.CurrentVersion) -> $($App.AvailableVersion))...`r`n")
     $LogBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
 
