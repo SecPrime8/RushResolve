@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Printer Management Module for Rush Resolve
 .DESCRIPTION
@@ -13,10 +13,7 @@ $script:ModuleDescription = "Add, remove, and manage network printers"
 # SECURITY: Hardcoded allowlist of approved print servers
 # Only these servers can be used - prevents path injection attacks
 $script:AllowedPrintServers = @(
-    "\\RUDWV-PS401",       # Primary RMC print server
-    "\\RUDWV-PS402",       # Secondary RMC print server
-    "\\RUCPMC-PS01",       # CPMC print server
-    "\\RUSH-PS01"          # Main campus print server
+    "\\RUDWV-PS401"        # Primary RMC print server - only server we use
 )
 
 # Load default server from settings (must be in allowlist)
@@ -26,6 +23,14 @@ if ($script:PrintServer -and $script:AllowedPrintServers -notcontains $script:Pr
     $script:PrintServer = $script:AllowedPrintServers[0]
 }
 $script:PrinterBackupShare = "\\rush.edu\vdi\apphub\tools\NetworkPrinters"
+
+# Host profile shares (populated by the legacy Excel macro "Create Printer Text Files")
+# XA is install-ready (full UNC per line) and is the default read/install target.
+$script:ProfileShareXA     = "\\rush.edu\VDI\Personal\_PrinterMappingsXA"
+$script:ProfileSharePlain  = "\\rush.edu\VDI\Personal\_PrinterMappings"
+$script:ProfileShareAppHub = "\\rush.edu\vdi\AppHub\Tools\NetworkPrinters"
+# Default server prefix for Plain-format rows (matches the Excel macro's hardcoded svrText)
+$script:ProfileDefaultServerPrefix = "\\RUDWV-PS401.rush.edu"
 #endregion
 
 #region Security Functions
@@ -66,17 +71,6 @@ function Test-PrinterPathAllowed {
 #endregion
 
 #region Script Blocks
-
-# Log helper function
-$script:PrinterLog = {
-    param([string]$Message)
-    if ($script:printerLogBox) {
-        $timestamp = Get-Date -Format "HH:mm:ss"
-        $script:printerLogBox.AppendText("[$timestamp] $Message`r`n")
-        $script:printerLogBox.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-    }
-}
 
 # Get installed printers
 $script:GetInstalledPrinters = {
@@ -129,20 +123,19 @@ $script:GetInstalledPrinters = {
 }
 
 # Get printers from print server (with progress updates via app-wide status bar)
-# Uses background jobs + DoEvents polling to keep UI responsive on Windows 10
 $script:GetServerPrinters = {
     param([string]$Server)
 
     $printers = @()
     $serverName = $Server.TrimStart('\')
 
-    # Quick connectivity check using .NET Ping with built-in 2s timeout (non-blocking)
+    # Quick connectivity check (fail fast if server unreachable)
     Start-AppActivity "Testing connection to $serverName..."
     try {
-        $ping = New-Object System.Net.NetworkInformation.Ping
-        $reply = $ping.Send($serverName, 2000)
-        if ($reply.Status -ne 'Success') {
-            Write-SessionLog -Message "Print server $serverName is unreachable (ping: $($reply.Status))" -Category "Printer Management"
+        # Use WMI ping with 2-second timeout (compatible with PowerShell 5.1)
+        $pingResult = Get-WmiObject -Class Win32_PingStatus -Filter "Address='$serverName' AND Timeout=2000" -ErrorAction Stop
+        if ($pingResult.StatusCode -ne 0) {
+            Write-SessionLog -Message "Print server $serverName is unreachable (ping failed)" -Category "Printer Management"
             return @()
         }
     }
@@ -151,219 +144,135 @@ $script:GetServerPrinters = {
         return @()
     }
 
-    # Helper: Run a job with DoEvents polling and timeout
-    # Returns job output or $null on timeout/failure
-    $runWithTimeout = {
-        param([scriptblock]$JobScript, [object[]]$JobArgs, [string]$Label, [int]$TimeoutSeconds = 15)
-        Start-AppActivity "$Label..."
-        [System.Windows.Forms.Application]::DoEvents()
-        try {
-            $job = Start-Job -ScriptBlock $JobScript -ArgumentList $JobArgs
-            $start = Get-Date
-            while ($job.State -eq 'Running') {
-                Start-Sleep -Milliseconds 200
-                [System.Windows.Forms.Application]::DoEvents()
-                if (((Get-Date) - $start).TotalSeconds -gt $TimeoutSeconds) {
-                    Stop-Job $job -ErrorAction SilentlyContinue
-                    Remove-Job $job -Force -ErrorAction SilentlyContinue
-                    return $null
-                }
-            }
-            $output = Receive-Job $job -ErrorAction Stop
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            return $output
-        }
-        catch {
-            if ($job) { Remove-Job $job -Force -ErrorAction SilentlyContinue }
-            return $null
-        }
-    }
-
     # Method 1: Try Get-Printer cmdlet (requires Print Management) - Skip if not available
     if ($script:HasPrintManagement) {
-        $getPrinterScript = {
-            param($s)
-            Get-Printer -ComputerName $s -ErrorAction Stop | Where-Object { $_.Shared } |
-                ForEach-Object {
-                    $shareName = if ($_.ShareName) { $_.ShareName } else { $_.Name }
-                    [PSCustomObject]@{
-                        Name = $_.Name; ShareName = $shareName
-                        Location = $_.Location; Comment = $_.Comment; DriverName = $_.DriverName
+        Start-AppActivity "Trying Get-Printer cmdlet..."
+        try {
+            $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
+            foreach ($p in $serverPrinters) {
+                if ($p.Shared) {
+                    $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
+                    $printers += @{
+                        Name = $p.Name
+                        ShareName = $shareName
+                        FullPath = "\\$serverName\$shareName"
+                        Location = $p.Location
+                        Comment = $p.Comment
+                        DriverName = $p.DriverName
                     }
-                }
-        }
-        $jobOutput = & $runWithTimeout $getPrinterScript @($serverName) "Querying printers via Get-Printer" 15
-        if ($jobOutput) {
-            foreach ($p in $jobOutput) {
-                $printers += @{
-                    Name = $p.Name; ShareName = $p.ShareName
-                    FullPath = "\\$serverName\$($p.ShareName)"
-                    Location = $p.Location; Comment = $p.Comment; DriverName = $p.DriverName
                 }
             }
             if ($printers.Count -gt 0) {
                 return $printers | Sort-Object { $_.Name }
             }
         }
+        catch {
+            # Method 1 failed, try next
+        }
     }
 
     # Method 2: Try WMI (older but often works)
-    $wmiScript = {
-        param($s)
-        Get-WmiObject -Class Win32_Printer -ComputerName $s -ErrorAction Stop |
-            Where-Object { $_.Shared -eq $true } |
-            ForEach-Object {
-                $shareName = if ($_.ShareName) { $_.ShareName } else { $_.Name }
-                [PSCustomObject]@{
-                    Name = $_.Name; ShareName = $shareName
-                    Location = $_.Location; Comment = $_.Comment; DriverName = $_.DriverName
-                }
-            }
-    }
-    $jobOutput = & $runWithTimeout $wmiScript @($serverName) "Querying printers via WMI" 15
-    if ($jobOutput) {
-        foreach ($p in $jobOutput) {
+    Start-AppActivity "Trying WMI query..."
+    try {
+        $wmiPrinters = Get-WmiObject -Class Win32_Printer -ComputerName $serverName -ErrorAction Stop |
+            Where-Object { $_.Shared -eq $true }
+        foreach ($p in $wmiPrinters) {
+            $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
             $printers += @{
-                Name = $p.Name; ShareName = $p.ShareName
-                FullPath = "\\$serverName\$($p.ShareName)"
-                Location = $p.Location; Comment = $p.Comment; DriverName = $p.DriverName
+                Name = $p.Name
+                ShareName = $shareName
+                FullPath = "\\$serverName\$shareName"
+                Location = $p.Location
+                Comment = $p.Comment
+                DriverName = $p.DriverName
             }
         }
         if ($printers.Count -gt 0) {
             return $printers | Sort-Object { $_.Name }
         }
     }
+    catch {
+        # Method 2 failed, try next
+    }
 
     # Method 3: Enumerate shared printers via net view (most compatible)
-    $netViewScript = {
-        param($s)
-        $netOutput = net view "\\$s" 2>&1
-        $results = @()
+    Start-AppActivity "Trying net view command..."
+    try {
+        $netOutput = net view "\\$serverName" 2>&1
         $lines = $netOutput -split "`n"
         foreach ($line in $lines) {
             if ($line -match "Print") {
+                # Format: "ShareName    Print    Comment"
                 $parts = $line -split '\s{2,}'
                 if ($parts.Count -ge 1) {
                     $shareName = $parts[0].Trim()
                     $comment = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "" }
                     if ($shareName -and $shareName -ne "") {
-                        $results += [PSCustomObject]@{
-                            Name = $shareName; ShareName = $shareName
-                            Location = ""; Comment = $comment; DriverName = ""
+                        $printers += @{
+                            Name = $shareName
+                            ShareName = $shareName
+                            FullPath = "\\$serverName\$shareName"
+                            Location = ""
+                            Comment = $comment
+                            DriverName = ""
                         }
                     }
                 }
             }
         }
-        return $results
     }
-    $jobOutput = & $runWithTimeout $netViewScript @($serverName) "Querying printers via net view" 15
-    if ($jobOutput) {
-        foreach ($p in $jobOutput) {
-            $printers += @{
-                Name = $p.Name; ShareName = $p.ShareName
-                FullPath = "\\$serverName\$($p.ShareName)"
-                Location = $p.Location; Comment = $p.Comment; DriverName = $p.DriverName
-            }
-        }
+    catch {
+        # Method 3 failed
     }
 
     return $printers | Sort-Object { $_.Name }
 }
 
 # Add network printer (current user only)
-# Uses rundll32 printui.dll in a background process with responsive wait loop
 $script:AddNetworkPrinter = {
     param([string]$PrinterPath)
 
-    try {
-        & $script:PrinterLog "  Connecting to print server (downloading drivers)..."
-        & $script:PrinterLog "  This may take 1-3 minutes for first-time installs..."
-
-        # Use printui.dll /in to add printer connection for current user
-        # Run as background process so we can pump DoEvents during the wait
-        $process = Start-Process -FilePath "rundll32.exe" `
-            -ArgumentList "printui.dll,PrintUIEntry /in /n`"$PrinterPath`"" `
-            -PassThru -WindowStyle Hidden
-
-        # Responsive wait loop with elapsed time feedback
-        $startTime = [DateTime]::Now
-        $lastLogSeconds = 0
-
-        while (-not $process.HasExited) {
-            Start-Sleep -Milliseconds 500
-            [System.Windows.Forms.Application]::DoEvents()
-
-            $elapsed = [int]([DateTime]::Now - $startTime).TotalSeconds
-            # Log progress every 10 seconds
-            if ($elapsed -gt 0 -and $elapsed % 10 -eq 0 -and $elapsed -ne $lastLogSeconds) {
-                $lastLogSeconds = $elapsed
-                & $script:PrinterLog "  Still working... (${elapsed}s elapsed)"
-                Start-AppActivity "Adding printer... (${elapsed}s)"
-            }
-        }
-
-        $elapsed = [int]([DateTime]::Now - $startTime).TotalSeconds
-        $exitCode = $process.ExitCode
-
-        if ($exitCode -eq 0) {
-            & $script:PrinterLog "  [OK] Printer added (${elapsed}s)"
+    # Method 1: Try Add-Printer cmdlet (if available)
+    if ($script:HasPrintManagement) {
+        try {
+            Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
             return @{ Success = $true; Error = $null }
         }
-        else {
-            & $script:PrinterLog "  printui.dll exited with code $exitCode, trying fallback..."
-
-            # Fallback: Try Add-Printer cmdlet
-            if ($script:HasPrintManagement) {
-                try {
-                    & $script:PrinterLog "  Trying Add-Printer cmdlet..."
-                    Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
-                    & $script:PrinterLog "  [OK] Printer added via Add-Printer cmdlet"
-                    return @{ Success = $true; Error = $null }
-                }
-                catch {
-                    & $script:PrinterLog "  Add-Printer failed: $($_.Exception.Message)"
-                }
-            }
-
-            # Fallback: Try WScript.Network COM object
-            try {
-                & $script:PrinterLog "  Trying WScript.Network fallback..."
-                $wscript = New-Object -ComObject WScript.Network
-                $wscript.AddWindowsPrinterConnection($PrinterPath)
-                & $script:PrinterLog "  [OK] Printer added via WScript.Network"
-                return @{ Success = $true; Error = $null }
-            }
-            catch {
-                & $script:PrinterLog "  [FAIL] All methods failed"
-                return @{ Success = $false; Error = "printui.dll exit code $exitCode. Fallback also failed: $($_.Exception.Message)" }
-            }
+        catch {
+            # Fall through to WMI method
         }
     }
+
+    # Method 2: Use WScript.Network COM object (Windows 10 compatible)
+    try {
+        $wscript = New-Object -ComObject WScript.Network
+        $wscript.AddWindowsPrinterConnection($PrinterPath)
+        return @{ Success = $true; Error = $null }
+    }
     catch {
-        & $script:PrinterLog "  [FAIL] Error: $($_.Exception.Message)"
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
 
-# Add network printer for ALL users (requires elevation via UAC RunAs)
-# Uses printui.dll /ga to add per-machine printer connection
-# Triggers a single UAC prompt instead of credential-based elevation (fixes Win10 "privilege not held" error)
+# Add network printer for ALL users (requires elevation)
 $script:AddNetworkPrinterAllUsers = {
     param([string]$PrinterPath)
 
     try {
-        # Use -Verb RunAs for UAC elevation (same pattern as Module 7 DISM tools)
-        # Fire-and-forget: current user already has the printer, this just persists for all users
-        Start-Process -FilePath "rundll32.exe" `
+        # Use printui.dll with /ga flag (add per-machine printer connection)
+        $result = Start-ElevatedProcess -FilePath "rundll32.exe" `
             -ArgumentList "printui.dll,PrintUIEntry /ga /n`"$PrinterPath`"" `
-            -Verb RunAs -WindowStyle Hidden
+            -Wait -Hidden `
+            -OperationName "install printer for all users"
 
-        [System.Windows.Forms.Application]::DoEvents()
-        return @{ Success = $true; Error = $null }
+        if ($result.Success) {
+            return @{ Success = $true; Error = $null }
+        }
+        else {
+            return @{ Success = $false; Error = $result.Error }
+        }
     }
     catch {
-        # User cancelled UAC prompt or other error
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
@@ -429,38 +338,249 @@ $script:SendTestPage = {
     param([string]$PrinterName)
 
     try {
-        & $script:PrinterLog "Sending test page to: $PrinterName"
-
-        # Use PowerShell filter instead of WQL to avoid backslash escaping issues
-        $printer = Get-WmiObject Win32_Printer -ErrorAction Stop | Where-Object { $_.Name -eq $PrinterName }
-
+        $printer = Get-WmiObject -Query "SELECT * FROM Win32_Printer WHERE Name='$($PrinterName -replace '\\','\\\\')'" -ErrorAction Stop
         if ($printer) {
-            & $script:PrinterLog "  Printer found. Sending test page..."
-            $testResult = $printer.PrintTestPage()
-            if ($testResult.ReturnValue -eq 0) {
-                & $script:PrinterLog "  [OK] Test page sent successfully"
-                return @{ Success = $true; Error = $null }
-            }
-            else {
-                & $script:PrinterLog "  [FAIL] PrintTestPage returned code: $($testResult.ReturnValue)"
-                return @{ Success = $false; Error = "PrintTestPage returned error code $($testResult.ReturnValue)" }
-            }
+            $printer.PrintTestPage() | Out-Null
         }
-        else {
-            # List available printers to help debug
-            & $script:PrinterLog "  [FAIL] Printer not found in WMI"
-            $allPrinters = Get-WmiObject Win32_Printer -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-            & $script:PrinterLog "  Available printers in WMI:"
-            foreach ($p in $allPrinters) {
-                & $script:PrinterLog "    - $p"
-            }
-            return @{ Success = $false; Error = "Printer '$PrinterName' not found. Check the Activity Log for available names." }
-        }
+        return @{ Success = $true; Error = $null }
     }
     catch {
-        & $script:PrinterLog "  [FAIL] Error: $($_.Exception.Message)"
         return @{ Success = $false; Error = $_.Exception.Message }
     }
+}
+
+
+# ---------------- Host profile (per-host printer file) helpers ----------------
+
+# Parse a single raw line from a host profile text file into a row hashtable.
+# Returns $null if the line is blank / junk / the literal "ComputerHostName" placeholder.
+$script:ParseProfileLine = {
+    param([string]$Line)
+
+    if ($null -eq $Line) { return $null }
+    # Strip CRs and stray NUL bytes (mis-decoded UTF-16 leftovers), then trim
+    $trimmed = ($Line -replace "`r", "" -replace "`0", "").Trim()
+    if (-not $trimmed) { return $null }
+    if ($trimmed -ieq "ComputerHostName") { return $null }
+
+    $isDefault = $false
+    if ($trimmed -match '=default\s*$') {
+        $isDefault = $true
+        $trimmed = ($trimmed -replace '=default\s*$', '').Trim()
+    }
+    if (-not $trimmed) { return $null }
+
+    if ($trimmed.StartsWith('\\')) {
+        $fullPath = $trimmed
+        $name = $null
+        if ($trimmed -match '^\\\\[^\\]+\\(.+)$') { $name = $Matches[1] }
+        if (-not $name) { return $null }
+    }
+    else {
+        $name = $trimmed
+        $fullPath = "$($script:ProfileDefaultServerPrefix)\$name"
+    }
+
+    return @{
+        FullPath    = $fullPath
+        Name        = $name
+        IsDefault   = $isDefault
+        IsPending   = $false
+        Status      = "Unknown"
+        BrowsedFrom = $null  # set when row added from Browse pane
+    }
+}
+
+# Read a profile file with encoding detection. The legacy Excel macro (VBA)
+# writes files whose encoding varies (ANSI, UTF-16 with/without BOM); reading
+# UTF-16 as UTF-8 turns the whole file into one garbled line, which is why
+# profiles "with a printer listed" used to render empty.
+$script:ReadProfileText = {
+    param([string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) { return "" }
+
+    # BOM detection
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        return [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+
+    # No BOM: NUL bytes betray UTF-16. Odd-index NULs = little endian.
+    if ($bytes -contains 0) {
+        $nullAtOdd = $false
+        $scanLimit = [Math]::Min($bytes.Length, 200)
+        for ($i = 1; $i -lt $scanLimit; $i += 2) {
+            if ($bytes[$i] -eq 0) { $nullAtOdd = $true; break }
+        }
+        if ($nullAtOdd) {
+            return [System.Text.Encoding]::Unicode.GetString($bytes)
+        }
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
+    }
+
+    # Plain bytes: ANSI (legacy default; identical to UTF-8 for ASCII names)
+    return [System.Text.Encoding]::Default.GetString($bytes)
+}
+
+# Load the host profile file, trying the XA share first, then Plain, then
+# AppHub (a host's file sometimes exists on only one share). Returns:
+#   @{ Success; Rows; LastWriteTime; Path; Reason; Share; UnparsedLines }
+# Reason is one of: Loaded / NotFound / ShareUnreachable / Error.
+$script:LoadProfile = {
+    param([string]$Hostname)
+
+    $shares = @(
+        @{ Name = "XA";     Dir = $script:ProfileShareXA },
+        @{ Name = "Plain";  Dir = $script:ProfileSharePlain },
+        @{ Name = "AppHub"; Dir = $script:ProfileShareAppHub }
+    )
+
+    $res = @{
+        Success       = $false
+        Rows          = @()
+        LastWriteTime = $null
+        Path          = (Join-Path $script:ProfileShareXA "$Hostname.txt")
+        Reason        = "Error"
+        Share         = $null
+        UnparsedLines = @()
+        ShareStatus   = ""
+    }
+
+    # Find the host's file on the first share that has it
+    $anyShareReachable = $false
+    $foundFile = $null
+    $shareStatus = @()
+    foreach ($s in $shares) {
+        if (-not (Test-Path $s.Dir -ErrorAction SilentlyContinue)) {
+            $shareStatus += "$($s.Name)=unreachable"
+            continue
+        }
+        $anyShareReachable = $true
+        $candidate = Join-Path $s.Dir "$Hostname.txt"
+        if (Test-Path $candidate -ErrorAction SilentlyContinue) {
+            $foundFile = $candidate
+            $res.Share = $s.Name
+            $shareStatus += "$($s.Name)=found"
+            break
+        }
+        $shareStatus += "$($s.Name)=no-file"
+    }
+    $res.ShareStatus = $shareStatus -join ", "
+
+    if (-not $anyShareReachable) {
+        $res.Reason = "ShareUnreachable"
+        return $res
+    }
+
+    if (-not $foundFile) {
+        $res.Reason = "NotFound"
+        # still "success" from a control-flow standpoint - the pane just shows empty
+        $res.Success = $true
+        return $res
+    }
+
+    $res.Path = $foundFile
+
+    try {
+        $fi = Get-Item -Path $foundFile -ErrorAction Stop
+        $res.LastWriteTime = $fi.LastWriteTime
+
+        $text = & $script:ReadProfileText -Path $foundFile
+        $rows = @()
+        $unparsed = @()
+        foreach ($line in ($text -split "`r?`n")) {
+            $row = & $script:ParseProfileLine -Line $line
+            if ($row) {
+                $rows += $row
+            }
+            else {
+                # Surface real content we couldn't parse instead of dropping it silently
+                $cleaned = ($line -replace "`0", "").Trim()
+                if ($cleaned -and $cleaned -ine "ComputerHostName") {
+                    $unparsed += $cleaned
+                }
+            }
+        }
+        $res.Rows = $rows
+        $res.UnparsedLines = $unparsed
+        $res.Success = $true
+        $res.Reason = "Loaded"
+    }
+    catch {
+        $res.Reason = "Error: $($_.Exception.Message)"
+    }
+    return $res
+}
+
+# Format profile rows into lines for a specific share layout.
+# Format: "XA" | "Plain" | "AppHub"
+$script:FormatProfileLines = {
+    param([array]$Rows, [string]$Format)
+
+    $lines = @()
+    foreach ($r in $Rows) {
+        $suffix = if ($r.IsDefault) { "=default" } else { "" }
+        switch ($Format) {
+            "Plain" { $lines += "$($r.Name)$suffix" }
+            default {
+                # XA and AppHub both get the \\RUDWV-PS401.rush.edu\<name> form.
+                # (AppHub ends up XA-formatted because the macro's second write wins.)
+                $lines += "$($script:ProfileDefaultServerPrefix)\$($r.Name)$suffix"
+            }
+        }
+    }
+    return $lines
+}
+
+# Save profile rows to all three shares for a host.
+# Returns @{ Results = @(@{ Share; Path; Success; Error }); LastWriteTime = <fresh XA stamp> }
+$script:SaveProfile = {
+    param([string]$Hostname, [array]$Rows)
+
+    $writeTargets = @(
+        @{ Share = "XA";     Format = "XA";     Dir = $script:ProfileShareXA },
+        @{ Share = "Plain";  Format = "Plain";  Dir = $script:ProfileSharePlain },
+        @{ Share = "AppHub"; Format = "AppHub"; Dir = $script:ProfileShareAppHub }
+    )
+
+    $results = @()
+    foreach ($t in $writeTargets) {
+        $entry = @{
+            Share   = $t.Share
+            Path    = (Join-Path $t.Dir "$Hostname.txt")
+            Success = $false
+            Error   = $null
+        }
+        try {
+            if (-not (Test-Path $t.Dir -ErrorAction SilentlyContinue)) {
+                throw "Share not reachable: $($t.Dir)"
+            }
+            $lines = & $script:FormatProfileLines -Rows $Rows -Format $t.Format
+            # Write as UTF-8 without BOM to stay compatible with the legacy files.
+            $content = ($lines -join "`r`n")
+            [System.IO.File]::WriteAllText($entry.Path, $content + "`r`n", (New-Object System.Text.UTF8Encoding $false))
+            $entry.Success = $true
+        }
+        catch {
+            $entry.Error = $_.Exception.Message
+        }
+        $results += $entry
+    }
+
+    $stamp = $null
+    $xaResult = $results | Where-Object { $_.Share -eq "XA" } | Select-Object -First 1
+    if ($xaResult -and $xaResult.Success) {
+        try { $stamp = (Get-Item -Path $xaResult.Path -ErrorAction Stop).LastWriteTime } catch {}
+    }
+
+    return @{ Results = $results; LastWriteTime = $stamp }
 }
 
 #endregion
@@ -477,13 +597,28 @@ function Initialize-Module {
         Write-SessionLog -Message "PrintManagement module not available - using WMI fallback mode" -Category "Printer Management"
     }
 
-    # Main layout - split panel (left: installed, right: server browser)
+    # Main layout - three columns via nested SplitContainers, plus an activity
+    # log docked at the bottom.  Outer table: top row = panes, bottom row = log.
+    $script:rootLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:rootLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:rootLayout.RowCount = 2
+    $script:rootLayout.ColumnCount = 1
+    $script:rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $script:rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 120))) | Out-Null
+
+    # Outer split: Installed | (Profile | Browse)
     $script:splitContainer = New-Object System.Windows.Forms.SplitContainer
     $script:splitContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
     $script:splitContainer.Orientation = [System.Windows.Forms.Orientation]::Vertical
-    # Note: SplitterDistance set after adding to tab to avoid size conflicts
     $script:splitContainer.Panel1MinSize = 100
     $script:splitContainer.Panel2MinSize = 100
+
+    # Inner split: Profile | Browse (sits inside outer Panel2)
+    $script:splitContainerInner = New-Object System.Windows.Forms.SplitContainer
+    $script:splitContainerInner.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:splitContainerInner.Orientation = [System.Windows.Forms.Orientation]::Vertical
+    $script:splitContainerInner.Panel1MinSize = 100
+    $script:splitContainerInner.Panel2MinSize = 100
 
     #region Left Panel - Installed Printers
     $leftPanel = New-Object System.Windows.Forms.TableLayoutPanel
@@ -544,40 +679,40 @@ function Initialize-Module {
 
     $refreshInstalledBtn = New-Object System.Windows.Forms.Button
     $refreshInstalledBtn.Text = "Refresh"
-    $refreshInstalledBtn.Width = 65
     $refreshInstalledBtn.Height = 30
+    $refreshInstalledBtn.Width = $refreshInstalledBtn.PreferredSize.Width + 6
     $installedBtnPanel.Controls.Add($refreshInstalledBtn)
 
     $setDefaultBtn = New-Object System.Windows.Forms.Button
     $setDefaultBtn.Text = "Set Default"
-    $setDefaultBtn.Width = 105
     $setDefaultBtn.Height = 30
+    $setDefaultBtn.Width = $setDefaultBtn.PreferredSize.Width + 6
     $installedBtnPanel.Controls.Add($setDefaultBtn)
 
     $testPrintBtn = New-Object System.Windows.Forms.Button
     $testPrintBtn.Text = "Test Page"
-    $testPrintBtn.Width = 85
     $testPrintBtn.Height = 30
+    $testPrintBtn.Width = $testPrintBtn.PreferredSize.Width + 6
     $installedBtnPanel.Controls.Add($testPrintBtn)
 
     $clearQueueBtn = New-Object System.Windows.Forms.Button
     $clearQueueBtn.Text = "Clear Queue"
-    $clearQueueBtn.Width = 110
     $clearQueueBtn.Height = 30
+    $clearQueueBtn.Width = $clearQueueBtn.PreferredSize.Width + 6
     $installedBtnPanel.Controls.Add($clearQueueBtn)
 
     $removeBtn = New-Object System.Windows.Forms.Button
     $removeBtn.Text = "Remove"
-    $removeBtn.Width = 75
     $removeBtn.Height = 30
+    $removeBtn.Width = $removeBtn.PreferredSize.Width + 6
     $removeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $installedBtnPanel.Controls.Add($removeBtn)
 
     # Backup button
     $backupBtn = New-Object System.Windows.Forms.Button
     $backupBtn.Text = "Backup"
-    $backupBtn.Width = 75
     $backupBtn.Height = 30
+    $backupBtn.Width = $backupBtn.PreferredSize.Width + 6
     $backupBtn.Add_Click({
         try {
             $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
@@ -620,8 +755,8 @@ function Initialize-Module {
     # Restore button
     $restoreBtn = New-Object System.Windows.Forms.Button
     $restoreBtn.Text = "Restore"
-    $restoreBtn.Width = 75
     $restoreBtn.Height = 30
+    $restoreBtn.Width = $restoreBtn.PreferredSize.Width + 6
     $restoreBtn.Add_Click({
         try {
             $openDialog = New-Object System.Windows.Forms.OpenFileDialog
@@ -703,6 +838,100 @@ function Initialize-Module {
 
     $leftPanel.Controls.Add($installedBtnPanel, 0, 2)
     $script:splitContainer.Panel1.Controls.Add($leftPanel)
+    #endregion
+
+    #region Middle Panel - Host Profile
+    $profilePanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $profilePanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $profilePanel.RowCount = 3
+    $profilePanel.ColumnCount = 1
+    $profilePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30))) | Out-Null
+    $profilePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $profilePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 70))) | Out-Null
+
+    $script:profileLabel = New-Object System.Windows.Forms.Label
+    $script:profileLabel.Text = "Profile for $env:COMPUTERNAME"
+    $script:profileLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:profileLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:profileLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $profilePanel.Controls.Add($script:profileLabel, 0, 0)
+
+    $script:profileListView = New-Object System.Windows.Forms.ListView
+    $script:profileListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:profileListView.View = [System.Windows.Forms.View]::Details
+    $script:profileListView.FullRowSelect = $true
+    $script:profileListView.GridLines = $true
+    $script:profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:profileListView.Columns.Add("Printer", 180) | Out-Null
+    $script:profileListView.Columns.Add("Default", 55) | Out-Null
+    $script:profileListView.Columns.Add("Status", 90) | Out-Null
+    $profilePanel.Controls.Add($script:profileListView, 0, 1)
+
+    $profileBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $profileBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $profileBtnPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
+
+    $script:profileReloadBtn = New-Object System.Windows.Forms.Button
+    $script:profileReloadBtn.Text = "Reload"
+    $script:profileReloadBtn.Height = 30
+    $script:profileReloadBtn.Width = $script:profileReloadBtn.PreferredSize.Width + 6
+    $profileBtnPanel.Controls.Add($script:profileReloadBtn)
+
+    $script:profileSaveBtn = New-Object System.Windows.Forms.Button
+    $script:profileSaveBtn.Text = "Save Profile"
+    $script:profileSaveBtn.Height = 30
+    $script:profileSaveBtn.Width = $script:profileSaveBtn.PreferredSize.Width + 6
+    $script:profileSaveBtn.Enabled = $false
+    $profileBtnPanel.Controls.Add($script:profileSaveBtn)
+
+    $script:profileInstallBtn = New-Object System.Windows.Forms.Button
+    $script:profileInstallBtn.Text = "Refresh && Install"
+    $script:profileInstallBtn.Height = 30
+    $script:profileInstallBtn.Width = $script:profileInstallBtn.PreferredSize.Width + 6
+    $script:profileInstallBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
+    $profileBtnPanel.Controls.Add($script:profileInstallBtn)
+
+    $script:profileRemoveBtn = New-Object System.Windows.Forms.Button
+    $script:profileRemoveBtn.Text = "Remove"
+    $script:profileRemoveBtn.Height = 30
+    $script:profileRemoveBtn.Width = $script:profileRemoveBtn.PreferredSize.Width + 6
+    $profileBtnPanel.Controls.Add($script:profileRemoveBtn)
+
+    $script:profileMarkDefaultBtn = New-Object System.Windows.Forms.Button
+    $script:profileMarkDefaultBtn.Text = "Mark Default"
+    $script:profileMarkDefaultBtn.Height = 30
+    $script:profileMarkDefaultBtn.Width = $script:profileMarkDefaultBtn.PreferredSize.Width + 6
+    $profileBtnPanel.Controls.Add($script:profileMarkDefaultBtn)
+
+    # Create a profile for a host that has none, from this machine's printers
+    $script:profileNewFromInstalledBtn = New-Object System.Windows.Forms.Button
+    $script:profileNewFromInstalledBtn.Text = "New from Installed"
+    $script:profileNewFromInstalledBtn.Height = 30
+    $script:profileNewFromInstalledBtn.Width = $script:profileNewFromInstalledBtn.PreferredSize.Width + 6
+    $script:profileNewFromInstalledBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 248, 220)
+    $profileBtnPanel.Controls.Add($script:profileNewFromInstalledBtn)
+
+    # Look up ANY computer's profile by hostname (defaults to this machine)
+    $profileHostLabel = New-Object System.Windows.Forms.Label
+    $profileHostLabel.Text = "Host:"
+    $profileHostLabel.AutoSize = $true
+    $profileHostLabel.Padding = New-Object System.Windows.Forms.Padding(8, 8, 2, 0)
+    $profileBtnPanel.Controls.Add($profileHostLabel)
+
+    $script:profileHostBox = New-Object System.Windows.Forms.TextBox
+    $script:profileHostBox.Width = 130
+    $script:profileHostBox.Text = $env:COMPUTERNAME
+    $script:profileHostBox.Margin = New-Object System.Windows.Forms.Padding(3, 5, 3, 3)
+    $profileBtnPanel.Controls.Add($script:profileHostBox)
+
+    $script:profileLoadHostBtn = New-Object System.Windows.Forms.Button
+    $script:profileLoadHostBtn.Text = "Load Host"
+    $script:profileLoadHostBtn.Height = 30
+    $script:profileLoadHostBtn.Width = $script:profileLoadHostBtn.PreferredSize.Width + 6
+    $profileBtnPanel.Controls.Add($script:profileLoadHostBtn)
+
+    $profilePanel.Controls.Add($profileBtnPanel, 0, 2)
+    $script:splitContainerInner.Panel1.Controls.Add($profilePanel)
     #endregion
 
     #region Right Panel - Add Printer from Server
@@ -817,25 +1046,78 @@ function Initialize-Module {
     $serverBtnPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
 
     $addSelectedBtn = New-Object System.Windows.Forms.Button
-    $addSelectedBtn.Text = "Add Selected"
-    $addSelectedBtn.Width = 110
+    $addSelectedBtn.Text = "Add to Machine"
     $addSelectedBtn.Height = 30
+    $addSelectedBtn.Width = $addSelectedBtn.PreferredSize.Width + 6
     $addSelectedBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 255, 230)
     $serverBtnPanel.Controls.Add($addSelectedBtn)
 
+    $script:addToProfileBtn = New-Object System.Windows.Forms.Button
+    $script:addToProfileBtn.Text = "Add to Profile"
+    $script:addToProfileBtn.Height = 30
+    $script:addToProfileBtn.Width = $script:addToProfileBtn.PreferredSize.Width + 6
+    $script:addToProfileBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
+    $serverBtnPanel.Controls.Add($script:addToProfileBtn)
+
     $manualAddBtn = New-Object System.Windows.Forms.Button
     $manualAddBtn.Text = "Add by Path..."
-    $manualAddBtn.Width = 95
     $manualAddBtn.Height = 30
+    $manualAddBtn.Width = $manualAddBtn.PreferredSize.Width + 6
     $serverBtnPanel.Controls.Add($manualAddBtn)
 
     $rightPanel.Controls.Add($serverBtnPanel, 0, 3)
-    $script:splitContainer.Panel2.Controls.Add($rightPanel)
+    $script:splitContainerInner.Panel2.Controls.Add($rightPanel)
+    #endregion
+
+    # Wire inner split into outer Panel2, and outer split into root layout.
+    $script:splitContainer.Panel2.Controls.Add($script:splitContainerInner)
+    $script:rootLayout.Controls.Add($script:splitContainer, 0, 0)
+
+    #region Activity Log (bottom)
+    $logHeader = New-Object System.Windows.Forms.Label
+    $logHeader.Text = "Activity Log"
+    $logHeader.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $logHeader.AutoSize = $true
+
+    $script:activityLogBox = New-Object System.Windows.Forms.ListBox
+    $script:activityLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:activityLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:activityLogBox.IntegralHeight = $false
+
+    $logContainer = New-Object System.Windows.Forms.TableLayoutPanel
+    $logContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $logContainer.RowCount = 2
+    $logContainer.ColumnCount = 1
+    $logContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 18))) | Out-Null
+    $logContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+    $logContainer.Controls.Add($logHeader, 0, 0)
+    $logContainer.Controls.Add($script:activityLogBox, 0, 1)
+    $script:rootLayout.Controls.Add($logContainer, 0, 1)
     #endregion
 
     #region State Variables
     $script:ServerPrintersList = @()
+    $script:ProfileRows         = @()
+    $script:ProfileLoadedTime   = $null
+    $script:ProfileDirty        = $false
+    $script:ProfileHost         = $env:COMPUTERNAME
+    $script:ProfilePath         = Join-Path $script:ProfileShareXA "$env:COMPUTERNAME.txt"
+    $script:ProfileReason       = $null
     #endregion
+
+    # Activity log helper - writes to the in-tab box and to the persistent session log.
+    $script:PrinterLog = {
+        param([string]$Message, [string]$Level = "INFO")
+        try {
+            $ts = Get-Date -Format "HH:mm:ss"
+            $line = "[$ts] [$Level] $Message"
+            if ($script:activityLogBox) {
+                $script:activityLogBox.Items.Add($line) | Out-Null
+                $script:activityLogBox.TopIndex = [Math]::Max(0, $script:activityLogBox.Items.Count - 1)
+            }
+        } catch { }
+        try { Write-SessionLog -Message $Message -Category "Printer Management" } catch { }
+    }
 
     #region Helper Functions as Script Blocks
     $script:RefreshInstalledPrinters = {
@@ -899,6 +1181,135 @@ function Initialize-Module {
             $script:serverListView.Items.Add($item) | Out-Null
         }
         $script:serverListView.EndUpdate()
+    }
+
+    # Normalize a printer path for comparison: lowercase and strip the domain
+    # suffix from the server segment. Profile rows use the FQDN server
+    # (\\RUDWV-PS401.rush.edu\X) while installed printers report the short
+    # name (\\RUDWV-PS401\X) - without this, installed printers show "Missing".
+    $script:NormalizePrinterPath = {
+        param([string]$PrinterPath)
+        if (-not $PrinterPath) { return "" }
+        $p = $PrinterPath.ToLower().Trim()
+        if ($p -match '^\\\\([^\\]+)\\(.+)$') {
+            $server = $Matches[1] -replace '\.rush\.edu$', ''
+            return "\\$server\$($Matches[2])"
+        }
+        return $p
+    }
+
+    # Recompute Status for every profile row by diffing against installed printers.
+    $script:ComputeProfileStatuses = {
+        $installed = & $script:GetInstalledPrinters
+        # Build a set of installed network printer paths (normalized, case-insensitive)
+        $installedPaths = @{}
+        foreach ($p in $installed) {
+            if ($p.Name) { $installedPaths[(& $script:NormalizePrinterPath -PrinterPath $p.Name)] = $true }
+        }
+        foreach ($r in $script:ProfileRows) {
+            if ($r.IsPending) {
+                $r.Status = "Pending"
+            }
+            elseif ($installedPaths.ContainsKey((& $script:NormalizePrinterPath -PrinterPath $r.FullPath))) {
+                $r.Status = "Installed"
+            }
+            else {
+                $r.Status = "Missing"
+            }
+        }
+    }
+
+    # Re-render the Profile ListView from $script:ProfileRows
+    $script:RenderProfilePane = {
+        $rowCount = @($script:ProfileRows).Count
+        & $script:PrinterLog "RenderProfilePane: rendering $rowCount row(s)" "DEBUG"
+
+        $script:profileListView.BeginUpdate()
+        $script:profileListView.Items.Clear()
+        & $script:ComputeProfileStatuses
+
+        $added = 0
+        foreach ($r in @($script:ProfileRows)) {
+            if ($null -eq $r) { continue }
+            $display = if ($r.FullPath) { [string]$r.FullPath } else { "(no path)" }
+            $item = New-Object System.Windows.Forms.ListViewItem($display)
+            $defaultText = if ($r.IsDefault) { "Yes" } else { "" }
+            [void]$item.SubItems.Add($defaultText)
+            $statusLabel = if ($r.IsPending) { "*pending*" } else { [string]$r.Status }
+            [void]$item.SubItems.Add($statusLabel)
+            $item.Tag = $r
+
+            if ($r.IsPending) {
+                $item.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+                $item.ForeColor = [System.Drawing.Color]::DarkOrange
+            }
+            elseif ($r.Status -eq "Installed") {
+                $item.ForeColor = [System.Drawing.Color]::DarkGreen
+            }
+            elseif ($r.Status -eq "Missing") {
+                $item.ForeColor = [System.Drawing.Color]::DarkRed
+            }
+
+            if ($r.IsDefault) {
+                $item.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+            }
+
+            [void]$script:profileListView.Items.Add($item)
+            $added++
+        }
+        $script:profileListView.EndUpdate()
+        $script:profileListView.Refresh()
+
+        & $script:PrinterLog "RenderProfilePane: added $added of $rowCount row(s); ListView.Items.Count=$($script:profileListView.Items.Count)" "DEBUG"
+
+        $script:profileSaveBtn.Enabled = [bool]$script:ProfileDirty
+    }
+
+    # Load profile from share into state and render.
+    $script:LoadProfileToUI = {
+        $result = & $script:LoadProfile -Hostname $script:ProfileHost
+        $script:ProfilePath = $result.Path
+        $script:ProfileReason = $result.Reason
+
+        switch ($result.Reason) {
+            "Loaded" {
+                $script:ProfileRows = @($result.Rows)
+                $script:ProfileLoadedTime = $result.LastWriteTime
+                $script:ProfileDirty = $false
+
+                $suffix = ""
+                if ($result.Share -and $result.Share -ne "XA") { $suffix += " [$($result.Share) share]" }
+                if (@($result.UnparsedLines).Count -gt 0) { $suffix += " - $(@($result.UnparsedLines).Count) unparsed line(s), see log" }
+                $script:profileLabel.Text = "Profile for $($script:ProfileHost)$suffix"
+
+                & $script:PrinterLog "Loaded profile ($($script:ProfileRows.Count) rows) from $($result.Path)"
+                foreach ($ul in @($result.UnparsedLines)) {
+                    & $script:PrinterLog "Unparsed profile line (kept out of the list): '$ul'" "WARN"
+                }
+            }
+            "NotFound" {
+                $script:ProfileRows = @()
+                $script:ProfileLoadedTime = $null
+                $script:ProfileDirty = $false
+                $script:profileLabel.Text = "No profile found for $($script:ProfileHost) - use 'New from Installed'"
+                & $script:PrinterLog "No profile file for $($script:ProfileHost) on any share ($($result.ShareStatus))" "WARN"
+            }
+            "ShareUnreachable" {
+                $script:ProfileRows = @()
+                $script:ProfileLoadedTime = $null
+                $script:ProfileDirty = $false
+                $script:profileLabel.Text = "Profile shares unreachable"
+                & $script:PrinterLog "No profile share reachable ($($result.ShareStatus))" "ERROR"
+            }
+            default {
+                $script:ProfileRows = @()
+                $script:ProfileLoadedTime = $null
+                $script:ProfileDirty = $false
+                $script:profileLabel.Text = "Profile load error"
+                & $script:PrinterLog "Profile load error: $($result.Reason)" "ERROR"
+            }
+        }
+        & $script:RenderProfilePane
     }
 
     $script:ApplyFilter = {
@@ -1068,10 +1479,9 @@ function Initialize-Module {
     # Test print
     $testPrintBtn.Add_Click({
         if ($script:installedListView.SelectedItems.Count -eq 0) {
-            & $script:PrinterLog "Test Page: No printer selected"
             [System.Windows.Forms.MessageBox]::Show(
-                "Please click on a printer in the Installed Printers list first, then click Test Page.",
-                "No Printer Selected",
+                "Please select a printer to send a test page.",
+                "No Selection",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Warning
             )
@@ -1079,11 +1489,7 @@ function Initialize-Module {
         }
 
         $printerName = $script:installedListView.SelectedItems[0].Text
-        & $script:PrinterLog "Selected printer: '$printerName' (length: $($printerName.Length))"
-        Start-AppActivity "Sending test page..."
-        [System.Windows.Forms.Application]::DoEvents()
         $result = & $script:SendTestPage -PrinterName $printerName
-        Clear-AppStatus
 
         if ($result.Success) {
             [System.Windows.Forms.MessageBox]::Show(
@@ -1123,49 +1529,21 @@ function Initialize-Module {
         $successCount = 0
         $failedPrinters = @()
         $modeText = "all users"
-        $totalPrinters = $checkedItems.Count
 
-        & $script:PrinterLog "=== Adding $totalPrinters printer(s) ==="
-        Start-AppActivity "Adding printer(s)..."
-        [System.Windows.Forms.Application]::DoEvents()
-
-        $currentIndex = 0
         foreach ($printer in $checkedItems) {
-            $currentIndex++
-            & $script:PrinterLog "[$currentIndex/$totalPrinters] Processing: $($printer.Name)"
-            & $script:PrinterLog "  Path: $($printer.FullPath)"
-            Set-AppProgress -Value $currentIndex -Maximum $totalPrinters -Message "Adding printer $currentIndex of ${totalPrinters}: $($printer.Name)..."
-            [System.Windows.Forms.Application]::DoEvents()
-
-            # Step 1: Add for current user first (fast, no elevation)
-            & $script:PrinterLog "  Adding for current user..."
-            $result = & $script:AddNetworkPrinter -PrinterPath $printer.FullPath
+            $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
+            # Also add for current user so it shows immediately
+            if ($result.Success) {
+                & $script:AddNetworkPrinter -PrinterPath $printer.FullPath | Out-Null
+            }
 
             if ($result.Success) {
-                & $script:PrinterLog "  [OK] Printer added for current user"
                 $successCount++
-
-                # Step 2: Persist for all users (fire-and-forget, runs in background)
-                & $script:PrinterLog "  Persisting for all users (background)..."
-                $allUsersResult = & $script:AddNetworkPrinterAllUsers -PrinterPath $printer.FullPath
-                if ($allUsersResult.Success) {
-                    & $script:PrinterLog "  [OK] All-users persistence queued"
-                }
-                else {
-                    & $script:PrinterLog "  ! Warning: All-users persistence failed: $($allUsersResult.Error)"
-                    & $script:PrinterLog "    (Printer still works for current user)"
-                }
             }
             else {
-                & $script:PrinterLog "  [FAIL] FAILED: $($result.Error)"
                 $failedPrinters += "$($printer.Name): $($result.Error)"
             }
-
-            [System.Windows.Forms.Application]::DoEvents()
         }
-
-        & $script:PrinterLog "Refreshing installed printer list..."
-        Clear-AppStatus
 
         if ($failedPrinters.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
@@ -1176,7 +1554,7 @@ function Initialize-Module {
             )
         }
         else {
-            $message = "Added $successCount printer(s) for ${modeText}.`n`nFailed:`n" + ($failedPrinters -join "`n")
+            $message = "Added $successCount printer(s) for $modeText.`n`nFailed:`n" + ($failedPrinters -join "`n")
             [System.Windows.Forms.MessageBox]::Show(
                 $message,
                 "Partial Success",
@@ -1186,10 +1564,335 @@ function Initialize-Module {
         }
 
         & $script:RefreshInstalledPrinters
-        & $script:PrinterLog "[OK] Complete! Added $successCount printer(s) successfully."
-        if ($failedPrinters.Count -gt 0) {
-            & $script:PrinterLog "[FAIL] Failed: $($failedPrinters.Count) printer(s)"
+    })
+
+    # ---------- Profile pane event handlers ----------
+
+    $script:profileReloadBtn.Add_Click({
+        & $script:LoadProfileToUI
+    })
+
+    # Load a different computer's profile by hostname
+    $script:profileLoadHostBtn.Add_Click({
+        $h = $script:profileHostBox.Text.Trim()
+        if (-not $h) { return }
+
+        if ($script:ProfileDirty) {
+            $confirm = [System.Windows.Forms.MessageBox]::Show(
+                "You have unsaved profile changes for $($script:ProfileHost).`n`nDiscard them and load $($h.ToUpper())?",
+                "Unsaved Changes",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
         }
+
+        $script:ProfileHost = $h.ToUpper()
+        & $script:PrinterLog "Switching profile host to $($script:ProfileHost)"
+        & $script:LoadProfileToUI
+    })
+
+    $script:profileHostBox.Add_KeyDown({
+        param($sender, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+            $e.SuppressKeyPress = $true
+            $script:profileLoadHostBtn.PerformClick()
+        }
+    })
+
+    # Seed a new profile from this computer's installed network printers
+    $script:profileNewFromInstalledBtn.Add_Click({
+        $installed = & $script:GetInstalledPrinters
+        $network = @($installed | Where-Object { $_.IsNetwork -and $_.Name -match '^\\\\[^\\]+\\.+' })
+
+        if ($network.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "No network printers are installed on this computer.",
+                "Nothing to Add",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+
+        $added = 0
+        foreach ($p in $network) {
+            if ($p.Name -notmatch '^\\\\[^\\]+\\(.+)$') { continue }
+            $bareName = $Matches[1]
+
+            $dup = $false
+            foreach ($existing in $script:ProfileRows) {
+                if ($existing.Name -ieq $bareName) { $dup = $true; break }
+            }
+            if ($dup) { continue }
+
+            $row = @{
+                FullPath    = "$($script:ProfileDefaultServerPrefix)\$bareName"
+                Name        = $bareName
+                IsDefault   = [bool]$p.IsDefault
+                IsPending   = $true
+                Status      = "Pending"
+                BrowsedFrom = $null
+            }
+            $tmp = @($script:ProfileRows) + @($row)
+            $script:ProfileRows = $tmp
+            $added++
+        }
+
+        if ($added -gt 0) {
+            $script:ProfileDirty = $true
+            & $script:RenderProfilePane
+            & $script:PrinterLog "Added $added installed network printer(s) to profile for $($script:ProfileHost) (pending save)"
+        }
+        else {
+            & $script:PrinterLog "All installed network printers are already in the profile" "WARN"
+        }
+    })
+
+    # Add checked Browse-pane rows into the profile as pending entries.
+    # Per decision D4, profile rows are always recorded as \\RUDWV-PS401.rush.edu\<name>
+    # regardless of which Browse server they were enumerated from.
+    $script:addToProfileBtn.Add_Click({
+        $checked = @()
+        foreach ($item in $script:serverListView.CheckedItems) { $checked += $item.Tag }
+        if ($checked.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Check at least one printer to add to the profile.",
+                "No Selection",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        $selectedBrowseServer = $script:serverComboBox.SelectedItem
+        $added = 0
+        foreach ($p in $checked) {
+            $bareName = $p.ShareName
+            if (-not $bareName -and $p.Name) { $bareName = $p.Name }
+            if (-not $bareName) { continue }
+
+            # Skip duplicates (case-insensitive name match)
+            $dup = $false
+            foreach ($existing in $script:ProfileRows) {
+                if ($existing.Name -ieq $bareName) { $dup = $true; break }
+            }
+            if ($dup) {
+                & $script:PrinterLog "Skipping $bareName - already in profile" "WARN"
+                continue
+            }
+
+            $row = @{
+                FullPath    = "$($script:ProfileDefaultServerPrefix)\$bareName"
+                Name        = $bareName
+                IsDefault   = $false
+                IsPending   = $true
+                Status      = "Pending"
+                BrowsedFrom = $selectedBrowseServer
+            }
+            # Defensive: rebuild via local var to dodge any $script: += scope quirks in event handlers
+            $tmp = @($script:ProfileRows) + @($row)
+            $script:ProfileRows = $tmp
+            $added++
+        }
+        & $script:PrinterLog "AddToProfile: ProfileRows.Count after add = $($script:ProfileRows.Count)" "DEBUG"
+
+        if ($added -gt 0) {
+            $script:ProfileDirty = $true
+            & $script:RenderProfilePane
+            & $script:PrinterLog "Added $added printer(s) to profile (pending save)"
+        }
+
+        # Clear check marks
+        foreach ($item in $script:serverListView.Items) { $item.Checked = $false }
+    })
+
+    $script:profileRemoveBtn.Add_Click({
+        if ($script:profileListView.SelectedItems.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Select a profile row to remove.",
+                "No Selection",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+        $toRemove = @()
+        foreach ($item in $script:profileListView.SelectedItems) { $toRemove += $item.Tag }
+        $new = @()
+        foreach ($r in $script:ProfileRows) {
+            $keep = $true
+            foreach ($d in $toRemove) { if ($d -eq $r) { $keep = $false; break } }
+            if ($keep) { $new += $r }
+        }
+        $script:ProfileRows = $new
+        $script:ProfileDirty = $true
+        & $script:RenderProfilePane
+        & $script:PrinterLog "Removed $($toRemove.Count) row(s) from profile (pending save)"
+    })
+
+    $script:profileMarkDefaultBtn.Add_Click({
+        if ($script:profileListView.SelectedItems.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Select a profile row to mark as default.",
+                "No Selection",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+        $target = $script:profileListView.SelectedItems[0].Tag
+        foreach ($r in $script:ProfileRows) {
+            $r.IsDefault = ($r -eq $target)
+        }
+        $script:ProfileDirty = $true
+        & $script:RenderProfilePane
+        & $script:PrinterLog "Marked $($target.Name) as default (pending save)"
+    })
+
+    $script:profileSaveBtn.Add_Click({
+        if (-not $script:ProfileDirty) { return }
+
+        # B6: check for on-share modification since load (XA is source of truth)
+        if (Test-Path $script:ProfilePath -ErrorAction SilentlyContinue) {
+            try {
+                $currentStamp = (Get-Item -Path $script:ProfilePath).LastWriteTime
+                if ($script:ProfileLoadedTime -and ($currentStamp -gt $script:ProfileLoadedTime)) {
+                    $conflict = [System.Windows.Forms.MessageBox]::Show(
+                        "Profile was modified on the server since you loaded it.`n`nYes = Overwrite`nNo = Reload (discard your edits)`nCancel = Do nothing",
+                        "Profile Conflict",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning)
+                    if ($conflict -eq [System.Windows.Forms.DialogResult]::No) {
+                        & $script:LoadProfileToUI
+                        return
+                    }
+                    if ($conflict -ne [System.Windows.Forms.DialogResult]::Yes) {
+                        return
+                    }
+                }
+            } catch { }
+        }
+
+        $save = & $script:SaveProfile -Hostname $script:ProfileHost -Rows $script:ProfileRows
+        $failed = 0
+        foreach ($r in $save.Results) {
+            if ($r.Success) {
+                & $script:PrinterLog "Wrote $($r.Share) profile: $($r.Path) ($($script:ProfileRows.Count) rows)"
+            } else {
+                $failed++
+                & $script:PrinterLog "FAILED $($r.Share) write ($($r.Path)): $($r.Error)" "ERROR"
+            }
+        }
+
+        if ($failed -eq 0) {
+            # Clear pending markers on all rows (they're now on disk)
+            foreach ($r in $script:ProfileRows) { $r.IsPending = $false }
+            $script:ProfileDirty = $false
+            if ($save.LastWriteTime) { $script:ProfileLoadedTime = $save.LastWriteTime }
+            & $script:RenderProfilePane
+            & $script:PrinterLog "Profile saved to all three shares"
+        }
+        elseif ($failed -lt $save.Results.Count) {
+            # Partial success - XA succeeded? keep dirty so tech can retry
+            & $script:PrinterLog "Partial save: $($save.Results.Count - $failed) of $($save.Results.Count) shares succeeded" "WARN"
+            [System.Windows.Forms.MessageBox]::Show(
+                "Profile was saved to some shares but not others. See the activity log for details. You can click Save Profile again after resolving the issue.",
+                "Partial Save",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
+        else {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Profile save failed on all shares. See the activity log for details.",
+                "Save Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    })
+
+    $script:profileInstallBtn.Add_Click({
+        # Re-read profile file from share first (C1)
+        & $script:LoadProfileToUI
+        if ($script:ProfileReason -ne "Loaded" -and $script:ProfileReason -ne "NotFound") { return }
+        if ($script:ProfileRows.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Profile is empty - nothing to install.",
+                "Nothing to Install",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+
+        $toInstall = @()
+        $alreadyInstalled = @()
+        foreach ($r in $script:ProfileRows) {
+            if ($r.Status -eq "Missing") { $toInstall += $r }
+            elseif ($r.Status -eq "Installed") { $alreadyInstalled += $r }
+        }
+
+        if ($toInstall.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("Everything in the profile is already installed.",
+                "Nothing to Install",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+
+        # Build confirm dialog per D3
+        $msg = "Ready to install the following printers from the profile:`r`n`r`n"
+        foreach ($r in $toInstall) {
+            $mark = if ($r.IsDefault) { "    [DEFAULT]" } else { "" }
+            $msg += "  $($r.FullPath)$mark`r`n"
+        }
+        if ($alreadyInstalled.Count -gt 0) {
+            $msg += "`r`nAlready installed (will be skipped):`r`n"
+            foreach ($r in $alreadyInstalled) { $msg += "  $($r.FullPath)`r`n" }
+        }
+        $msg += "`r`nProceed?"
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            $msg, "Confirm Install",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        $installed = 0
+        $failed = 0
+        $defaultTarget = $null
+
+        foreach ($r in $toInstall) {
+            # Validate against allowlist (C5)
+            $check = Test-PrinterPathAllowed -PrinterPath $r.FullPath
+            if (-not $check.Allowed) {
+                & $script:PrinterLog "REJECTED $($r.FullPath): $($check.Reason)" "ERROR"
+                $failed++
+                continue
+            }
+
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $result = & $script:AddNetworkPrinter -PrinterPath $r.FullPath
+            $sw.Stop()
+            if ($result.Success) {
+                $installed++
+                & $script:PrinterLog "Installed $($r.FullPath) ($([int]$sw.Elapsed.TotalMilliseconds) ms)"
+                if ($r.IsDefault) { $defaultTarget = $r.FullPath }
+            }
+            else {
+                $failed++
+                & $script:PrinterLog "FAILED $($r.FullPath): $($result.Error)" "ERROR"
+            }
+        }
+
+        # Set the default printer if any row was flagged (covers newly-installed ones)
+        if (-not $defaultTarget) {
+            foreach ($r in $script:ProfileRows) {
+                if ($r.IsDefault) { $defaultTarget = $r.FullPath; break }
+            }
+        }
+        if ($defaultTarget) {
+            $dres = & $script:SetDefaultPrinter -PrinterName $defaultTarget
+            if ($dres.Success) {
+                & $script:PrinterLog "Set default printer: $defaultTarget"
+            } else {
+                & $script:PrinterLog "Could not set default $defaultTarget - $($dres.Error)" "WARN"
+            }
+        }
+
+        & $script:RefreshInstalledPrinters
+        & $script:RenderProfilePane
+        & $script:PrinterLog "Install complete: $installed succeeded, $failed failed"
     })
 
     # Manual add by path - SECURITY: Server dropdown + printer name only
@@ -1264,14 +1967,16 @@ function Initialize-Module {
         $okBtn = New-Object System.Windows.Forms.Button
         $okBtn.Text = "Add"
         $okBtn.Location = New-Object System.Drawing.Point(210, 110)
-        $okBtn.Width = 75
+        $okBtn.AutoSize = $true
+        $okBtn.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
         $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
         $inputForm.Controls.Add($okBtn)
 
         $cancelBtn = New-Object System.Windows.Forms.Button
         $cancelBtn.Text = "Cancel"
         $cancelBtn.Location = New-Object System.Drawing.Point(295, 110)
-        $cancelBtn.Width = 75
+        $cancelBtn.AutoSize = $true
+        $cancelBtn.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
         $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
         $inputForm.Controls.Add($cancelBtn)
 
@@ -1310,46 +2015,20 @@ function Initialize-Module {
 
             $modeText = "all users"
 
-            & $script:PrinterLog "=== Manual printer add ==="
-            & $script:PrinterLog "Printer: $printerName"
-            & $script:PrinterLog "Path: $printerPath"
-            Start-AppActivity "Adding printer: $printerName..."
-            [System.Windows.Forms.Application]::DoEvents()
-
-            # Step 1: Add for current user first (fast, no elevation)
-            & $script:PrinterLog "Adding for current user..."
-            $result = & $script:AddNetworkPrinter -PrinterPath $printerPath
-
+            $result = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
+            # Also add for current user so it shows immediately
             if ($result.Success) {
-                & $script:PrinterLog "[OK] Printer added for current user"
-
-                # Step 2: Persist for all users (fire-and-forget, background)
-                & $script:PrinterLog "Persisting for all users (background)..."
-                $allUsersResult = & $script:AddNetworkPrinterAllUsers -PrinterPath $printerPath
-                if ($allUsersResult.Success) {
-                    & $script:PrinterLog "[OK] All-users persistence queued"
-                }
-                else {
-                    & $script:PrinterLog "! Warning: All-users persistence failed: $($allUsersResult.Error)"
-                    & $script:PrinterLog "  (Printer still works for current user)"
-                }
+                & $script:AddNetworkPrinter -PrinterPath $printerPath | Out-Null
             }
-            else {
-                & $script:PrinterLog "[FAIL] FAILED: $($result.Error)"
-            }
-
-            & $script:PrinterLog "Refreshing installed printer list..."
-            Clear-AppStatus
 
             if ($result.Success) {
                 [System.Windows.Forms.MessageBox]::Show(
-                    "Printer added successfully for ${modeText}.`n`nPath: $printerPath",
+                    "Printer added successfully for $modeText.`n`nPath: $printerPath",
                     "Success",
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
                 & $script:RefreshInstalledPrinters
-                & $script:PrinterLog "[OK] Complete!"
             }
             else {
                 [System.Windows.Forms.MessageBox]::Show(
@@ -1365,47 +2044,18 @@ function Initialize-Module {
 
     #endregion
 
-    # Main layout - split container on top, log box on bottom
-    $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $mainLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $mainLayout.RowCount = 2
-    $mainLayout.ColumnCount = 1
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 70))) | Out-Null
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 30))) | Out-Null
-
-    # Add split container to top row
-    $mainLayout.Controls.Add($script:splitContainer, 0, 0)
-
-    # Log box at bottom
-    $logGroup = New-Object System.Windows.Forms.GroupBox
-    $logGroup.Text = "Activity Log"
-    $logGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $logGroup.Padding = New-Object System.Windows.Forms.Padding(5)
-
-    $script:printerLogBox = New-Object System.Windows.Forms.RichTextBox
-    $script:printerLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $script:printerLogBox.ReadOnly = $true
-    $script:printerLogBox.BackColor = [System.Drawing.Color]::White
-    $script:printerLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:printerLogBox.WordWrap = $false
-    $logGroup.Controls.Add($script:printerLogBox)
-
-    $mainLayout.Controls.Add($logGroup, 0, 1)
-
     # Add to tab
-    $tab.Controls.Add($mainLayout)
+    $tab.Controls.Add($script:rootLayout)
 
-    # Set splitter position to 50/50 after form is sized
+    # Set splitter positions after form is sized: outer ~33%, inner ~50% of the remainder
     $tab.Add_SizeChanged({
         if ($script:splitContainer.Width -gt 0) {
-            $script:splitContainer.SplitterDistance = [int]($script:splitContainer.Width / 2)
+            $script:splitContainer.SplitterDistance = [int]($script:splitContainer.Width / 3)
+        }
+        if ($script:splitContainerInner.Width -gt 0) {
+            $script:splitContainerInner.SplitterDistance = [int]($script:splitContainerInner.Width / 2)
         }
     })
-
-    # Initial log message
-    & $script:PrinterLog "Printer Management module loaded."
-    & $script:PrinterLog "Ready to add, remove, and manage network printers."
-    & $script:PrinterLog ""
 
     # Initial load - installed printers (with error handling for Windows 10 compatibility)
     try {
@@ -1413,7 +2063,6 @@ function Initialize-Module {
     }
     catch {
         Write-SessionLog -Message "Failed to load installed printers during module init: $($_.Exception.Message)" -Category "Printer Management"
-        & $script:PrinterLog "Warning: Could not load installed printers automatically."
         # UI will still load, user can manually refresh
     }
 
@@ -1424,9 +2073,17 @@ function Initialize-Module {
         }
         catch {
             Write-SessionLog -Message "Failed to auto-load server printers during module init: $($_.Exception.Message)" -Category "Printer Management"
-            & $script:PrinterLog "Warning: Could not load server printers automatically."
             # UI will still load, user can manually browse
         }
+    }
+
+    # Auto-load this host's profile file (failures degrade the Profile pane only,
+    # the Installed and Browse panes remain fully functional).
+    try {
+        & $script:LoadProfileToUI
+    }
+    catch {
+        & $script:PrinterLog "Profile auto-load failed: $($_.Exception.Message)" "ERROR"
     }
 
     # Show compatibility note if PrintManagement module not available
