@@ -2,13 +2,13 @@
     "global":  {
                    "cacheCredentials":  true,
                    "defaultDomain":  "RUSH",
-                   "windowWidth":  1141,
-                   "windowHeight":  700,
-                   "lastTab":  "Diagnostics"
+                   "windowWidth":  1500,
+                   "windowHeight":  800,
+                   "lastTab":  "AppLocker"
                },
     "modules":  {
                     "SoftwareInstaller":  {
-                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+                                              "networkPath":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
                                               "networkPathUNC":  "",
                                               "networkPathUNCDefault":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
                                               "localPath":  "..\\Repository\\LocalInstallers",

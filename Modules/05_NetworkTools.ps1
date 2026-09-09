@@ -902,8 +902,8 @@ function Initialize-Module {
     $script:wlanReportBtn.AutoSize = $true
     $script:wlanReportBtn.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowOnly
     $script:wlanReportBtn.Add_Click({
-        $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Generating WLAN report (requires elevation)...`r`n")
-        $diagLogBoxRef.ScrollToCaret()
+        $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Generating WLAN report (requires elevation)...`r`n")
+        $script:diagLogBox.ScrollToCaret()
         [System.Windows.Forms.Application]::DoEvents()
 
         $result = Invoke-Elevated -ScriptBlock {
@@ -921,16 +921,16 @@ function Initialize-Module {
                 $destPath = Join-Path $logsDir $destName
                 Copy-Item -Path $sourcePath -Destination $destPath -Force
                 Write-SessionLog -Message "WLAN report saved to Logs/$destName" -Category "Network Tools"
-                $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WLAN report saved: $destName`r`n")
-                $diagLogBoxRef.ScrollToCaret()
+                $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WLAN report saved: $destName`r`n")
+                $script:diagLogBox.ScrollToCaret()
                 Start-Process $destPath
             } else {
-                $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: Report file not found at $sourcePath`r`n")
-                $diagLogBoxRef.ScrollToCaret()
+                $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: Report file not found at $sourcePath`r`n")
+                $script:diagLogBox.ScrollToCaret()
             }
         } else {
-            $diagLogBoxRef.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: $($result.Error)`r`n")
-            $diagLogBoxRef.ScrollToCaret()
+            $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: $($result.Error)`r`n")
+            $script:diagLogBox.ScrollToCaret()
         }
     })
     $wifiBtnPanel.Controls.Add($script:wlanReportBtn)

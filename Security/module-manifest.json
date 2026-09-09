@@ -2,8 +2,8 @@
     "modules":  [
                     {
                         "name":  "01_SystemInfo.ps1",
-                        "added":  "2026-02-18",
-                        "hash":  "GN7MNgHJwFPkJUAMweT6K6D5oabpsjka/WCvj4TUYYs="
+                        "added":  "2026-04-07",
+                        "hash":  "CRKZ85HZ9YgeufABcaRRM3k5od/w27l8k898JC0kAyY="
                     },
                     {
                         "name":  "02_SoftwareInstaller.ps1",
@@ -17,8 +17,8 @@
                     },
                     {
                         "name":  "05_NetworkTools.ps1",
-                        "added":  "2026-02-18",
-                        "hash":  "RoAlT66ebn41y3nl1Q+q8kco3/aZYOrYDUt5nsgZOMg="
+                        "added":  "2026-04-07",
+                        "hash":  "j2bE7QyYmA/dpOVNe3FVQl6qgIdkdiRowM8Vqpmks6o="
                     },
                     {
                         "name":  "06_DiskCleanup.ps1",
@@ -29,14 +29,9 @@
                         "name":  "07_Diagnostics.ps1",
                         "added":  "2026-02-18",
                         "hash":  "rUaNrCJKaut0HouJt+kkzDc+9uvv7KYsVL72uL43xys="
-                    },
-                    {
-                        "name":  "08_AppLocker.ps1",
-                        "added":  "2026-04-06",
-                        "hash":  "MSMjuvwTAPhBSxZ74rpLP3jOVDx7zeabCqVNQhOo1J0="
                     }
                 ],
     "description":  "Whitelist of authorized modules with SHA256 hashes",
     "generated_by":  "DESKTOP-HT1H56L\\luisa",
-    "generated":  "2026-02-18 08:40:41"
+    "generated":  "2026-04-07 00:00:00"
 }
