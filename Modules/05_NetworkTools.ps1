@@ -174,10 +174,34 @@ $script:ReleaseRenewIP = {
         } else {
             $output = ipconfig /renew "$AdapterName" 2>&1
         }
-        $LogBox.AppendText("[$timestamp] $Action complete.`r`n")
+        $exitCode = $LASTEXITCODE
+
+        # ipconfig /release and /renew require local admin. Without it ipconfig
+        # prints "The requested operation requires elevation." and STILL EXITS 0,
+        # so neither the catch nor the exit code fires. $output used to be
+        # captured and thrown away while the log said "$Action complete." - the
+        # tech was told the IP had been released when nothing had happened.
+        $outputText = ($output | Out-String).Trim()
+        if ($outputText) {
+            foreach ($line in ($outputText -split "`r?`n")) {
+                if ($line.Trim()) { $LogBox.AppendText("[$timestamp]   $($line.Trim())`r`n") }
+            }
+        }
+
+        $failed = ($exitCode -ne 0) -or
+                  ($outputText -match 'requires elevation|Access is denied|The requested operation requires')
+        if ($failed) {
+            $LogBox.AppendText("[$timestamp] $Action FAILED - this needs local admin rights.`r`n")
+            try { Set-AppError -Message "$Action failed - requires elevation" } catch { }
+            try { Write-SessionLog -Message "$Action failed for $($AdapterName): $outputText" -Category "Network Tools" -Level "ERROR" } catch { }
+        } else {
+            $LogBox.AppendText("[$timestamp] $Action complete.`r`n")
+            try { Write-SessionLog -Message "$Action succeeded for $AdapterName" -Category "Network Tools" } catch { }
+        }
     }
     catch {
         $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+        try { Write-SessionLog -Message "$Action threw for $($AdapterName): $_" -Category "Network Tools" -Level "ERROR" } catch { }
     }
     $LogBox.ScrollToCaret()
 }
@@ -743,6 +767,16 @@ function Initialize-Module {
     $lldpTopBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $lldpTopBtnPanel.WrapContents = $false
 
+    # NOTE: the label MUST be created before it is captured. It used to be created
+    # 38 lines below this point, so $lldpInfoLabelRef captured $null and
+    # .GetNewClosure() froze that $null permanently - "Get Switch Info" and the
+    # LLDP "Copy" button threw on their first line and had never worked.
+    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
+    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
+    $script:lldpInfoLabel.AutoSize = $true
+    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
+    $script:lldpInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Top
+
     $lldpInfoLabelRef = $script:lldpInfoLabel
 
     $getLldpBtn = New-Object System.Windows.Forms.Button
@@ -780,12 +814,7 @@ function Initialize-Module {
 
     $lldpTablePanel.Controls.Add($lldpTopBtnPanel, 0, 0)
 
-    # Info label
-    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
-    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
-    $script:lldpInfoLabel.AutoSize = $true
-    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
-    $script:lldpInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Top
+    # Info label (created above, before the handlers captured it)
     $lldpTablePanel.Controls.Add($script:lldpInfoLabel, 0, 1)
 
     # Bottom setup panel
