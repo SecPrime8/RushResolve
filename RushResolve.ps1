@@ -370,12 +370,34 @@ function Initialize-SessionLog {
 
             if ($older) {
                 $olderLabel = if ($older.Name -match '(\d{4}-\d{2}-\d{2})') { $matches[1] } else { $older.Name }
-                $choice = [System.Windows.Forms.MessageBox]::Show(
-                    "A previous session log exists for $computerName (from $olderLabel).`n`nYes = append to that log`nNo = start a new log for today",
-                    "Session Log",
-                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                    [System.Windows.Forms.MessageBoxIcon]::Question
-                )
+
+                # This dialog is the FIRST thing shown on the first launch of any
+                # new day, and it used to be raised with no owner while the splash
+                # screen is TopMost - so it rendered BEHIND the splash. The app
+                # looked hung at "Loading..." with an invisible modal waiting for a
+                # click. Reproduced: 20+ seconds, no window, no session log.
+                # Owning it to the splash forces it in front; if the splash has
+                # gone, fall back to an unowned dialog.
+                $splashOwner = $null
+                if ($script:SplashForm -and -not $script:SplashForm.IsDisposed -and $script:SplashForm.Visible) {
+                    $splashOwner = $script:SplashForm
+                }
+
+                $prompt = "A previous session log exists for $computerName (from $olderLabel).`n`nYes = append to that log`nNo = start a new log for today"
+                if ($splashOwner) {
+                    $choice = [System.Windows.Forms.MessageBox]::Show(
+                        $splashOwner, $prompt, "Session Log",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Question
+                    )
+                }
+                else {
+                    $choice = [System.Windows.Forms.MessageBox]::Show(
+                        $prompt, "Session Log",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Question
+                    )
+                }
                 if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
                     $script:SessionLogFile = $older.FullName
                 }
