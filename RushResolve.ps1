@@ -16,7 +16,38 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # SECURITY: Enforce TLS 1.2+ for all HTTPS connections (prevents downgrade attacks)
+# Tls13 resolves to $null on .NET Framework < 4.8 (missing enum member), which
+# -bor treats as 0 - the line safely degrades to Tls12-only on older hosts.
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+
+# Global exception safety net: an exception that escapes a WinForms event
+# handler would otherwise surface the raw .NET unhandled-exception dialog and
+# can kill the app. Catch it, write the full stack to the session log, show a
+# friendly message, and keep running. Must be wired before any window handle
+# is created.
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+[System.Windows.Forms.Application]::add_ThreadException({
+    param($exSender, $exArgs)
+    try {
+        $detail = $exArgs.Exception.ToString()
+        if (Get-Command Write-SessionLog -ErrorAction SilentlyContinue) {
+            Write-SessionLog -Message "UNHANDLED UI EXCEPTION: $detail" -Category "Crash" -Level "ERROR"
+        }
+        [System.Windows.Forms.MessageBox]::Show(
+            "An unexpected error occurred and was written to the session log.`n`n$($exArgs.Exception.Message)",
+            "Rush Resolve - Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+    } catch { }
+})
+[AppDomain]::CurrentDomain.add_UnhandledException({
+    param($exSender, $exArgs)
+    try {
+        if (Get-Command Write-SessionLog -ErrorAction SilentlyContinue) {
+            Write-SessionLog -Message "FATAL UNHANDLED EXCEPTION: $($exArgs.ExceptionObject)" -Category "Crash" -Level "ERROR"
+        }
+    } catch { }
+})
 
 # QRCoder Library - bundled for QR code generation
 # DLL is included in Lib folder - no runtime download needed
@@ -183,7 +214,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.6.0"  # DISM/SFC overhaul, printer mgmt, HPIA driver fix, Win10 compat
+$script:AppVersion = "2.7.0"  # Welcome tab, lazy loading, per-day logs, installer catalog, printer profile fixes
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -208,6 +239,12 @@ $script:NetworkShareCredential = $null   # Session-cached PSCredential for share
 # Session logging
 $script:LogsPath = Join-Path $script:AppPath "Logs"
 $script:SessionLogFile = $null
+$script:SessionStartTime = $null
+$script:SessionStartInfo = $null   # Cached Get-SessionStartInfo result (gathered after UI is shown)
+
+# Lazy module loading
+$script:ModuleLoadInProgress = $false
+$script:PreloadTimer = $null
 #endregion
 
 #region Session Logging
@@ -252,6 +289,10 @@ function Get-SessionStartInfo {
             $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
             $info['RAM'] = "$ramGB GB"
 
+            # Hardware identity
+            $info['Manufacturer'] = $cs.Manufacturer
+            $info['Model'] = $cs.Model
+
             # Domain info
             if ($cs.PartOfDomain) {
                 $info['Domain'] = $cs.Domain
@@ -262,9 +303,24 @@ function Get-SessionStartInfo {
             }
         }
 
+        # Serial number
+        $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
+        if ($bios) {
+            $info['Serial'] = $bios.SerialNumber
+        }
+
         # Network adapters (basic count)
         $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
         $info['ActiveAdapters'] = $adapters.Count
+
+        # IPv4 addresses on connected adapters (hardware/IP changes must show in the log)
+        $upIndexes = @($adapters | Select-Object -ExpandProperty ifIndex)
+        $ipv4 = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' -and ($upIndexes -contains $_.InterfaceIndex) } |
+            Select-Object -ExpandProperty IPAddress
+        if ($ipv4) {
+            $info['IPv4'] = (@($ipv4) -join ', ')
+        }
 
         return $info
     }
@@ -280,7 +336,14 @@ function Get-SessionStartInfo {
 function Initialize-SessionLog {
     <#
     .SYNOPSIS
-        Creates a new session log file with header information.
+        Opens the per-host per-day session log (creates or appends).
+    .DESCRIPTION
+        One log file per computer per day: SESSION-<HOST>-<yyyy-MM-dd>.log.
+        Same-day launches append silently. If only an older log exists for this
+        host, the tech chooses between appending to it or starting today's file.
+        The full system-info block is appended after the UI is up
+        (Complete-SessionLogSystemInfo) so slow CIM queries stay off the
+        startup path.
     #>
     try {
         # Create Logs folder if it doesn't exist
@@ -288,68 +351,128 @@ function Initialize-SessionLog {
             New-Item -Path $script:LogsPath -ItemType Directory -Force | Out-Null
         }
 
-        # Generate filename with computer name and timestamp
-        # Format: SESSION-COMPUTERNAME-2026-02-09_143522.log
-        $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
         $computerName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'UNKNOWN' }
-        $script:SessionLogFile = Join-Path $script:LogsPath "SESSION-$computerName-$timestamp.log"
+        $script:SessionStartTime = Get-Date
+        $todayFile = Join-Path $script:LogsPath ("SESSION-$computerName-{0}.log" -f $script:SessionStartTime.ToString('yyyy-MM-dd'))
 
-        # Gather system information
-        $sysInfo = Get-SessionStartInfo
+        if (Test-Path $todayFile) {
+            # First log for this host today already exists - append silently
+            $script:SessionLogFile = $todayFile
+        }
+        else {
+            # No log today; if an older log exists for this host, offer to continue it
+            $older = Get-ChildItem -Path $script:LogsPath -Filter "SESSION-$computerName-*.log" -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | Select-Object -First 1
 
-        # Build header with system information
-        $headerBuilder = [System.Text.StringBuilder]::new()
-        [void]$headerBuilder.AppendLine("=" * 80)
-        [void]$headerBuilder.AppendLine("RUSH RESOLVE SESSION LOG")
-        [void]$headerBuilder.AppendLine("=" * 80)
-        [void]$headerBuilder.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-        [void]$headerBuilder.AppendLine("User: $env:USERDOMAIN\$env:USERNAME")
-        [void]$headerBuilder.AppendLine("Computer: $env:COMPUTERNAME")
-        [void]$headerBuilder.AppendLine("Version: $($script:AppVersion)")
-        [void]$headerBuilder.AppendLine("")
-
-        [void]$headerBuilder.AppendLine("SYSTEM INFORMATION:")
-        [void]$headerBuilder.AppendLine("-" * 80)
-
-        if ($sysInfo.ContainsKey('Error')) {
-            [void]$headerBuilder.AppendLine("Error gathering system info: $($sysInfo.Error)")
-        } else {
-            if ($sysInfo.OS) {
-                [void]$headerBuilder.AppendLine("OS: $($sysInfo.OS)")
-                [void]$headerBuilder.AppendLine("Version: $($sysInfo.OSVersion)")
-                [void]$headerBuilder.AppendLine("Build: $($sysInfo.Build)")
-                [void]$headerBuilder.AppendLine("Architecture: $($sysInfo.Architecture)")
+            if ($older) {
+                $olderLabel = if ($older.Name -match '(\d{4}-\d{2}-\d{2})') { $matches[1] } else { $older.Name }
+                $choice = [System.Windows.Forms.MessageBox]::Show(
+                    "A previous session log exists for $computerName (from $olderLabel).`n`nYes = append to that log`nNo = start a new log for today",
+                    "Session Log",
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Question
+                )
+                if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    $script:SessionLogFile = $older.FullName
+                }
             }
 
-            if ($sysInfo.CPU) {
-                [void]$headerBuilder.AppendLine("CPU: $($sysInfo.CPU)")
-                [void]$headerBuilder.AppendLine("Cores: $($sysInfo.Cores) cores, $($sysInfo.Threads) threads")
-            }
-
-            if ($sysInfo.RAM) {
-                [void]$headerBuilder.AppendLine("RAM: $($sysInfo.RAM)")
-            }
-
-            if ($sysInfo.DomainJoined) {
-                [void]$headerBuilder.AppendLine("Domain: $($sysInfo.Domain)")
-            } elseif ($sysInfo.Workgroup) {
-                [void]$headerBuilder.AppendLine("Workgroup: $($sysInfo.Workgroup)")
-            }
-
-            if ($sysInfo.ActiveAdapters) {
-                [void]$headerBuilder.AppendLine("Active Network Adapters: $($sysInfo.ActiveAdapters)")
+            if (-not $script:SessionLogFile) {
+                $script:SessionLogFile = $todayFile
+                $banner = @(
+                    ("=" * 80),
+                    "RUSH RESOLVE SESSION LOG - $computerName",
+                    ("=" * 80)
+                ) -join "`r`n"
+                Set-Content -Path $script:SessionLogFile -Value $banner -Force
             }
         }
 
-        [void]$headerBuilder.AppendLine("=" * 80)
-        [void]$headerBuilder.AppendLine("")
+        # Session separator - written on every launch (new file or append)
+        Add-Content -Path $script:SessionLogFile -Value ""
+        Add-Content -Path $script:SessionLogFile -Value ("--- Session started {0} | v{1} | {2}\{3} ---" -f `
+            $script:SessionStartTime.ToString('yyyy-MM-dd HH:mm:ss'), $script:AppVersion, $env:USERDOMAIN, $env:USERNAME)
 
-        Set-Content -Path $script:SessionLogFile -Value $headerBuilder.ToString() -Force
-        Write-SessionLog "Application started"
+        # Environment line - pins down PS/.NET/language-mode differences between hosts
+        try {
+            $netRelease = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction Stop).Release
+        } catch { $netRelease = 0 }
+        $netName = if ($netRelease -ge 533320) { '4.8.1' }
+                   elseif ($netRelease -ge 528040) { '4.8' }
+                   elseif ($netRelease -ge 461808) { '4.7.2' }
+                   elseif ($netRelease -ge 461308) { '4.7.1' }
+                   elseif ($netRelease -ge 460798) { '4.7' }
+                   elseif ($netRelease -ge 394802) { '4.6.2' }
+                   else { 'pre-4.6.2' }
+        Add-Content -Path $script:SessionLogFile -Value ("Env: PowerShell {0} | .NET Framework {1} (release {2}) | CLR {3} | LanguageMode {4}" -f `
+            $PSVersionTable.PSVersion, $netName, $netRelease, [System.Environment]::Version, $ExecutionContext.SessionState.LanguageMode)
     }
     catch {
         # Logging failure shouldn't crash the app
         $script:SessionLogFile = $null
+    }
+}
+
+function Complete-SessionLogSystemInfo {
+    <#
+    .SYNOPSIS
+        Gathers full system info and appends it to the session log.
+    .DESCRIPTION
+        Runs once per session, after the main window is shown, so the CIM
+        queries don't delay startup. Written on every session (new file or
+        append) so hardware/IP changes between visits are always captured.
+        Caches the result in $script:SessionStartInfo for the Welcome tab.
+    #>
+    if ($script:SessionStartInfo) { return }
+
+    $sysInfo = Get-SessionStartInfo
+    $script:SessionStartInfo = $sysInfo
+
+    if ($script:SessionLogFile) {
+        try {
+            $sb = [System.Text.StringBuilder]::new()
+            [void]$sb.AppendLine("SYSTEM INFORMATION:")
+            [void]$sb.AppendLine("-" * 80)
+
+            if ($sysInfo.ContainsKey('Error')) {
+                [void]$sb.AppendLine("Error gathering system info: $($sysInfo.Error)")
+            } else {
+                if ($sysInfo.OS) {
+                    [void]$sb.AppendLine("OS: $($sysInfo.OS) ($($sysInfo.Architecture), build $($sysInfo.Build))")
+                }
+                if ($sysInfo.Model) {
+                    [void]$sb.AppendLine("Hardware: $($sysInfo.Manufacturer) $($sysInfo.Model)")
+                }
+                if ($sysInfo.Serial) {
+                    [void]$sb.AppendLine("Serial: $($sysInfo.Serial)")
+                }
+                if ($sysInfo.CPU) {
+                    [void]$sb.AppendLine("CPU: $($sysInfo.CPU) ($($sysInfo.Cores) cores, $($sysInfo.Threads) threads)")
+                }
+                if ($sysInfo.RAM) {
+                    [void]$sb.AppendLine("RAM: $($sysInfo.RAM)")
+                }
+                if ($sysInfo.DomainJoined) {
+                    [void]$sb.AppendLine("Domain: $($sysInfo.Domain)")
+                } elseif ($sysInfo.Workgroup) {
+                    [void]$sb.AppendLine("Workgroup: $($sysInfo.Workgroup)")
+                }
+                if ($sysInfo.IPv4) {
+                    [void]$sb.AppendLine("IPv4: $($sysInfo.IPv4)")
+                }
+            }
+
+            [void]$sb.AppendLine("-" * 80)
+            Add-Content -Path $script:SessionLogFile -Value $sb.ToString()
+        }
+        catch {
+            # Silently fail - logging shouldn't crash the app
+        }
+    }
+
+    # Let the Welcome tab refresh its computer summary, if it's loaded
+    if ($script:UpdateWelcomeSystemInfo) {
+        try { & $script:UpdateWelcomeSystemInfo } catch { }
     }
 }
 
@@ -374,10 +497,16 @@ function Write-SessionLog {
     param(
         [string]$Message,
         [string]$Category = "",
-        [string]$Result = ""
+        [string]$Result = "",
+        [string]$Level = ""
     )
 
     if (-not $script:SessionLogFile) { return }
+
+    # Level (e.g. "Warning") prefixes the message when provided
+    if ($Level -and $Level -ne "Info") {
+        $Message = "[$($Level.ToUpper())] $Message"
+    }
 
     try {
         $timestamp = Get-Date -Format "HH:mm:ss"
@@ -410,14 +539,9 @@ function Close-SessionLog {
     if (-not $script:SessionLogFile) { return }
 
     try {
-        Write-SessionLog "Application closed"
-        $footer = @"
-
-================================================================================
-Session ended: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-================================================================================
-"@
-        Add-Content -Path $script:SessionLogFile -Value $footer
+        $started = if ($script:SessionStartTime) { $script:SessionStartTime.ToString('HH:mm:ss') } else { '?' }
+        Add-Content -Path $script:SessionLogFile -Value ("--- Session ended {0} (started {1}) ---" -f `
+            (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $started)
     }
     catch {
         # Silently fail
@@ -2020,6 +2144,87 @@ function Start-ElevatedProcess {
     return $result
 }
 
+function Start-AsENTElevated {
+    <#
+    .SYNOPSIS
+        Launches a program as the ENT account with a FULL administrator token.
+    .DESCRIPTION
+        Start-Process -Credential alone yields a process running as the ENT user
+        but with a UAC-filtered (non-elevated) token - the "partial credential"
+        problem that breaks HPIA and other admin tools. This helper does a
+        two-hop launch: hop 1 starts PowerShell as ENT, hop 2 (inside that ENT
+        session) relaunches the target with -Verb RunAs so it receives ENT's
+        full admin token. The UAC consent prompt appears in the ENT context.
+    .PARAMETER FilePath
+        Path to the executable to launch elevated.
+    .PARAMETER ArgumentList
+        Arguments for the executable.
+    .PARAMETER Credential
+        ENT PSCredential. Prompts via Get-ElevatedCredential if not provided.
+    .PARAMETER OperationName
+        Friendly name shown in the credential prompt.
+    .OUTPUTS
+        Hashtable with Success and Error.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+        [string]$ArgumentList = "",
+        [PSCredential]$Credential,
+        [string]$OperationName = "this operation"
+    )
+
+    $result = @{
+        Success = $false
+        Error = $null
+    }
+
+    # Already elevated? No two-hop needed.
+    if ($script:IsElevated) {
+        $direct = Start-ElevatedProcess -FilePath $FilePath -ArgumentList $ArgumentList -OperationName $OperationName
+        return @{ Success = $direct.Success; Error = $direct.Error }
+    }
+
+    # Get credentials if not provided
+    if (-not $Credential) {
+        $Credential = Get-ElevatedCredential -Message "Enter ENT credentials to $OperationName"
+        if (-not $Credential) {
+            $result.Error = "Operation cancelled by user"
+            return $result
+        }
+    }
+
+    try {
+        # Hop 2 command: relaunch the target elevated inside the ENT session
+        $target = $FilePath.Replace("'", "''")
+        $innerCommand = "Start-Process -FilePath '$target'"
+        if ($ArgumentList) {
+            $escapedArgs = $ArgumentList.Replace("'", "''")
+            $innerCommand += " -ArgumentList '$escapedArgs'"
+        }
+        $innerCommand += " -Verb RunAs"
+
+        # Encode to survive quoting across the process boundary
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
+
+        # Hop 1: PowerShell as ENT (working dir must be accessible to ENT)
+        Start-Process -FilePath "powershell.exe" `
+            -ArgumentList "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded" `
+            -Credential $Credential `
+            -WorkingDirectory "C:\Windows\System32" `
+            -ErrorAction Stop | Out-Null
+
+        Write-SessionLog -Message "Launched as ENT (elevated): $FilePath $ArgumentList" -Category "Elevation"
+        $result.Success = $true
+    }
+    catch {
+        $result.Error = "ENT elevated launch failed: $($_.Exception.Message)"
+        Write-SessionLog -Message "ENT elevated launch failed: $FilePath - $($_.Exception.Message)" -Category "Elevation"
+    }
+
+    return $result
+}
+
 function Resolve-ToUNCPath {
     <#
     .SYNOPSIS
@@ -2333,19 +2538,78 @@ function Get-Modules {
     return Get-ChildItem -Path $script:ModulesPath -Filter "*.ps1" | Sort-Object Name
 }
 
-function Load-Module {
+function Get-ModuleTabInfo {
     <#
     .SYNOPSIS
-        Loads a single module and creates its tab.
-    .PARAMETER ModuleFile
-        FileInfo object for the module script.
-    .PARAMETER TabControl
-        The TabControl to add the module's tab to.
+        Reads a module's name/description from its source text WITHOUT executing it.
+    .DESCRIPTION
+        Used by lazy loading to label placeholder tabs before any module code runs.
+    #>
+    param([System.IO.FileInfo]$ModuleFile)
+
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($ModuleFile.Name) -replace '^\d+_', ''
+    $description = $null
+
+    try {
+        $content = Get-Content -Path $ModuleFile.FullName -Raw
+        if ($content -match '(?m)^\s*\$script:ModuleName\s*=\s*["''](.+?)["'']') {
+            $name = $matches[1]
+        }
+        if ($content -match '(?m)^\s*\$script:ModuleDescription\s*=\s*["''](.+?)["'']') {
+            $description = $matches[1]
+        }
+    }
+    catch {
+        # Fall back to filename-derived name
+    }
+
+    return @{ Name = $name; Description = $description }
+}
+
+function Register-ModuleTab {
+    <#
+    .SYNOPSIS
+        Creates a lightweight placeholder tab for a module. No module code executes.
+    .DESCRIPTION
+        The tab's Tag carries the module file and load state; Complete-ModuleLoad
+        fills in the real UI on first selection or via the background preloader.
     #>
     param(
         [System.IO.FileInfo]$ModuleFile,
         [System.Windows.Forms.TabControl]$TabControl
     )
+
+    $info = Get-ModuleTabInfo -ModuleFile $ModuleFile
+
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = $info.Name
+    if ($info.Description) {
+        $tab.ToolTipText = $info.Description
+    }
+    $tab.Padding = New-Object System.Windows.Forms.Padding(10)
+    $tab.Tag = @{ ModuleFile = $ModuleFile; Loaded = $false }
+
+    $TabControl.TabPages.Add($tab)
+    return $tab
+}
+
+function Complete-ModuleLoad {
+    <#
+    .SYNOPSIS
+        Loads a registered module into its placeholder tab.
+    .DESCRIPTION
+        Hash-verifies, dot-sources, and calls the module's Initialize-Module on
+        the placeholder TabPage created by Register-ModuleTab. Safe to call
+        repeatedly - no-ops once loaded. Must run on the UI thread.
+    #>
+    param([System.Windows.Forms.TabPage]$Tab)
+
+    $state = $Tab.Tag
+    if (-not $state -or $state.Loaded) { return $true }
+    if ($script:ModuleLoadInProgress) { return $false }
+    $script:ModuleLoadInProgress = $true
+
+    $ModuleFile = $state.ModuleFile
 
     try {
         # SECURITY: Verify module is whitelisted and hash matches
@@ -2357,6 +2621,9 @@ function Load-Module {
             if ($script:SecurityMode -eq "Enforced") {
                 Show-SecurityWarning -Title "Module Blocked" -Message $message -Critical
                 Write-Warning "SECURITY: Module '$($ModuleFile.Name)' blocked - $($securityCheck.Reason)"
+                # Mark handled so the preloader doesn't retry forever, then drop the tab
+                $state.Loaded = $true
+                if ($Tab.Parent) { $Tab.Parent.TabPages.Remove($Tab) }
                 return $false
             }
             elseif ($script:SecurityMode -eq "Warn") {
@@ -2377,32 +2644,38 @@ function Load-Module {
             throw "Module does not define `$ModuleName"
         }
 
-        # Create tab page
-        $tab = New-Object System.Windows.Forms.TabPage
-        $tab.Text = $script:ModuleName
+        $Tab.Text = $script:ModuleName
         if ($script:ModuleDescription) {
-            $tab.ToolTipText = $script:ModuleDescription
+            $Tab.ToolTipText = $script:ModuleDescription
         }
-        $tab.Padding = New-Object System.Windows.Forms.Padding(10)
 
         # Call module's initialization function
         if (Get-Command -Name "Initialize-Module" -ErrorAction SilentlyContinue) {
-            Initialize-Module -tab $tab
+            Initialize-Module -tab $Tab
         }
         else {
             throw "Module does not define Initialize-Module function"
         }
 
-        # Add tab to control
-        $TabControl.TabPages.Add($tab)
-
-        Write-SessionLog "Loaded module: $($script:ModuleName)"
+        $state.Loaded = $true
         return $true
     }
     catch {
         Write-SessionLog "Failed to load module: $($ModuleFile.Name) - $_"
         Write-Warning "Failed to load module '$($ModuleFile.Name)': $_"
+
+        # Mark handled (prevents endless preloader retries) and surface the error in the tab
+        $state.Loaded = $true
+        $errorLabel = New-Object System.Windows.Forms.Label
+        $errorLabel.Text = "Module failed to load:`n$($ModuleFile.Name)`n`n$_"
+        $errorLabel.AutoSize = $true
+        $errorLabel.ForeColor = [System.Drawing.Color]::Firebrick
+        $errorLabel.Location = New-Object System.Drawing.Point(20, 20)
+        $Tab.Controls.Add($errorLabel)
         return $false
+    }
+    finally {
+        $script:ModuleLoadInProgress = $false
     }
 }
 #endregion
@@ -3719,6 +3992,12 @@ function Show-MainWindow {
     $tabControl.ItemSize = New-Object System.Drawing.Size(130, 30)
     $tabControl.SizeMode = [System.Windows.Forms.TabSizeMode]::Fixed
 
+    # Event handlers fire during ANY message pump (including modal dialogs whose
+    # scope chain doesn't include this function's locals), so handlers must
+    # reference these via $script: scope - locals resolve to $null there.
+    $script:MainForm = $form
+    $script:MainTabControl = $tabControl
+
     # Status strip (bottom bar)
     $statusStrip = New-Object System.Windows.Forms.StatusStrip
 
@@ -3779,23 +4058,15 @@ function Show-MainWindow {
     # Update credential status indicator on startup
     Update-CredentialStatusIndicator
 
-    # Load modules
-    Update-SplashStatus "Loading modules..."
+    # Register module tabs (lightweight - no module code runs yet)
+    Update-SplashStatus "Preparing modules..."
     $modules = Get-Modules
-    $loadedCount = 0
-    $moduleIndex = 0
-    $totalModules = $modules.Count
-
     foreach ($module in $modules) {
-        $moduleIndex++
-        Update-SplashStatus "Loading module $moduleIndex of $totalModules`: $($module.BaseName)..."
-        if (Load-Module -ModuleFile $module -TabControl $tabControl) {
-            $loadedCount++
-        }
+        Register-ModuleTab -ModuleFile $module -TabControl $tabControl | Out-Null
     }
 
-    # If no modules loaded, show a welcome tab
-    if ($loadedCount -eq 0) {
+    # If no modules found, show a welcome tab
+    if ($tabControl.TabPages.Count -eq 0) {
         $welcomeTab = New-Object System.Windows.Forms.TabPage
         $welcomeTab.Text = "Welcome"
         $welcomeTab.Padding = New-Object System.Windows.Forms.Padding(20)
@@ -3841,19 +4112,75 @@ function Initialize-Module {
         Close-SessionLog
     })
 
-    # Always start on System Info (field techs move between machines constantly)
-    $systemInfoFound = $false
-    foreach ($tab in $tabControl.TabPages) {
-        if ($tab.Text -eq "System Info") {
-            $tabControl.SelectedTab = $tab
-            $systemInfoFound = $true
-            break
-        }
-    }
-    # Fallback: first tab (System Info sorts first due to 01_ prefix)
-    if (-not $systemInfoFound -and $tabControl.TabPages.Count -gt 0) {
+    # Load ONLY the first tab now (00_Welcome sorts first) so the app is
+    # usable immediately; everything else loads on click or in the background
+    if ($tabControl.TabPages.Count -gt 0) {
+        Update-SplashStatus "Loading $($tabControl.TabPages[0].Text)..."
         $tabControl.SelectedIndex = 0
+        Complete-ModuleLoad -Tab $tabControl.TabPages[0] | Out-Null
     }
+
+    # Lazy-load any not-yet-loaded module the moment its tab is selected.
+    # NOTE: only $script: variables in here - see $script:MainTabControl comment.
+    $tabControl.Add_SelectedIndexChanged({
+        try {
+            if (-not $script:MainTabControl) { return }
+            $tab = $script:MainTabControl.SelectedTab
+            if ($tab -and $tab.Tag -and -not $tab.Tag.Loaded) {
+                if ($script:MainForm) { $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::WaitCursor }
+                try {
+                    Complete-ModuleLoad -Tab $tab | Out-Null
+                }
+                finally {
+                    if ($script:MainForm) { $script:MainForm.Cursor = [System.Windows.Forms.Cursors]::Default }
+                }
+            }
+        }
+        catch {
+            Write-Warning "Tab load failed: $_"
+        }
+    })
+
+    # Background preload: once the form is visible, finish the session-log
+    # system-info block, then load remaining modules one per tick so later
+    # tab clicks are instant.
+    # NOTE: ticks fire during modal dialogs too (PIN entry, MessageBox), whose
+    # scope chain does NOT include this function's locals - use $script: only,
+    # and never let an exception escape (it would crash the app).
+    $script:PreloadTimer = New-Object System.Windows.Forms.Timer
+    $script:PreloadTimer.Interval = 250
+    $script:PreloadTimer.Add_Tick({
+        try {
+            # Step 1: slow CIM queries for the log header + Welcome tab
+            if (-not $script:SessionStartInfo) {
+                Complete-SessionLogSystemInfo
+                return
+            }
+
+            # Step 2: load the next unloaded module (skip if one is mid-load)
+            if ($script:ModuleLoadInProgress) { return }
+            if (-not $script:MainTabControl) { return }
+
+            $next = $null
+            foreach ($tab in $script:MainTabControl.TabPages) {
+                if ($tab.Tag -and -not $tab.Tag.Loaded) { $next = $tab; break }
+            }
+
+            if ($next) {
+                Complete-ModuleLoad -Tab $next | Out-Null
+            }
+            else {
+                $script:PreloadTimer.Stop()
+                $script:PreloadTimer.Dispose()
+                $script:PreloadTimer = $null
+            }
+        }
+        catch {
+            # Never let the preloader take down the app; retry next tick
+            Write-Warning "Background module preload error: $_"
+        }
+    })
+    $form.Add_Shown({ if ($script:PreloadTimer) { $script:PreloadTimer.Start() } })
 
     # Close splash and show main form
     Update-SplashStatus "Ready!"
