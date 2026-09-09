@@ -123,19 +123,20 @@ $script:GetInstalledPrinters = {
 }
 
 # Get printers from print server (with progress updates via app-wide status bar)
+# Uses background jobs + DoEvents polling to keep UI responsive on Windows 10
 $script:GetServerPrinters = {
     param([string]$Server)
 
     $printers = @()
     $serverName = $Server.TrimStart('\')
 
-    # Quick connectivity check (fail fast if server unreachable)
+    # Quick connectivity check using .NET Ping with built-in 2s timeout (non-blocking)
     Start-AppActivity "Testing connection to $serverName..."
     try {
-        # Use WMI ping with 2-second timeout (compatible with PowerShell 5.1)
-        $pingResult = Get-WmiObject -Class Win32_PingStatus -Filter "Address='$serverName' AND Timeout=2000" -ErrorAction Stop
-        if ($pingResult.StatusCode -ne 0) {
-            Write-SessionLog -Message "Print server $serverName is unreachable (ping failed)" -Category "Printer Management"
+        $ping = New-Object System.Net.NetworkInformation.Ping
+        $reply = $ping.Send($serverName, 2000)
+        if ($reply.Status -ne 'Success') {
+            Write-SessionLog -Message "Print server $serverName is unreachable (ping: $($reply.Status))" -Category "Printer Management"
             return @()
         }
     }
@@ -144,135 +145,219 @@ $script:GetServerPrinters = {
         return @()
     }
 
+    # Helper: Run a job with DoEvents polling and timeout
+    # Returns job output or $null on timeout/failure
+    $runWithTimeout = {
+        param([scriptblock]$JobScript, [object[]]$JobArgs, [string]$Label, [int]$TimeoutSeconds = 15)
+        Start-AppActivity "$Label..."
+        [System.Windows.Forms.Application]::DoEvents()
+        try {
+            $job = Start-Job -ScriptBlock $JobScript -ArgumentList $JobArgs
+            $start = Get-Date
+            while ($job.State -eq 'Running') {
+                Start-Sleep -Milliseconds 200
+                [System.Windows.Forms.Application]::DoEvents()
+                if (((Get-Date) - $start).TotalSeconds -gt $TimeoutSeconds) {
+                    Stop-Job $job -ErrorAction SilentlyContinue
+                    Remove-Job $job -Force -ErrorAction SilentlyContinue
+                    return $null
+                }
+            }
+            $output = Receive-Job $job -ErrorAction Stop
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            return $output
+        }
+        catch {
+            if ($job) { Remove-Job $job -Force -ErrorAction SilentlyContinue }
+            return $null
+        }
+    }
+
     # Method 1: Try Get-Printer cmdlet (requires Print Management) - Skip if not available
     if ($script:HasPrintManagement) {
-        Start-AppActivity "Trying Get-Printer cmdlet..."
-        try {
-            $serverPrinters = Get-Printer -ComputerName $serverName -ErrorAction Stop
-            foreach ($p in $serverPrinters) {
-                if ($p.Shared) {
-                    $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
-                    $printers += @{
-                        Name = $p.Name
-                        ShareName = $shareName
-                        FullPath = "\\$serverName\$shareName"
-                        Location = $p.Location
-                        Comment = $p.Comment
-                        DriverName = $p.DriverName
+        $getPrinterScript = {
+            param($s)
+            Get-Printer -ComputerName $s -ErrorAction Stop | Where-Object { $_.Shared } |
+                ForEach-Object {
+                    $shareName = if ($_.ShareName) { $_.ShareName } else { $_.Name }
+                    [PSCustomObject]@{
+                        Name = $_.Name; ShareName = $shareName
+                        Location = $_.Location; Comment = $_.Comment; DriverName = $_.DriverName
                     }
+                }
+        }
+        $jobOutput = & $runWithTimeout $getPrinterScript @($serverName) "Querying printers via Get-Printer" 15
+        if ($jobOutput) {
+            foreach ($p in $jobOutput) {
+                $printers += @{
+                    Name = $p.Name; ShareName = $p.ShareName
+                    FullPath = "\\$serverName\$($p.ShareName)"
+                    Location = $p.Location; Comment = $p.Comment; DriverName = $p.DriverName
                 }
             }
             if ($printers.Count -gt 0) {
                 return $printers | Sort-Object { $_.Name }
             }
         }
-        catch {
-            # Method 1 failed, try next
-        }
     }
 
     # Method 2: Try WMI (older but often works)
-    Start-AppActivity "Trying WMI query..."
-    try {
-        $wmiPrinters = Get-WmiObject -Class Win32_Printer -ComputerName $serverName -ErrorAction Stop |
-            Where-Object { $_.Shared -eq $true }
-        foreach ($p in $wmiPrinters) {
-            $shareName = if ($p.ShareName) { $p.ShareName } else { $p.Name }
+    $wmiScript = {
+        param($s)
+        Get-WmiObject -Class Win32_Printer -ComputerName $s -ErrorAction Stop |
+            Where-Object { $_.Shared -eq $true } |
+            ForEach-Object {
+                $shareName = if ($_.ShareName) { $_.ShareName } else { $_.Name }
+                [PSCustomObject]@{
+                    Name = $_.Name; ShareName = $shareName
+                    Location = $_.Location; Comment = $_.Comment; DriverName = $_.DriverName
+                }
+            }
+    }
+    $jobOutput = & $runWithTimeout $wmiScript @($serverName) "Querying printers via WMI" 15
+    if ($jobOutput) {
+        foreach ($p in $jobOutput) {
             $printers += @{
-                Name = $p.Name
-                ShareName = $shareName
-                FullPath = "\\$serverName\$shareName"
-                Location = $p.Location
-                Comment = $p.Comment
-                DriverName = $p.DriverName
+                Name = $p.Name; ShareName = $p.ShareName
+                FullPath = "\\$serverName\$($p.ShareName)"
+                Location = $p.Location; Comment = $p.Comment; DriverName = $p.DriverName
             }
         }
         if ($printers.Count -gt 0) {
             return $printers | Sort-Object { $_.Name }
         }
     }
-    catch {
-        # Method 2 failed, try next
-    }
 
     # Method 3: Enumerate shared printers via net view (most compatible)
-    Start-AppActivity "Trying net view command..."
-    try {
-        $netOutput = net view "\\$serverName" 2>&1
+    $netViewScript = {
+        param($s)
+        $netOutput = net view "\\$s" 2>&1
+        $results = @()
         $lines = $netOutput -split "`n"
         foreach ($line in $lines) {
             if ($line -match "Print") {
-                # Format: "ShareName    Print    Comment"
                 $parts = $line -split '\s{2,}'
                 if ($parts.Count -ge 1) {
                     $shareName = $parts[0].Trim()
                     $comment = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "" }
                     if ($shareName -and $shareName -ne "") {
-                        $printers += @{
-                            Name = $shareName
-                            ShareName = $shareName
-                            FullPath = "\\$serverName\$shareName"
-                            Location = ""
-                            Comment = $comment
-                            DriverName = ""
+                        $results += [PSCustomObject]@{
+                            Name = $shareName; ShareName = $shareName
+                            Location = ""; Comment = $comment; DriverName = ""
                         }
                     }
                 }
             }
         }
+        return $results
     }
-    catch {
-        # Method 3 failed
+    $jobOutput = & $runWithTimeout $netViewScript @($serverName) "Querying printers via net view" 15
+    if ($jobOutput) {
+        foreach ($p in $jobOutput) {
+            $printers += @{
+                Name = $p.Name; ShareName = $p.ShareName
+                FullPath = "\\$serverName\$($p.ShareName)"
+                Location = $p.Location; Comment = $p.Comment; DriverName = $p.DriverName
+            }
+        }
     }
 
     return $printers | Sort-Object { $_.Name }
 }
 
 # Add network printer (current user only)
+# Uses rundll32 printui.dll in a background process with responsive wait loop
 $script:AddNetworkPrinter = {
     param([string]$PrinterPath)
 
-    # Method 1: Try Add-Printer cmdlet (if available)
-    if ($script:HasPrintManagement) {
-        try {
-            Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
+    try {
+        & $script:PrinterLog "  Connecting to print server (downloading drivers)..."
+        & $script:PrinterLog "  This may take 1-3 minutes for first-time installs..."
+
+        # Use printui.dll /in to add printer connection for current user
+        # Run as background process so we can pump DoEvents during the wait
+        $process = Start-Process -FilePath "rundll32.exe" `
+            -ArgumentList "printui.dll,PrintUIEntry /in /n`"$PrinterPath`"" `
+            -PassThru -WindowStyle Hidden
+
+        # Responsive wait loop with elapsed time feedback
+        $startTime = [DateTime]::Now
+        $lastLogSeconds = 0
+
+        while (-not $process.HasExited) {
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $elapsed = [int]([DateTime]::Now - $startTime).TotalSeconds
+            # Log progress every 10 seconds
+            if ($elapsed -gt 0 -and $elapsed % 10 -eq 0 -and $elapsed -ne $lastLogSeconds) {
+                $lastLogSeconds = $elapsed
+                & $script:PrinterLog "  Still working... (${elapsed}s elapsed)"
+                Start-AppActivity "Adding printer... (${elapsed}s)"
+            }
+        }
+
+        $elapsed = [int]([DateTime]::Now - $startTime).TotalSeconds
+        $exitCode = $process.ExitCode
+
+        if ($exitCode -eq 0) {
+            & $script:PrinterLog "  [OK] Printer added (${elapsed}s)"
             return @{ Success = $true; Error = $null }
         }
-        catch {
-            # Fall through to WMI method
+        else {
+            & $script:PrinterLog "  printui.dll exited with code $exitCode, trying fallback..."
+
+            # Fallback: Try Add-Printer cmdlet
+            if ($script:HasPrintManagement) {
+                try {
+                    & $script:PrinterLog "  Trying Add-Printer cmdlet..."
+                    Add-Printer -ConnectionName $PrinterPath -ErrorAction Stop
+                    & $script:PrinterLog "  [OK] Printer added via Add-Printer cmdlet"
+                    return @{ Success = $true; Error = $null }
+                }
+                catch {
+                    & $script:PrinterLog "  Add-Printer failed: $($_.Exception.Message)"
+                }
+            }
+
+            # Fallback: Try WScript.Network COM object
+            try {
+                & $script:PrinterLog "  Trying WScript.Network fallback..."
+                $wscript = New-Object -ComObject WScript.Network
+                $wscript.AddWindowsPrinterConnection($PrinterPath)
+                & $script:PrinterLog "  [OK] Printer added via WScript.Network"
+                return @{ Success = $true; Error = $null }
+            }
+            catch {
+                & $script:PrinterLog "  [FAIL] All methods failed"
+                return @{ Success = $false; Error = "printui.dll exit code $exitCode. Fallback also failed: $($_.Exception.Message)" }
+            }
         }
     }
-
-    # Method 2: Use WScript.Network COM object (Windows 10 compatible)
-    try {
-        $wscript = New-Object -ComObject WScript.Network
-        $wscript.AddWindowsPrinterConnection($PrinterPath)
-        return @{ Success = $true; Error = $null }
-    }
     catch {
+        & $script:PrinterLog "  [FAIL] Error: $($_.Exception.Message)"
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
 
-# Add network printer for ALL users (requires elevation)
+# Add network printer for ALL users (requires elevation via UAC RunAs)
+# Uses printui.dll /ga to add per-machine printer connection
+# Triggers a single UAC prompt instead of credential-based elevation (fixes Win10 "privilege not held" error)
 $script:AddNetworkPrinterAllUsers = {
     param([string]$PrinterPath)
 
     try {
-        # Use printui.dll with /ga flag (add per-machine printer connection)
-        $result = Start-ElevatedProcess -FilePath "rundll32.exe" `
+        # Use -Verb RunAs for UAC elevation (same pattern as Module 7 DISM tools)
+        # Fire-and-forget: current user already has the printer, this just persists for all users
+        Start-Process -FilePath "rundll32.exe" `
             -ArgumentList "printui.dll,PrintUIEntry /ga /n`"$PrinterPath`"" `
-            -Wait -Hidden `
-            -OperationName "install printer for all users"
+            -Verb RunAs -WindowStyle Hidden
 
-        if ($result.Success) {
-            return @{ Success = $true; Error = $null }
-        }
-        else {
-            return @{ Success = $false; Error = $result.Error }
-        }
+        [System.Windows.Forms.Application]::DoEvents()
+        return @{ Success = $true; Error = $null }
     }
     catch {
+        # User cancelled UAC prompt or other error
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
