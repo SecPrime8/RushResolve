@@ -2,17 +2,21 @@
     "global":  {
                    "cacheCredentials":  true,
                    "defaultDomain":  "RUSH",
-                   "windowWidth":  1141,
-                   "windowHeight":  700,
-                   "lastTab":  "Diagnostics"
+                   "windowWidth":  900,
+                   "windowHeight":  740,
+                   "lastTab":  "Welcome"
                },
     "modules":  {
                     "SoftwareInstaller":  {
-                                              "networkPath":  "K:\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+                                              "networkPath":  "",
                                               "networkPathUNC":  "",
-                                              "networkPathUNCDefault":  "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
-                                              "localPath":  "..\\Repository\\LocalInstallers",
-                                              "favoritesLocalPath":  "C:\\Users\\luisa\\KILA Strategies\\projects\\Rush_IT\\Repository\\Favorites"
+                                              "networkPathUNCDefault":  "\\rush.edu\data\IS\Infosvcs\FLDTECH\New_Hire_Folder\Useful_Software",
+                                              "favoritesLocalPath":  "",
+                                              "curatedNetworkPath":  "",
+                                              "savedPaths":  [
+
+                                                             ],
+                                              "localPath":  ""
                                           }
                 }
 }
