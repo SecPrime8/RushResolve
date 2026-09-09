@@ -231,6 +231,9 @@ $script:CredentialPINHash = $null         # SHA256 hash of PIN
 $script:PINLastVerified = $null           # DateTime of last successful PIN entry
 $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
+$script:PINMaxAttempts = 3                # Attempts before the session locks out
+$script:ClipboardClearTimer = $null       # UI-thread timer for clipboard auto-clear
+$script:ClipboardExpectedText = ""        # Only clear if the clipboard still holds this
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
 $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
 $script:ConnectedSharePath = $null       # UNC root of active net use session
@@ -1109,6 +1112,39 @@ function Remove-EncryptedCredential {
     Update-CredentialStatusIndicator
 }
 
+function Test-PINLockedOut {
+    <#
+    .SYNOPSIS
+        Returns $true when the session has burned its PIN attempts.
+    .DESCRIPTION
+        $script:PINFailCount is only reset on a SUCCESSFUL unlock, so it
+        persists across calls for the whole session - that is the intended
+        lockout. Three callers used to compute "3 - PINFailCount" and then run
+        "while ($attemptsLeft -gt 0)", which meant that once the count hit 3 the
+        loop body never executed: Copy-Password and the QR authenticator became
+        permanently dead buttons that returned silently, and
+        Get-ElevatedCredential fell through to Get-Credential, BYPASSING the PIN
+        entirely and overwriting the stored credential. The failure counter made
+        access easier instead of harder.
+    #>
+    return ($script:PINFailCount -ge $script:PINMaxAttempts)
+}
+
+function Show-PINLockoutMessage {
+    <#
+    .SYNOPSIS
+        Tells the tech why nothing is happening, instead of failing silently.
+    #>
+    param([string]$Action = "this action")
+    [void][System.Windows.Forms.MessageBox]::Show(
+        "Too many incorrect PIN attempts this session, so $Action is locked.`r`n`r`nUse Tools > Credential Options > Clear Cached Credentials to set a new PIN, or restart RushResolve.",
+        "PIN Locked",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    try { Write-SessionLog -Message "PIN lockout reached; $Action refused" -Category "Credentials" -Level "WARN" } catch { }
+}
+
 function Test-PINTimeout {
     <#
     .SYNOPSIS
@@ -1322,8 +1358,32 @@ function Copy-PasswordToClipboard {
     if ($script:CachedCredential -is [PSCredential] -and -not (Test-PINTimeout)) {
         # Already unlocked - copy directly
         $password = $script:CachedCredential.GetNetworkCredential().Password
-        [System.Windows.Forms.Clipboard]::SetText($password)
+
+        # Clipboard::SetText throws when another app holds the clipboard, which
+        # is routine under RDP/Citrix redirection on hospital workstations. It
+        # used to be unguarded, so the failure escaped to the global handler as
+        # a generic "An unexpected error occurred" box.
+        try {
+            [System.Windows.Forms.Clipboard]::SetText($password)
+        }
+        catch {
+            $password = $null
+            Write-SessionLog -Message "Clipboard copy FAILED: $($_.Exception.Message)" -Category "Credentials" -Level "ERROR"
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Could not write to the clipboard - another application is holding it.`r`n`r`nThis is common over RDP or Citrix. Try again, or read the password from the QR authenticator.",
+                "Clipboard Unavailable",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return $false
+        }
+
         Write-SessionLog -Message "Password copied to clipboard (already unlocked)" -Category "Credentials"
+
+        # Start the countdown BEFORE promising it in the dialog, so the promise
+        # is only made once the timer is actually running.
+        Start-ClipboardClearTimer -ExpectedText $password
+        $password = $null
 
         [void][System.Windows.Forms.MessageBox]::Show(
             "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
@@ -1331,14 +1391,15 @@ function Copy-PasswordToClipboard {
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
-
-        # Schedule clipboard clear after 30 seconds
-        Start-ClipboardClearTimer
         return $true
     }
 
     # Need to prompt for PIN
-    $attemptsLeft = 3 - $script:PINFailCount
+    if (Test-PINLockedOut) {
+        Show-PINLockoutMessage -Action "copying the password"
+        return $false
+    }
+    $attemptsLeft = $script:PINMaxAttempts - $script:PINFailCount
 
     while ($attemptsLeft -gt 0) {
         $pin = Show-PINEntryDialog -Title "Enter PIN to copy password ($attemptsLeft attempts left)"
@@ -1363,9 +1424,26 @@ function Copy-PasswordToClipboard {
                 # SECURITY NOTE: Plaintext password required for clipboard API
                 # Minimize exposure window by clearing immediately after use
                 $password = $decrypted.GetNetworkCredential().Password
-                [System.Windows.Forms.Clipboard]::SetText($password)
-                $password = $null  # Clear plaintext from memory
+
+                try {
+                    [System.Windows.Forms.Clipboard]::SetText($password)
+                }
+                catch {
+                    $password = $null
+                    Write-SessionLog -Message "Clipboard copy FAILED: $($_.Exception.Message)" -Category "Credentials" -Level "ERROR"
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        "Could not write to the clipboard - another application is holding it.`r`n`r`nThis is common over RDP or Citrix. Try again, or read the password from the QR authenticator.",
+                        "Clipboard Unavailable",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                    return $false
+                }
+
                 Write-SessionLog -Message "Credentials unlocked with PIN, password copied to clipboard" -Category "Credentials"
+
+                Start-ClipboardClearTimer -ExpectedText $password
+                $password = $null  # Clear plaintext from memory
 
                 [void][System.Windows.Forms.MessageBox]::Show(
                     "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
@@ -1373,9 +1451,6 @@ function Copy-PasswordToClipboard {
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
-
-                # Schedule clipboard clear after 30 seconds
-                Start-ClipboardClearTimer
                 return $true
             }
             else {
@@ -1426,15 +1501,75 @@ function Copy-PasswordToClipboard {
 function Start-ClipboardClearTimer {
     <#
     .SYNOPSIS
-        Starts a background job to clear clipboard after 30 seconds.
+        Clears the clipboard 30 seconds after a password was copied.
+    .DESCRIPTION
+        This used to be Start-Job + Clipboard::Clear(). PowerShell background
+        jobs run in an MTA runspace and System.Windows.Forms.Clipboard requires
+        STA, so the call threw inside the job, the exception was swallowed, and
+        the job handle was discarded with $null = so nothing ever checked.
+        Closing the app inside 30s killed it too.
+
+        The result: the clipboard was NEVER cleared, while the dialog told the
+        tech "Clipboard will be cleared in 30 seconds for security." A domain
+        admin password sat on a clinical workstation's clipboard indefinitely.
+
+        A WinForms timer ticks on the UI thread, which is already STA.
+    .PARAMETER ExpectedText
+        Only clear if the clipboard still holds this value, so a tech who copies
+        something else in the meantime does not lose it.
     #>
-    # Use a simple approach with Start-Job for clipboard clearing
-    # Note: This runs in background and clears clipboard after delay
-    $null = Start-Job -ScriptBlock {
-        Start-Sleep -Seconds 30
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.Clipboard]::Clear()
+    param([string]$ExpectedText = "")
+
+    # Restart cleanly if a previous countdown is still running
+    if ($script:ClipboardClearTimer) {
+        try {
+            $script:ClipboardClearTimer.Stop()
+            $script:ClipboardClearTimer.Dispose()
+        } catch { }
+        $script:ClipboardClearTimer = $null
     }
+
+    $script:ClipboardExpectedText = $ExpectedText
+    $script:ClipboardClearTimer = New-Object System.Windows.Forms.Timer
+    $script:ClipboardClearTimer.Interval = 30000
+    $script:ClipboardClearTimer.Add_Tick({
+        try {
+            $script:ClipboardClearTimer.Stop()
+        } catch { }
+
+        $cleared = $false
+        try {
+            $current = ""
+            try { $current = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+
+            if (-not $script:ClipboardExpectedText -or $current -eq $script:ClipboardExpectedText) {
+                [System.Windows.Forms.Clipboard]::Clear()
+                $cleared = $true
+            }
+            else {
+                # Tech copied something else; theirs is not ours to destroy.
+                $cleared = $true
+            }
+        }
+        catch {
+            # Clipboard can be locked by another app (RDP/Citrix redirection,
+            # clipboard managers). Say so rather than leaving a password behind
+            # while having promised otherwise.
+            try { Write-SessionLog -Message "Clipboard auto-clear FAILED: $($_.Exception.Message)" -Category "Credentials" -Level "ERROR" } catch { }
+            try { Set-AppError -Message "Clipboard could not be cleared automatically - clear it manually" } catch { }
+        }
+
+        if ($cleared) {
+            try { Write-SessionLog -Message "Clipboard auto-cleared after password copy" -Category "Credentials" } catch { }
+        }
+
+        $script:ClipboardExpectedText = ""
+        try {
+            $script:ClipboardClearTimer.Dispose()
+        } catch { }
+        $script:ClipboardClearTimer = $null
+    })
+    $script:ClipboardClearTimer.Start()
 }
 
 function Show-QRCodeAuthenticator {
@@ -1482,7 +1617,11 @@ function Show-QRCodeAuthenticator {
     }
     else {
         # Need to prompt for PIN
-        $attemptsLeft = 3 - $script:PINFailCount
+        if (Test-PINLockedOut) {
+            Show-PINLockoutMessage -Action "the QR authenticator"
+            return
+        }
+        $attemptsLeft = $script:PINMaxAttempts - $script:PINFailCount
 
         while ($attemptsLeft -gt 0 -and -not $credential) {
             $pin = Show-PINEntryDialog -Title "Enter PIN for QR Code ($attemptsLeft attempts left)"
@@ -1694,8 +1833,32 @@ function Get-ElevatedCredential {
     # Try to load from disk if not in memory
     $savedCred = Load-EncryptedCredential
     if ($savedCred) {
-        # We have saved credentials - need PIN to unlock
-        $attemptsLeft = 3 - $script:PINFailCount
+        # We have saved credentials - need PIN to unlock.
+        # $credentialsCleared tracks whether the tech EXPLICITLY chose to discard
+        # them. Falling out of this block any other way must NOT reach the
+        # Get-Credential path below, or a locked-out session silently bypasses
+        # the PIN and overwrites the stored credential.
+        $credentialsCleared = $false
+
+        if (Test-PINLockedOut) {
+            $reset = [System.Windows.Forms.MessageBox]::Show(
+                "Too many incorrect PIN attempts this session.`r`n`r`nClear the saved credentials and enter new ones?",
+                "PIN Locked",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Remove-EncryptedCredential
+                $script:PINFailCount = 0
+                $credentialsCleared = $true
+            }
+            else {
+                try { Write-SessionLog -Message "PIN lockout reached; elevation refused" -Category "Credentials" -Level "WARN" } catch { }
+                return $null
+            }
+        }
+
+        $attemptsLeft = $script:PINMaxAttempts - $script:PINFailCount
 
         while ($attemptsLeft -gt 0) {
             $pin = Show-PINEntryDialog -Title "Unlock Credentials ($attemptsLeft attempts left)"
@@ -1709,6 +1872,8 @@ function Get-ElevatedCredential {
                 )
                 if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
                     Remove-EncryptedCredential
+                    $script:PINFailCount = 0
+                    $credentialsCleared = $true
                     break
                 }
                 return $null
@@ -1736,6 +1901,8 @@ function Get-ElevatedCredential {
                         [System.Windows.Forms.MessageBoxIcon]::Error
                     )
                     Remove-EncryptedCredential
+                    $script:PINFailCount = 0
+                    $credentialsCleared = $true
                     break
                 }
             }
@@ -1768,6 +1935,8 @@ function Get-ElevatedCredential {
                     )
                     if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
                         Remove-EncryptedCredential
+                        $script:PINFailCount = 0
+                        $credentialsCleared = $true
                     }
                     else {
                         return $null
@@ -1775,9 +1944,16 @@ function Get-ElevatedCredential {
                 }
             }
         }
+
+        # Guard the fall-through. Reaching Get-Credential below without having
+        # explicitly cleared the saved credential means the PIN was bypassed.
+        if (-not $credentialsCleared) {
+            try { Write-SessionLog -Message "PIN not verified; elevation refused" -Category "Credentials" -Level "WARN" } catch { }
+            return $null
+        }
     }
 
-    # No saved credential (or was cleared) - prompt for new one
+    # No saved credential (or was cleared on purpose) - prompt for new one
     try {
         $cred = Get-Credential -Message $Message
         if (-not $cred) { return $null }
@@ -4102,14 +4278,45 @@ function Initialize-Module {
 
     # Save window size on close
     $form.Add_FormClosing({
-        $script:Settings.global.windowWidth = $form.Width
-        $script:Settings.global.windowHeight = $form.Height
-        if ($tabControl.SelectedTab) {
-            $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
-        }
-        Disconnect-NetworkShare
-        Save-Settings
-        Close-SessionLog
+        # Every step is individually guarded. This handler had no try/catch, and
+        # Disconnect-NetworkShare shells "net use /delete" against a possibly
+        # dead server - a throw here reaches the ThreadException handler, which
+        # shows a box and CANCELS the close, making the app unclosable.
+
+        # Security first: if a password copy is still counting down, the timer
+        # will never fire once we exit. Clear it now rather than leaving a
+        # domain admin password on a clinical workstation's clipboard.
+        try {
+            if ($script:ClipboardClearTimer) {
+                $script:ClipboardClearTimer.Stop()
+                $current = ""
+                try { $current = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+                if (-not $script:ClipboardExpectedText -or $current -eq $script:ClipboardExpectedText) {
+                    [System.Windows.Forms.Clipboard]::Clear()
+                }
+                $script:ClipboardClearTimer.Dispose()
+                $script:ClipboardClearTimer = $null
+                $script:ClipboardExpectedText = ""
+            }
+        } catch { }
+
+        try { if ($script:PreloadTimer) { $script:PreloadTimer.Stop(); $script:PreloadTimer.Dispose() } } catch { }
+
+        try {
+            # Only persist geometry from a normal window; saving maximized
+            # bounds reopens oversized on a smaller workstation screen.
+            if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Normal) {
+                $script:Settings.global.windowWidth = $form.Width
+                $script:Settings.global.windowHeight = $form.Height
+            }
+            if ($tabControl.SelectedTab) {
+                $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
+            }
+        } catch { }
+
+        try { Disconnect-NetworkShare } catch { }
+        try { Save-Settings } catch { }
+        try { Close-SessionLog } catch { }
     })
 
     # Load ONLY the first tab now (00_Welcome sorts first) so the app is
