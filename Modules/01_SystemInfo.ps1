@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
-    System Information Module for Rush Resolve
+    Workstation Module for Rush Resolve
 .DESCRIPTION
-    Displays system information and provides quick access to common admin tools.
+    Displays workstation information and provides quick access to
+    elevated admin tools grouped by category.
 #>
 
-$script:ModuleName = "System Info"
-$script:ModuleDescription = "View system information and launch admin tools"
+$script:ModuleName = "Workstation"
+$script:ModuleDescription = "View workstation info and launch elevated admin tools"
 
 # Use script block instead of function to avoid scope issues
 $script:GetSysInfoData = {
@@ -130,8 +131,8 @@ function Initialize-Module {
     $mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $mainPanel.RowCount = 2
     $mainPanel.ColumnCount = 1
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 65))) | Out-Null
-    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 35))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 55))) | Out-Null
+    $mainPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 45))) | Out-Null
 
     # Top Panel - System Info
     $topPanel = New-Object System.Windows.Forms.Panel
@@ -157,217 +158,252 @@ function Initialize-Module {
     $infoGroup.Controls.Add($script:infoTextBox)
     $topPanel.Controls.Add($infoGroup)
 
-    # Bottom Panel - Buttons
-    $bottomPanel = New-Object System.Windows.Forms.Panel
-    $bottomPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    # Bottom Panel - Scrollable launcher area with categorized groups
+    $script:bottomPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:bottomPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:bottomPanel.AutoScroll = $true
+    $script:bottomPanel.ColumnCount = 1
+    $script:bottomPanel.Padding = New-Object System.Windows.Forms.Padding(5)
+    $script:bottomPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
 
-    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $buttonPanel.Dock = [System.Windows.Forms.DockStyle]::Top
-    $buttonPanel.Height = 90
-    $buttonPanel.Padding = New-Object System.Windows.Forms.Padding(5)
-    $buttonPanel.WrapContents = $true
+    # Helper to add a row with autosize style
+    $addAutoRow = {
+        param($ctl)
+        $script:bottomPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
+        $script:bottomPanel.Controls.Add($ctl)
+    }
 
-    # Capture references for closures
-    $textBoxRef = $script:infoTextBox
-    $scriptBlockRef = $script:GetSysInfoData
+    # --- Row 1: Info Actions (Refresh / Copy) ---
+    $script:row1 = New-Object System.Windows.Forms.FlowLayoutPanel
+    $script:row1.AutoSize = $true
+    $script:row1.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+    $script:row1.Dock = [System.Windows.Forms.DockStyle]::Top
+    $script:row1.Padding = New-Object System.Windows.Forms.Padding(5, 5, 5, 5)
+    $script:row1.WrapContents = $false
 
-    # Refresh button
-    $refreshBtn = New-Object System.Windows.Forms.Button
-    $refreshBtn.Text = "Refresh"
-    $refreshBtn.Width = 80
-    $refreshBtn.Height = 30
-    $refreshBtn.Add_Click({
-        param($sender, $e)
-        $textBoxRef.Text = (& $scriptBlockRef)
-    }.GetNewClosure())
-    $buttonPanel.Controls.Add($refreshBtn)
+    $script:refreshBtn = New-Object System.Windows.Forms.Button
+    $script:refreshBtn.Text = "Refresh"
+    $script:refreshBtn.AutoSize = $true
+    $script:refreshBtn.Height = 30
+    $script:refreshBtn.Add_Click({
+        $script:infoTextBox.Text = (& $script:GetSysInfoData)
+    })
+    $script:row1.Controls.Add($script:refreshBtn)
 
-    # Copy button
-    $copyBtn = New-Object System.Windows.Forms.Button
-    $copyBtn.Text = "Copy"
-    $copyBtn.Width = 60
-    $copyBtn.Height = 30
-    $copyBtn.Add_Click({
-        param($sender, $e)
-        if ($textBoxRef.Text) {
-            [System.Windows.Forms.Clipboard]::SetText($textBoxRef.Text)
+    $script:copyBtn = New-Object System.Windows.Forms.Button
+    $script:copyBtn.Text = "Copy to Clipboard"
+    $script:copyBtn.AutoSize = $true
+    $script:copyBtn.Height = 30
+    $script:copyBtn.Add_Click({
+        if ($script:infoTextBox.Text) {
+            [System.Windows.Forms.Clipboard]::SetText($script:infoTextBox.Text)
             [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
         }
-    }.GetNewClosure())
-    $buttonPanel.Controls.Add($copyBtn)
-
-    # Separator
-    $sep1 = New-Object System.Windows.Forms.Label
-    $sep1.Text = " | "
-    $sep1.AutoSize = $true
-    $sep1.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
-    $buttonPanel.Controls.Add($sep1)
-
-    # Device Manager (elevated - uses cached credentials)
-    $devMgrBtn = New-Object System.Windows.Forms.Button
-    $devMgrBtn.Text = "Device Mgr"
-    $devMgrBtn.Width = 105
-    $devMgrBtn.Height = 30
-    $devMgrBtn.Add_Click({
-        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "devmgmt.msc" -OperationName "open Device Manager"
     })
-    $buttonPanel.Controls.Add($devMgrBtn)
+    $script:row1.Controls.Add($script:copyBtn)
 
-    # Task Manager (elevated - shows all processes)
-    $taskMgrBtn = New-Object System.Windows.Forms.Button
-    $taskMgrBtn.Text = "Task Mgr"
-    $taskMgrBtn.Width = 75
-    $taskMgrBtn.Height = 30
-    $taskMgrBtn.Add_Click({
-        Start-ElevatedProcess -FilePath "taskmgr.exe" -OperationName "open Task Manager"
-    })
-    $buttonPanel.Controls.Add($taskMgrBtn)
+    & $addAutoRow $script:row1
 
-    # Event Viewer (elevated - full log access)
-    $eventBtn = New-Object System.Windows.Forms.Button
-    $eventBtn.Text = "Events"
-    $eventBtn.Width = 60
-    $eventBtn.Height = 30
-    $eventBtn.Add_Click({
-        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "eventvwr.msc" -OperationName "open Event Viewer"
-    })
-    $buttonPanel.Controls.Add($eventBtn)
+    # --- Categorized launcher groups ---
+    # Each item: Label, Exe, Args (string, "" if none)
+    $categories = @(
+        @{ Title = "Security & Policy"; Items = @(
+            @{ Label = "Local Security Policy"; Exe = "mmc.exe"; Args = "secpol.msc" }
+            @{ Label = "Group Policy Editor";   Exe = "mmc.exe"; Args = "gpedit.msc" }
+            @{ Label = "Local Users & Groups";  Exe = "mmc.exe"; Args = "lusrmgr.msc" }
+        )}
+        @{ Title = "System Management"; Items = @(
+            @{ Label = "Computer Mgmt";     Exe = "mmc.exe";     Args = "compmgmt.msc" }
+            @{ Label = "Services";          Exe = "mmc.exe";     Args = "services.msc" }
+            @{ Label = "Task Scheduler";    Exe = "mmc.exe";     Args = "taskschd.msc" }
+            @{ Label = "Event Viewer";      Exe = "mmc.exe";     Args = "eventvwr.msc" }
+            @{ Label = "Task Manager";      Exe = "taskmgr.exe"; Args = "" }
+            @{ Label = "System Properties"; Exe = "control.exe"; Args = "sysdm.cpl" }
+        )}
+        @{ Title = "Hardware & Storage"; Items = @(
+            @{ Label = "Device Manager";   Exe = "mmc.exe"; Args = "devmgmt.msc" }
+            @{ Label = "Disk Management";  Exe = "mmc.exe"; Args = "diskmgmt.msc" }
+            @{ Label = "Print Management"; Exe = "mmc.exe"; Args = "printmanagement.msc" }
+        )}
+        @{ Title = "Advanced"; Items = @(
+            @{ Label = "Registry Editor";     Exe = "regedit.exe";    Args = "" }
+            @{ Label = "Elevated PowerShell"; Exe = "powershell.exe"; Args = "" }
+            @{ Label = "Elevated CMD";        Exe = "cmd.exe";        Args = "" }
+        )}
+    )
 
-    # Services (elevated - can start/stop services)
-    $svcBtn = New-Object System.Windows.Forms.Button
-    $svcBtn.Text = "Services"
-    $svcBtn.Width = 70
-    $svcBtn.Height = 30
-    $svcBtn.Add_Click({
-        Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "services.msc" -OperationName "open Services"
-    })
-    $buttonPanel.Controls.Add($svcBtn)
+    foreach ($cat in $categories) {
+        $group = New-Object System.Windows.Forms.GroupBox
+        $group.Text = $cat.Title
+        $group.AutoSize = $true
+        $group.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+        $group.Dock = [System.Windows.Forms.DockStyle]::Top
+        $group.Padding = New-Object System.Windows.Forms.Padding(8, 5, 8, 5)
+        $group.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 
-    # Separator for Admin Consoles
-    $sep2 = New-Object System.Windows.Forms.Label
-    $sep2.Text = " | "
-    $sep2.AutoSize = $true
-    $sep2.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
-    $buttonPanel.Controls.Add($sep2)
+        $flow = New-Object System.Windows.Forms.FlowLayoutPanel
+        $flow.AutoSize = $true
+        $flow.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+        $flow.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $flow.WrapContents = $true
+        $flow.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
 
-    # Active Directory Users and Computers (elevated)
-    $adBtn = New-Object System.Windows.Forms.Button
-    $adBtn.Text = "AD Users"
-    $adBtn.Width = 75
-    $adBtn.Height = 30
-    $adBtn.Add_Click({
-        # Check if RSAT (Remote Server Administration Tools) is installed
-        $dsaPath = Join-Path $env:SystemRoot "System32\dsa.msc"
-
-        if (Test-Path $dsaPath) {
-            Start-ElevatedProcess -FilePath "mmc.exe" -ArgumentList "dsa.msc" -OperationName "open Active Directory Users and Computers"
+        foreach ($item in $cat.Items) {
+            $btn = New-Object System.Windows.Forms.Button
+            $btn.Text = $item.Label
+            $btn.AutoSize = $true
+            $btn.Height = 30
+            $btn.Margin = New-Object System.Windows.Forms.Padding(3)
+            $itemExe  = $item.Exe
+            $itemArgs = $item.Args
+            $itemName = $item.Label
+            $btn.Add_Click({
+                if ($itemArgs) {
+                    Start-ElevatedProcess -FilePath $itemExe -ArgumentList $itemArgs -OperationName "launch $itemName"
+                } else {
+                    Start-ElevatedProcess -FilePath $itemExe -OperationName "launch $itemName"
+                }
+            }.GetNewClosure())
+            $flow.Controls.Add($btn)
         }
-        else {
-            [System.Windows.Forms.MessageBox]::Show(
-                "Active Directory Users and Computers (dsa.msc) not found.`n`n" +
-                "RSAT (Remote Server Administration Tools) must be installed.`n`n" +
-                "To install RSAT:`n" +
-                "1. Open Settings > Apps > Optional Features`n" +
-                "2. Click 'Add a feature'`n" +
-                "3. Search for 'RSAT: Active Directory'`n" +
-                "4. Install 'RSAT: Active Directory Domain Services and Lightweight Directory Services Tools'`n`n" +
-                "Or use PowerShell (as Administrator):`n" +
-                "Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0",
-                "RSAT Not Installed",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            Write-SessionLog -Message "AD Users button clicked but RSAT not installed" -Category "System Info" -Result "Error: dsa.msc not found"
+
+        # Special-case extras for specific groups
+        if ($cat.Title -eq "System Management") {
+            # MSInfo32 runs unelevated (no admin needed)
+            $msInfoBtn = New-Object System.Windows.Forms.Button
+            $msInfoBtn.Text = "MSInfo32"
+            $msInfoBtn.AutoSize = $true
+            $msInfoBtn.Height = 30
+            $msInfoBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+            $msInfoBtn.Add_Click({ Start-Process "msinfo32.exe" })
+            $flow.Controls.Add($msInfoBtn)
         }
-    })
-    $buttonPanel.Controls.Add($adBtn)
+        elseif ($cat.Title -eq "Hardware & Storage") {
+            # Memory Test requires confirmation dialog
+            $memDiagBtn = New-Object System.Windows.Forms.Button
+            $memDiagBtn.Text = "Memory Test"
+            $memDiagBtn.AutoSize = $true
+            $memDiagBtn.Height = 30
+            $memDiagBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+            $memDiagBtn.Add_Click({
+                $msg = "Windows Memory Diagnostic will check your RAM for errors.`n`nThe computer must restart to run the test.`n`nSchedule memory test?"
+                $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Memory Diagnostic", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+                if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    Write-SessionLog -Message "Memory Diagnostic scheduled via mdsched.exe" -Category "Workstation"
+                    Start-ElevatedProcess -FilePath "mdsched.exe" -OperationName "schedule Memory Diagnostic"
+                }
+            })
+            $flow.Controls.Add($memDiagBtn)
 
-    # SCCM Console (elevated)
-    $sccmBtn = New-Object System.Windows.Forms.Button
-    $sccmBtn.Text = "SCCM"
-    $sccmBtn.Width = 60
-    $sccmBtn.Height = 30
-    $sccmBtn.Add_Click({
-        # Check common SCCM console paths
-        $sccmPaths = @(
-            "${env:ProgramFiles(x86)}\Microsoft Endpoint Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe",
-            "${env:ProgramFiles(x86)}\Microsoft Configuration Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe",
-            "${env:ProgramFiles}\Microsoft Endpoint Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe",
-            "${env:ProgramFiles}\Microsoft Configuration Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe"
-        )
-        $sccmPath = $sccmPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($sccmPath) {
-            Start-ElevatedProcess -FilePath $sccmPath -OperationName "open SCCM Console"
-        } else {
-            [System.Windows.Forms.MessageBox]::Show("SCCM Console not found.`n`nExpected locations:`n- Program Files (x86)\Microsoft Endpoint Manager\AdminConsole`n- Program Files (x86)\Microsoft Configuration Manager\AdminConsole", "SCCM Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            # Printers folder must open through explorer as the CURRENT user
+            # (shell: URIs don't work through elevation/alternate credentials)
+            $printersBtn = New-Object System.Windows.Forms.Button
+            $printersBtn.Text = "Printers Folder"
+            $printersBtn.AutoSize = $true
+            $printersBtn.Height = 30
+            $printersBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+            $printersBtn.Add_Click({
+                Start-Process "explorer.exe" -ArgumentList "shell:PrintersFolder"
+                Write-SessionLog -Message "Opened Printers folder" -Category "Workstation"
+            })
+            $flow.Controls.Add($printersBtn)
         }
-    })
-    $buttonPanel.Controls.Add($sccmBtn)
 
-    # MSInfo32
-    $msInfoBtn = New-Object System.Windows.Forms.Button
-    $msInfoBtn.Text = "MSInfo32"
-    $msInfoBtn.Width = 75
-    $msInfoBtn.Height = 30
-    $msInfoBtn.Add_Click({ Start-Process "msinfo32.exe" })
-    $buttonPanel.Controls.Add($msInfoBtn)
+        if ($cat.Title -eq "Advanced") {
+            # Terminal with ENT's FULL admin token (two-hop: PowerShell as ENT,
+            # then -Verb RunAs inside that session). Plain Start-ElevatedProcess
+            # gives the ENT user a UAC-filtered token, which many tools reject.
+            $entTermBtn = New-Object System.Windows.Forms.Button
+            $entTermBtn.Text = "Terminal (ENT Admin)"
+            $entTermBtn.AutoSize = $true
+            $entTermBtn.Height = 30
+            $entTermBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+            $entTermBtn.Add_Click({
+                # Windows Terminal is a per-user Store app - it usually doesn't
+                # exist for the ENT profile, so fall back to PowerShell
+                $termExe = "powershell.exe"
+                $wt = Get-Command "wt.exe" -ErrorAction SilentlyContinue
+                if ($wt) { $termExe = $wt.Source }
 
-    # Memory Diagnostic
-    $memDiagBtn = New-Object System.Windows.Forms.Button
-    $memDiagBtn.Text = "Memory Test"
-    $memDiagBtn.Width = 110
-    $memDiagBtn.Height = 30
-    $memDiagBtn.Add_Click({
-        $msg = "Windows Memory Diagnostic will check your RAM for errors.`n`nThe computer must restart to run the test.`n`nSchedule memory test?"
-        $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Memory Diagnostic", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
-        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            Write-SessionLog -Message "Memory Diagnostic scheduled via mdsched.exe" -Category "System Info"
-            Start-ElevatedProcess -FilePath "mdsched.exe" -OperationName "schedule Memory Diagnostic"
+                $launch = Start-AsENTElevated -FilePath $termExe -OperationName "open an elevated ENT terminal"
+                if (-not $launch.Success -and $launch.Error -and $launch.Error -notlike "*cancelled*") {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Could not open ENT terminal:`n$($launch.Error)",
+                        "Terminal (ENT Admin)",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                }
+            })
+            $flow.Controls.Add($entTermBtn)
+
+            # Registry Editor with the full ENT admin token
+            $entRegBtn = New-Object System.Windows.Forms.Button
+            $entRegBtn.Text = "Regedit (ENT Admin)"
+            $entRegBtn.AutoSize = $true
+            $entRegBtn.Height = 30
+            $entRegBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+            $entRegBtn.Add_Click({
+                Start-AsENTElevated -FilePath "regedit.exe" -OperationName "open Registry Editor as ENT" | Out-Null
+            })
+            $flow.Controls.Add($entRegBtn)
         }
-    })
-    $buttonPanel.Controls.Add($memDiagBtn)
 
-    # Separator before power buttons
-    $sep2 = New-Object System.Windows.Forms.Label
-    $sep2.Text = " | "
-    $sep2.AutoSize = $true
-    $sep2.Padding = New-Object System.Windows.Forms.Padding(5, 8, 5, 0)
-    $buttonPanel.Controls.Add($sep2)
+        $group.Controls.Add($flow)
+        & $addAutoRow $group
+    }
 
-    # Reboot
-    $rebootBtn = New-Object System.Windows.Forms.Button
-    $rebootBtn.Text = "Reboot"
-    $rebootBtn.Width = 70
-    $rebootBtn.Height = 30
-    $rebootBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220)
-    $rebootBtn.Add_Click({
+    # --- Power group: Reboot / Shutdown ---
+    $powerGroup = New-Object System.Windows.Forms.GroupBox
+    $powerGroup.Text = "Power"
+    $powerGroup.AutoSize = $true
+    $powerGroup.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+    $powerGroup.Dock = [System.Windows.Forms.DockStyle]::Top
+    $powerGroup.Padding = New-Object System.Windows.Forms.Padding(8, 5, 8, 5)
+    $powerGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+
+    $powerFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+    $powerFlow.AutoSize = $true
+    $powerFlow.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+    $powerFlow.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $powerFlow.WrapContents = $true
+    $powerFlow.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
+
+    $script:rebootBtn = New-Object System.Windows.Forms.Button
+    $script:rebootBtn.Text = "Reboot"
+    $script:rebootBtn.AutoSize = $true
+    $script:rebootBtn.Height = 30
+    $script:rebootBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+    $script:rebootBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220)
+    $script:rebootBtn.Add_Click({
         $confirm = [System.Windows.Forms.MessageBox]::Show("Reboot this computer?", "Confirm", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            Write-SessionLog -Message "REBOOT initiated (30 second delay)" -Category "System Info"
+            Write-SessionLog -Message "REBOOT initiated (30 second delay)" -Category "Workstation"
             shutdown /r /t 30 /c "Reboot initiated by Rush Resolve"
         }
     })
-    $buttonPanel.Controls.Add($rebootBtn)
+    $powerFlow.Controls.Add($script:rebootBtn)
 
-    # Shutdown
-    $shutdownBtn = New-Object System.Windows.Forms.Button
-    $shutdownBtn.Text = "Shutdown"
-    $shutdownBtn.Width = 90
-    $shutdownBtn.Height = 30
-    $shutdownBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220)
-    $shutdownBtn.Add_Click({
+    $script:shutdownBtn = New-Object System.Windows.Forms.Button
+    $script:shutdownBtn.Text = "Shutdown"
+    $script:shutdownBtn.AutoSize = $true
+    $script:shutdownBtn.Height = 30
+    $script:shutdownBtn.Margin = New-Object System.Windows.Forms.Padding(3)
+    $script:shutdownBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 220, 220)
+    $script:shutdownBtn.Add_Click({
         $confirm = [System.Windows.Forms.MessageBox]::Show("Shut down this computer?", "Confirm", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
-            Write-SessionLog -Message "SHUTDOWN initiated (30 second delay)" -Category "System Info"
+            Write-SessionLog -Message "SHUTDOWN initiated (30 second delay)" -Category "Workstation"
             shutdown /s /t 30 /c "Shutdown initiated by Rush Resolve"
         }
     })
-    $buttonPanel.Controls.Add($shutdownBtn)
+    $powerFlow.Controls.Add($script:shutdownBtn)
 
-    $bottomPanel.Controls.Add($buttonPanel)
+    $powerGroup.Controls.Add($powerFlow)
+    & $addAutoRow $powerGroup
 
     $mainPanel.Controls.Add($topPanel, 0, 0)
-    $mainPanel.Controls.Add($bottomPanel, 0, 1)
+    $mainPanel.Controls.Add($script:bottomPanel, 0, 1)
 
     $tab.Controls.Add($mainPanel)
 }
