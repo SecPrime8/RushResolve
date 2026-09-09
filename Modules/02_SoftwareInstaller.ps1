@@ -888,15 +888,13 @@ $script:InstallApp = {
             $LogBox.ScrollToCaret()
             [System.Windows.Forms.Application]::DoEvents()
 
-            $tempDir = "C:\Temp\RushResolve_Install"
+            # SECURITY: was C:\Temp\RushResolve_Install - a fixed, world-writable
+            # path whose contents are then executed elevated. See Get-RushTempRoot.
+            $tempDir = Get-RushTempPath -Name "Install"
             $LogBox.AppendText("[$timestamp] Temp dir: $tempDir`r`n")
             [System.Windows.Forms.Application]::DoEvents()
 
-            # Ensure C:\Temp exists first
-            if (-not (Test-Path "C:\Temp")) {
-                $LogBox.AppendText("[$timestamp] Creating C:\Temp...`r`n")
-                New-Item -Path "C:\Temp" -ItemType Directory -Force | Out-Null
-            }
+            # Get-RushTempPath creates the per-session root on first use.
 
             if (-not (Test-Path $tempDir)) {
                 $LogBox.AppendText("[$timestamp] Creating $tempDir...`r`n")
@@ -1396,7 +1394,7 @@ $script:RunHPIAAnalysis = {
     }
 
     # Use a shared location so the elevated process can write and we can read
-    $reportPath = "C:\Temp\RushResolve_HPIA_Report"
+    $reportPath = Get-RushTempPath -Name "HPIA_Report"
     if (Test-Path $reportPath) {
         Remove-Item $reportPath -Recurse -Force
         if ($Log) { & $Log "  Cleaned previous report folder" }
@@ -1603,8 +1601,8 @@ $script:RunHPIAUpdate = {
 
     if ($Log) { & $Log "Starting HP driver update (Selection: $Selection)..." }
 
-    $downloadPath = "C:\Temp\RushResolve_HPIA_Downloads"
-    $reportPath = "C:\Temp\RushResolve_HPIA_Update"
+    $downloadPath = Get-RushTempPath -Name "HPIA_Downloads"
+    $reportPath = Get-RushTempPath -Name "HPIA_Update"
 
     # Clean previous folders
     foreach ($p in @($downloadPath, $reportPath)) {
@@ -1709,14 +1707,17 @@ $script:RunHPIAUpdate = {
             $batchLines += "echo All $($softpaqs.Count) installation(s) complete."
             $batchLines += "echo ============================================"
 
-            $installScriptPath = "C:\Temp\RushResolve_InstallAll.cmd"
+            $installScriptPath = Get-RushTempPath -Name "InstallAll.cmd"
             [System.IO.File]::WriteAllLines($installScriptPath, $batchLines)
             $installScript = Get-Item $installScriptPath
         }
 
-        # Write wrapper and log to C:\Temp (download folder is owned by elevated HPIA)
-        $installLog = "C:\Temp\RushResolve_install_output.log"
-        $wrapperPath = "C:\Temp\RushResolve_wrapper.cmd"
+        # Wrapper and log go to the per-session scratch dir (the download folder
+        # is owned by elevated HPIA). SECURITY: this wrapper is executed with
+        # -Verb RunAs, so a fixed world-writable path was a privilege-escalation
+        # vector - any local user could swap the file before the elevated launch.
+        $installLog = Get-RushTempPath -Name "install_output.log"
+        $wrapperPath = Get-RushTempPath -Name "wrapper.cmd"
         $wrapperLines = @(
             "@echo off"
             "cd /d `"$downloadPath`""

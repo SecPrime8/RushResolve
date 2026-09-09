@@ -232,6 +232,7 @@ $script:PINLastVerified = $null           # DateTime of last successful PIN entr
 $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:PINMaxAttempts = 3                # Attempts before the session locks out
+$script:RushTempRoot = $null              # Per-session scratch dir (see Get-RushTempRoot)
 $script:ClipboardClearTimer = $null       # UI-thread timer for clipboard auto-clear
 $script:ClipboardExpectedText = ""        # Only clear if the clipboard still holds this
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
@@ -1778,6 +1779,58 @@ function Show-QRCodeAuthenticator {
 #region Credential Elevation Helpers
 
 # Check if currently running as administrator
+function Get-RushTempRoot {
+    <#
+    .SYNOPSIS
+        Per-session scratch directory under the current user's own profile.
+    .DESCRIPTION
+        SECURITY: scratch files used to live at fixed, predictable paths under
+        C:\Temp - e.g. C:\Temp\RushResolve_wrapper.cmd - which the app itself
+        created with New-Item -Force, i.e. with default ACLs that let ANY
+        authenticated user write there. Those files are then executed with
+        -Verb RunAs / under ENT credentials.
+
+        That is a time-of-check/time-of-use local privilege escalation: on a
+        shared clinical workstation another standard user can pre-create or
+        swap the file between our write and the elevated launch, and their code
+        runs as admin. Fixed names made it trivial.
+
+        GetTempPath() resolves to %LOCALAPPDATA%\Temp, whose ACL grants the
+        owning user, SYSTEM and Administrators - so other standard users cannot
+        plant anything, while the ENT account (a local admin) can still read
+        what we write. The random per-session segment removes the predictable
+        name.
+    #>
+    if (-not $script:RushTempRoot -or -not (Test-Path $script:RushTempRoot)) {
+        $base = [System.IO.Path]::GetTempPath()
+        $leaf = "RushResolve_" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 12))
+        $script:RushTempRoot = Join-Path $base $leaf
+        New-Item -Path $script:RushTempRoot -ItemType Directory -Force | Out-Null
+    }
+    return $script:RushTempRoot
+}
+
+function Get-RushTempPath {
+    <#
+    .SYNOPSIS
+        Path to a named file or folder inside the per-session scratch directory.
+    #>
+    param([string]$Name)
+    return (Join-Path (Get-RushTempRoot) $Name)
+}
+
+function Remove-RushTempRoot {
+    <#
+    .SYNOPSIS
+        Deletes the per-session scratch directory. Called on exit.
+    #>
+    if ($script:RushTempRoot -and (Test-Path $script:RushTempRoot)) {
+        try { Remove-Item -Path $script:RushTempRoot -Recurse -Force -ErrorAction Stop }
+        catch { }
+    }
+    $script:RushTempRoot = $null
+}
+
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -2046,7 +2099,7 @@ function Invoke-Elevated {
     $tempArgsFile = $null
     try {
         # Create temp folder if it doesn't exist
-        $tempFolder = "C:\Temp\RushResolve_Install"
+        $tempFolder = Get-RushTempPath -Name "Install"
         if (-not (Test-Path $tempFolder)) {
             New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
         }
@@ -4339,6 +4392,7 @@ function Initialize-Module {
             }
         } catch { }
 
+        try { Remove-RushTempRoot } catch { }
         try { Disconnect-NetworkShare } catch { }
         try { Save-Settings } catch { }
         try { Close-SessionLog } catch { }

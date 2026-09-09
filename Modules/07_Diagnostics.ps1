@@ -1381,8 +1381,13 @@ function Initialize-Module {
             [string]$OpName
         )
 
-        $logFile = "C:\Temp\RushResolve_elevated_output.log"
-        $wrapperFile = "C:\Temp\RushResolve_elevated_wrapper.cmd"
+        # SECURITY: these were fixed paths under C:\Temp and the wrapper is run
+        # with -Verb RunAs. Also, C:\Temp is not a default Windows folder, so on
+        # a clean clinical image the WriteAllLines below threw
+        # DirectoryNotFoundException outside any try/catch - SFC just died.
+        # Get-RushTempPath creates its root on first use.
+        $logFile = Get-RushTempPath -Name "elevated_output.log"
+        $wrapperFile = Get-RushTempPath -Name "elevated_wrapper.cmd"
 
         # Clean previous log
         if (Test-Path $logFile) { Remove-Item $logFile -Force -ErrorAction SilentlyContinue }
