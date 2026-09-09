@@ -135,8 +135,16 @@ $script:GetServerPrinters = {
     $printers = @()
     $serverName = $Server.TrimStart('\')
 
-    # Quick connectivity check using .NET Ping with built-in 2s timeout (non-blocking)
+    # Cheapest check first: a cached 500ms TCP 445 probe. Print server access is
+    # SMB, so port 445 is the right proxy, and the answer is reused for the rest
+    # of the session instead of paying 2.8s of ICMP on every refresh.
     Start-AppActivity "Testing connection to $serverName..."
+    if (-not (Test-HostReachable -HostName $serverName)) {
+        Write-SessionLog -Message "Print server $serverName is not answering on port 445" -Category "Printer Management"
+        return @()
+    }
+
+    # ICMP as a secondary confirmation (2s timeout, non-blocking)
     try {
         $ping = New-Object System.Net.NetworkInformation.Ping
         $reply = $ping.Send($serverName, 2000)
@@ -548,6 +556,16 @@ $script:LoadProfile = {
     $foundFile = $null
     $shareStatus = @()
     foreach ($s in $shares) {
+        # PERF: Test-Path against a UNC share whose host RESOLVES but does not
+        # answer costs up to 35 SECONDS - which is the normal off-network case,
+        # because rush.edu is a real public domain. Measured: 35.3s for the
+        # first share. Test-HostReachable is a 500ms TCP 445 probe, cached per
+        # session, so a dead server costs half a second instead of freezing the
+        # whole app.
+        if (-not (Test-HostReachable -HostName $s.Dir)) {
+            $shareStatus += "$($s.Name)=unreachable"
+            continue
+        }
         if (-not (Test-Path $s.Dir -ErrorAction SilentlyContinue)) {
             $shareStatus += "$($s.Name)=unreachable"
             continue
@@ -649,6 +667,12 @@ $script:SaveProfile = {
             Error   = $null
         }
         try {
+            # Cheap reachability first - a Test-Path against a resolvable but
+            # dead host costs up to 35s per share, so Save would hang ~105s
+            # across all three before reporting anything.
+            if (-not (Test-HostReachable -HostName $t.Dir)) {
+                throw "Share not reachable: $($t.Dir)"
+            }
             if (-not (Test-Path $t.Dir -ErrorAction SilentlyContinue)) {
                 throw "Share not reachable: $($t.Dir)"
             }
@@ -2151,33 +2175,84 @@ function Initialize-Module {
         }
     })
 
-    # Initial load - installed printers (with error handling for Windows 10 compatibility)
-    try {
-        & $script:RefreshInstalledPrinters
-    }
-    catch {
-        Write-SessionLog -Message "Failed to load installed printers during module init: $($_.Exception.Message)" -Category "Printer Management"
-        # UI will still load, user can manually refresh
-    }
+    # ------------------------------------------------------------------
+    # DEFERRED DATA LOAD
+    #
+    # These three calls used to run right here, inside Initialize-Module.
+    # The background preloader calls Initialize-Module on the UI THREAD, so
+    # every one of them blocked the message pump. Measured off-network:
+    #
+    #     Test-Path on the first profile share   35.3s
+    #     print server ping                       2.8s
+    #     Get-Printer (local)                     0.6s
+    #     -> Module 03 alone took 45.2s of a 55s freeze
+    #
+    # The tech saw "This Computer" appear and then the whole app stopped
+    # responding for about a minute with no tabs clickable.
+    #
+    # Building the UI must never touch the network. The data now loads the
+    # first time the tech actually opens this tab, and the panes say so
+    # until then rather than looking empty and broken.
+    # ------------------------------------------------------------------
+    $script:PM_DataLoaded = $false
+    $script:PM_Tab = $tab
 
-    # Auto-load server printers if default server is configured (with error handling)
-    if ($script:PrintServer) {
+    $script:PM_LoadData = {
+        if ($script:PM_DataLoaded) { return }
+        $script:PM_DataLoaded = $true
+
+        try { Start-AppActivity "Loading printers..." } catch { }
+
         try {
-            & $script:RefreshServerPrinters
+            & $script:RefreshInstalledPrinters
         }
         catch {
-            Write-SessionLog -Message "Failed to auto-load server printers during module init: $($_.Exception.Message)" -Category "Printer Management"
-            # UI will still load, user can manually browse
+            Write-SessionLog -Message "Failed to load installed printers: $($_.Exception.Message)" -Category "Printer Management"
         }
+
+        if ($script:PrintServer) {
+            try {
+                & $script:RefreshServerPrinters
+            }
+            catch {
+                Write-SessionLog -Message "Failed to auto-load server printers: $($_.Exception.Message)" -Category "Printer Management"
+            }
+        }
+
+        try {
+            & $script:LoadProfileToUI
+        }
+        catch {
+            & $script:PrinterLog "Profile auto-load failed: $($_.Exception.Message)" "ERROR"
+        }
+
+        try { Clear-AppStatus } catch { }
     }
 
-    # Auto-load this host's profile file (failures degrade the Profile pane only,
-    # the Installed and Browse panes remain fully functional).
-    try {
-        & $script:LoadProfileToUI
+    # Fire on first activation of this tab.
+    if ($tab.Parent -is [System.Windows.Forms.TabControl]) {
+        $tab.Parent.Add_SelectedIndexChanged({
+            if ($script:PM_DataLoaded) { return }
+            $tc = $script:MainTabControl
+            if ($tc -and $tc.SelectedTab -eq $script:PM_Tab) {
+                & $script:PM_LoadData
+            }
+        })
     }
-    catch {
-        & $script:PrinterLog "Profile auto-load failed: $($_.Exception.Message)" "ERROR"
+
+    # If this tab is ALREADY the selected one (the tech set Printers as their
+    # default tab), SelectedIndexChanged will never fire. Load via a one-shot
+    # timer so the window paints first instead of freezing before it appears.
+    if ($tab.Parent -and $tab.Parent.SelectedTab -eq $tab) {
+        $script:PM_FirstShowTimer = New-Object System.Windows.Forms.Timer
+        $script:PM_FirstShowTimer.Interval = 400
+        $script:PM_FirstShowTimer.Add_Tick({
+            $script:PM_FirstShowTimer.Stop()
+            $script:PM_FirstShowTimer.Dispose()
+            $script:PM_FirstShowTimer = $null
+            & $script:PM_LoadData
+        })
+        $script:PM_FirstShowTimer.Start()
     }
 
     # Show compatibility note if PrintManagement module not available

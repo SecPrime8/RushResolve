@@ -14,10 +14,18 @@ $script:GetSysInfoData = {
     $info = [System.Text.StringBuilder]::new()
 
     try {
+        # These CIM queries cost ~4.3s cold on a typical workstation
+        # (Get-NetAdapter ~2.0s and Win32_Processor ~1.2s dominate) and there is
+        # no cheaper source for the data. Pump the message queue between them so
+        # the window keeps repainting instead of going "Not Responding" - the
+        # single longest gap the tech can see is then one query, not all of them.
         $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+        [System.Windows.Forms.Application]::DoEvents()
         $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+        [System.Windows.Forms.Application]::DoEvents()
         $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
         $cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+        [System.Windows.Forms.Application]::DoEvents()
 
         [void]$info.AppendLine("=========================================================")
         [void]$info.AppendLine("  SYSTEM INFORMATION")
@@ -99,8 +107,22 @@ $script:GetSysInfoData = {
         # Only show adapters that are Up (connected)
         $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" }
+
+        # PERF: this loop used to call Get-NetAdapter -InterfaceIndex once per
+        # address (an N+1 query). One bulk call indexed by InterfaceIndex gives
+        # the same answer for a fraction of the cost.
+        [System.Windows.Forms.Application]::DoEvents()
+        $netAdapterByIndex = @{}
+        Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
+            $netAdapterByIndex[$_.InterfaceIndex] = $_
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+
         foreach ($adapter in $adapters) {
-            $netAdapter = Get-NetAdapter -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
+            $netAdapter = $null
+            if ($netAdapterByIndex.ContainsKey($adapter.InterfaceIndex)) {
+                $netAdapter = $netAdapterByIndex[$adapter.InterfaceIndex]
+            }
             if ($netAdapter -and $netAdapter.Status -eq 'Up') {
                 [void]$info.AppendLine("  $($netAdapter.Name):")
                 [void]$info.AppendLine("    IP:   $($adapter.IPAddress)")
@@ -152,8 +174,13 @@ function Initialize-Module {
     $script:infoTextBox.Dock = [System.Windows.Forms.DockStyle]::Fill
     $script:infoTextBox.BackColor = [System.Drawing.Color]::White
 
-    # Invoke script block with &
-    $script:infoTextBox.Text = (& $script:GetSysInfoData)
+    # PERF: this used to be "$script:infoTextBox.Text = (& $script:GetSysInfoData)",
+    # i.e. six CIM queries plus a per-adapter Get-NetAdapter loop, executed on the
+    # UI THREAD while the background preloader was building this tab. Measured
+    # 4.93s. Building UI must not query hardware; the data loads the first time
+    # the tech opens this tab.
+    $script:SI_DataLoaded = $false
+    $script:infoTextBox.Text = "Loading system information..."
 
     $infoGroup.Controls.Add($script:infoTextBox)
     $topPanel.Controls.Add($infoGroup)
@@ -424,4 +451,45 @@ function Initialize-Module {
     $mainPanel.Controls.Add($script:bottomPanel, 0, 1)
 
     $tab.Controls.Add($mainPanel)
+
+    # ---- deferred data load (see the PERF note above) ----
+    $script:SI_Tab = $tab
+
+    $script:SI_LoadData = {
+        if ($script:SI_DataLoaded) { return }
+        $script:SI_DataLoaded = $true
+        try { Start-AppActivity "Reading system information..." } catch { }
+        try {
+            $script:infoTextBox.Text = (& $script:GetSysInfoData)
+        }
+        catch {
+            $script:infoTextBox.Text = "Could not read system information: $($_.Exception.Message)"
+            try { Write-SessionLog -Message "System info load failed: $($_.Exception.Message)" -Category "System Info" -Level "ERROR" } catch { }
+        }
+        try { Clear-AppStatus } catch { }
+    }
+
+    if ($tab.Parent -is [System.Windows.Forms.TabControl]) {
+        $tab.Parent.Add_SelectedIndexChanged({
+            if ($script:SI_DataLoaded) { return }
+            $tc = $script:MainTabControl
+            if ($tc -and $tc.SelectedTab -eq $script:SI_Tab) {
+                & $script:SI_LoadData
+            }
+        })
+    }
+
+    # Already the selected tab (tech set this as their default): load via a
+    # one-shot timer so the window paints before the CIM sweep runs.
+    if ($tab.Parent -and $tab.Parent.SelectedTab -eq $tab) {
+        $script:SI_FirstShowTimer = New-Object System.Windows.Forms.Timer
+        $script:SI_FirstShowTimer.Interval = 400
+        $script:SI_FirstShowTimer.Add_Tick({
+            $script:SI_FirstShowTimer.Stop()
+            $script:SI_FirstShowTimer.Dispose()
+            $script:SI_FirstShowTimer = $null
+            & $script:SI_LoadData
+        })
+        $script:SI_FirstShowTimer.Start()
+    }
 }

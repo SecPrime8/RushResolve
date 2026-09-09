@@ -8,7 +8,7 @@
                     {
                         "name":  "01_SystemInfo.ps1",
                         "added":  "2026-09-09",
-                        "hash":  "zhiFkZVdw07FiKeeaSpaFUCieP7bRgIT3DZ4TCSy3ng="
+                        "hash":  "OOtmCC80gV0rIfTxybsMfTwIuw+NKqxgtFv9acwY1yY="
                     },
                     {
                         "name":  "02_SoftwareInstaller.ps1",
@@ -18,12 +18,12 @@
                     {
                         "name":  "03_PrinterManagement.ps1",
                         "added":  "2026-09-09",
-                        "hash":  "GOBwQWcssYz9IsMTeK+xO9FYxNhRu76G9CWW+jh0tw4="
+                        "hash":  "3B3HMaITD66zn2FBDN1YzQnDfjKQrIrn2hLtyCQUt0E="
                     },
                     {
                         "name":  "05_NetworkTools.ps1",
                         "added":  "2026-09-09",
-                        "hash":  "5lEY3NNxyN4G9uP4TLeb3MBW4KB/tb37xX+8ofLV8P8="
+                        "hash":  "nh6MLYABkuZOAlmd0Yu4eDATF0hlxoTiwdidN0xkYR4="
                     },
                     {
                         "name":  "06_DiskCleanup.ps1",

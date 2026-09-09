@@ -233,6 +233,7 @@ $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:PINMaxAttempts = 3                # Attempts before the session locks out
 $script:RushTempRoot = $null              # Per-session scratch dir (see Get-RushTempRoot)
+$script:ReachabilityCache = @{}           # host:port -> bool (see Test-HostReachable)
 $script:SettingsSaveFailed = $false       # Last Save-Settings outcome
 $script:ClipboardClearTimer = $null       # UI-thread timer for clipboard auto-clear
 $script:ClipboardExpectedText = ""        # Only clear if the clipboard still holds this
@@ -1835,6 +1836,81 @@ function Show-QRCodeAuthenticator {
 #region Credential Elevation Helpers
 
 # Check if currently running as administrator
+function Test-HostReachable {
+    <#
+    .SYNOPSIS
+        Fast, cached "is this server answering?" check for network paths.
+    .DESCRIPTION
+        A Test-Path against an unreachable UNC share costs up to 35 SECONDS when
+        the hostname resolves but nothing answers - which is exactly the
+        off-network case, because rush.edu is a real public domain. Measured on
+        a workstation off the Rush network:
+
+            Test-Path \rush.edu\VDI\Personal\_PrinterMappingsXA   35.3s
+            TCP connect to rush.edu:445, 500ms budget           0.54s
+            TCP connect to a host that IS up                    0.01s
+
+        Modules must call this before probing any network path, so a dead
+        server costs half a second instead of freezing the UI.
+
+        Results are cached per session per host:port. The second and third
+        profile shares only appeared free before because WINDOWS happened to
+        cache the failure; this makes it deterministic and survives tab
+        switches.
+    .PARAMETER HostName
+        Server name or IP. A UNC path is accepted and the host extracted.
+    .PARAMETER Port
+        Defaults to 445 (SMB).
+    .PARAMETER TimeoutMs
+        Connect budget. 500ms is enough on a LAN and cheap off it.
+    .PARAMETER Refresh
+        Ignore any cached answer and re-probe.
+    #>
+    param(
+        [string]$HostName,
+        [int]$Port = 445,
+        [int]$TimeoutMs = 500,
+        [switch]$Refresh
+    )
+
+    if (-not $HostName) { return $false }
+
+    # Accept a full UNC path and pull the server out of it
+    if ($HostName -match '^\\\\([^\\]+)') { $HostName = $Matches[1] }
+    $HostName = $HostName.Trim([char]92)
+    if (-not $HostName) { return $false }
+
+    $key = "$($HostName.ToLower()):$Port"
+    if (-not $script:ReachabilityCache) { $script:ReachabilityCache = @{} }
+    if (-not $Refresh -and $script:ReachabilityCache.ContainsKey($key)) {
+        return $script:ReachabilityCache[$key]
+    }
+
+    $reachable = $false
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $iar = $client.BeginConnect($HostName, $Port, $null, $null)
+        if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $client.Connected) {
+            $client.EndConnect($iar)
+            $reachable = $true
+        }
+    }
+    catch { $reachable = $false }
+    finally { if ($client) { try { $client.Close() } catch { } } }
+
+    $script:ReachabilityCache[$key] = $reachable
+    return $reachable
+}
+
+function Clear-ReachabilityCache {
+    <#
+    .SYNOPSIS
+        Forgets cached reachability, e.g. after the tech connects to VPN.
+    #>
+    $script:ReachabilityCache = @{}
+}
+
 function Get-RushTempRoot {
     <#
     .SYNOPSIS
