@@ -233,6 +233,7 @@ $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
 $script:PINMaxAttempts = 3                # Attempts before the session locks out
 $script:RushTempRoot = $null              # Per-session scratch dir (see Get-RushTempRoot)
+$script:SettingsSaveFailed = $false       # Last Save-Settings outcome
 $script:ClipboardClearTimer = $null       # UI-thread timer for clipboard auto-clear
 $script:ClipboardExpectedText = ""        # Only clear if the clipboard still holds this
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
@@ -630,8 +631,38 @@ function Load-Settings {
             $script:CacheCredentials = $script:Settings.global.cacheCredentials
         }
         catch {
-            Write-Warning "Failed to load settings, using defaults: $_"
+            # DATA LOSS PATH, now closed. This used to be a bare Write-Warning,
+            # which goes nowhere in a WinForms process, followed by a silent
+            # fall back to defaults. Save-Settings then overwrote the file on
+            # exit, so ONE malformed character in settings.json permanently
+            # destroyed the tech's configuration with no message at any point.
+            #
+            # Preserve the original before touching anything, then say so.
+            $preserved = $null
+            try {
+                $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+                $preserved = "$($script:SettingsFile).invalid-$stamp"
+                Move-Item -Path $script:SettingsFile -Destination $preserved -Force -ErrorAction Stop
+            }
+            catch {
+                $preserved = $null
+            }
+
             $script:Settings = $defaults
+            try { Write-SessionLog -Message "settings.json could not be parsed: $($_.Exception.Message)" -Category "Settings" -Level "ERROR" } catch { }
+
+            $msg = "Your settings file could not be read, so RushResolve started with default settings.`r`n`r`nReason: $($_.Exception.Message)"
+            if ($preserved) {
+                $msg += "`r`n`r`nThe original file has been kept as:`r`n$preserved"
+            }
+            else {
+                $msg += "`r`n`r`nThe original file could NOT be renamed, so it may be overwritten when you close the app. Back it up now if you need it."
+            }
+            [void][System.Windows.Forms.MessageBox]::Show(
+                $msg, "Settings Not Loaded",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
         }
     }
     else {
@@ -646,9 +677,16 @@ function Save-Settings {
             New-Item -Path $script:ConfigPath -ItemType Directory -Force | Out-Null
         }
         $script:Settings | ConvertTo-Json -Depth 5 | Set-Content $script:SettingsFile -Force
+        $script:SettingsSaveFailed = $false
+        return $true
     }
     catch {
-        Write-Warning "Failed to save settings: $_"
+        # Was a bare Write-Warning, invisible in a GUI process - so on a
+        # write-protected stick every settings change was discarded while the
+        # Settings dialog still reported "Settings saved."
+        $script:SettingsSaveFailed = $true
+        try { Write-SessionLog -Message "Failed to save settings: $($_.Exception.Message)" -Category "Settings" -Level "ERROR" } catch { }
+        return $false
     }
 }
 
@@ -3947,8 +3985,25 @@ function Show-SettingsDialog {
     $tabCombo.Location = New-Object System.Drawing.Point(15, $yPos)
     $tabCombo.Width = 200
     $tabCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    $tabCombo.Items.AddRange(@("System Info", "Software", "Printers"))
-    $currentTab = if ($script:Settings.global.lastTab) { $script:Settings.global.lastTab } else { "System Info" }
+    # Populate from the ACTUAL tabs. This list used to be the hard-coded
+    # @("System Info", "Software", "Printers"), none of which are real tab names
+    # any more. The saved value therefore never matched, SelectedIndex was forced
+    # to 0, and clicking Save silently REWROTE the tech's setting to the wrong
+    # value - a dead control that also destroyed data.
+    $tabNames = @()
+    if ($script:MainTabControl) {
+        foreach ($tp in $script:MainTabControl.TabPages) { $tabNames += $tp.Text }
+    }
+    if ($tabNames.Count -eq 0) {
+        foreach ($mf in (Get-Modules)) {
+            $info = Get-ModuleTabInfo -ModuleFile $mf
+            if ($info -and $info.Name) { $tabNames += $info.Name }
+        }
+    }
+    if ($tabNames.Count -eq 0) { $tabNames = @("Welcome") }
+    $tabCombo.Items.AddRange($tabNames)
+
+    $currentTab = if ($script:Settings.global.lastTab) { $script:Settings.global.lastTab } else { $tabNames[0] }
     $tabCombo.SelectedItem = $currentTab
     if ($tabCombo.SelectedIndex -lt 0) { $tabCombo.SelectedIndex = 0 }
     $settingsForm.Controls.Add($tabCombo)
@@ -3966,16 +4021,32 @@ function Show-SettingsDialog {
         Set-ModuleSetting -ModuleName "PrinterManagement" -Key "defaultServer" -Value $serverTextBox.Text.Trim()
         # Save global settings
         $script:Settings.global.defaultDomain = $domainTextBox.Text.Trim()
-        $script:Settings.global.lastTab = $tabCombo.SelectedItem.ToString()
-        Save-Settings
-        [System.Windows.Forms.MessageBox]::Show(
-            "Settings saved. Changes will apply when modules are refreshed or restarted.",
-            "Settings Saved",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        )
-        $settingsForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
-        $settingsForm.Close()
+        if ($tabCombo.SelectedItem) {
+            $script:Settings.global.lastTab = $tabCombo.SelectedItem.ToString()
+        }
+
+        # Save-Settings returns $false on failure. It used to be called and
+        # ignored, so on a write-protected stick the dialog said "Settings
+        # saved." while nothing had been written.
+        $saved = Save-Settings
+        if ($saved) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Settings saved. Changes will apply when modules are refreshed or restarted.",
+                "Settings Saved",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            ) | Out-Null
+            $settingsForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $settingsForm.Close()
+        }
+        else {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Settings could NOT be saved.`r`n`r`nThe settings file may be read-only, or the drive may be write-protected. Your changes have not been kept.",
+                "Save Failed",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            ) | Out-Null
+        }
     })
     $settingsForm.Controls.Add($saveBtn)
 
@@ -4447,9 +4518,19 @@ function Initialize-Module {
     # Load ONLY the first tab now (00_Welcome sorts first) so the app is
     # usable immediately; everything else loads on click or in the background
     if ($tabControl.TabPages.Count -gt 0) {
-        Update-SplashStatus "Loading $($tabControl.TabPages[0].Text)..."
-        $tabControl.SelectedIndex = 0
-        Complete-ModuleLoad -Tab $tabControl.TabPages[0] | Out-Null
+        # Honour the saved default tab. It was written by the Settings dialog and
+        # then never read - startup always forced index 0 - so the setting did
+        # nothing at all.
+        $startIndex = 0
+        $wanted = $script:Settings.global.lastTab
+        if ($wanted) {
+            for ($i = 0; $i -lt $tabControl.TabPages.Count; $i++) {
+                if ($tabControl.TabPages[$i].Text -eq $wanted) { $startIndex = $i; break }
+            }
+        }
+        Update-SplashStatus "Loading $($tabControl.TabPages[$startIndex].Text)..."
+        $tabControl.SelectedIndex = $startIndex
+        Complete-ModuleLoad -Tab $tabControl.TabPages[$startIndex] | Out-Null
     }
 
     # Lazy-load any not-yet-loaded module the moment its tab is selected.

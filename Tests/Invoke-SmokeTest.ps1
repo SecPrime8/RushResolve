@@ -261,6 +261,33 @@ foreach ($f in $modules) {
 }
 Write-Result "Handler scoping" $before
 
+# ---------------------------------------------------------- 5b. JSON config
+# A single unescaped backslash in settings.json makes Load-Settings throw. It
+# then falls back to defaults, and Save-Settings overwrites the file on exit -
+# so one bad character silently destroys a tech's configuration. This check
+# exists because exactly that shipped.
+$before = $script:Failures.Count
+foreach ($rel in @("Config\settings.json", "Configavorites.json",
+                   "Security\module-manifest.json", "Security\integrity-manifest.json")) {
+    $path = Join-Path $Root $rel
+    if (-not (Test-Path $path)) { continue }
+    try {
+        $parsed = Get-Content $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        Add-Failure "Json" $rel 0 ("Does not parse: {0}" -f $_.Exception.Message)
+        continue
+    }
+    # UNC defaults must survive the round trip as \server\share
+    if ($rel -like "*settings.json") {
+        $unc = $parsed.modules.SoftwareInstaller.networkPathUNCDefault
+        if ($unc -and -not $unc.StartsWith("\\")) {
+            Add-Failure "Json" $rel 0 ("networkPathUNCDefault is not a UNC path after parsing ('{0}') - check backslash escaping" -f $unc)
+        }
+    }
+}
+Write-Result "JSON config parses" $before
+
 # ------------------------------------------------------- 6. Manifest drift
 $before = $script:Failures.Count
 $manifestPath = Join-Path $Root "Security\module-manifest.json"

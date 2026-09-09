@@ -1,22 +1,20 @@
 {
-    "global":  {
-                   "cacheCredentials":  true,
-                   "defaultDomain":  "RUSH",
-                   "windowWidth":  900,
-                   "windowHeight":  740,
-                   "lastTab":  "Welcome"
-               },
-    "modules":  {
-                    "SoftwareInstaller":  {
-                                              "networkPath":  "",
-                                              "networkPathUNC":  "",
-                                              "networkPathUNCDefault":  "\\rush.edu\data\IS\Infosvcs\FLDTECH\New_Hire_Folder\Useful_Software",
-                                              "favoritesLocalPath":  "",
-                                              "curatedNetworkPath":  "",
-                                              "savedPaths":  [
-
-                                                             ],
-                                              "localPath":  ""
-                                          }
-                }
+    "global": {
+        "cacheCredentials": true,
+        "defaultDomain": "RUSH",
+        "windowWidth": 900,
+        "windowHeight": 740,
+        "lastTab": "Welcome"
+    },
+    "modules": {
+        "SoftwareInstaller": {
+            "networkPath": "",
+            "networkPathUNC": "",
+            "networkPathUNCDefault": "\\\\rush.edu\\data\\IS\\Infosvcs\\FLDTECH\\New_Hire_Folder\\Useful_Software",
+            "favoritesLocalPath": "",
+            "curatedNetworkPath": "",
+            "savedPaths": [],
+            "localPath": ""
+        }
+    }
 }
