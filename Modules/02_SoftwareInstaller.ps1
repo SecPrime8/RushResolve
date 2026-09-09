@@ -1938,11 +1938,11 @@ function Initialize-Module {
     $savePathBtn.Height = 30
     $sourcePanel.Controls.Add($savePathBtn)
 
-    $script:refreshBtn = New-Object System.Windows.Forms.Button
-    $script:refreshBtn.Text = "Refresh"
-    $script:refreshBtn.Width = 70
-    $script:refreshBtn.Height = 30
-    $sourcePanel.Controls.Add($script:refreshBtn)
+    $script:SWI_refreshBtn = New-Object System.Windows.Forms.Button
+    $script:SWI_refreshBtn.Text = "Refresh"
+    $script:SWI_refreshBtn.Width = 70
+    $script:SWI_refreshBtn.Height = 30
+    $sourcePanel.Controls.Add($script:SWI_refreshBtn)
 
     # Connect button (for network shares only)
     $script:ConnectBtn = New-Object System.Windows.Forms.Button
@@ -2556,16 +2556,16 @@ function Initialize-Module {
 
         # Initialize cancel flag and change button to Cancel mode
         $script:scanCancelled = $false
-        $script:refreshBtn.Text = "Cancel"
-        $script:refreshBtn.ForeColor = [System.Drawing.Color]::Red
+        $script:SWI_refreshBtn.Text = "Cancel"
+        $script:SWI_refreshBtn.ForeColor = [System.Drawing.Color]::Red
         [System.Windows.Forms.Application]::DoEvents()
 
         $apps = & $script:ScanForApps -Path $path -LogBox $script:installerLogBox
         $script:AppsList = $apps
 
         # Restore button to Refresh mode
-        $script:refreshBtn.Text = "Refresh"
-        $script:refreshBtn.ForeColor = [System.Drawing.SystemColors]::ControlText
+        $script:SWI_refreshBtn.Text = "Refresh"
+        $script:SWI_refreshBtn.ForeColor = [System.Drawing.SystemColors]::ControlText
 
         Clear-AppStatus
 
@@ -2613,8 +2613,8 @@ function Initialize-Module {
     })
 
     # Refresh button (also acts as Cancel during scan)
-    $script:refreshBtn.Add_Click({
-        if ($script:refreshBtn.Text -eq "Cancel") {
+    $script:SWI_refreshBtn.Add_Click({
+        if ($script:SWI_refreshBtn.Text -eq "Cancel") {
             # Cancel the current scan
             $script:scanCancelled = $true
         } else {

@@ -492,7 +492,7 @@ $script:UpdateProfileTotal = {
     $totalBytes = 0
     $count = 0
 
-    foreach ($item in $script:profileListView.CheckedItems) {
+    foreach ($item in $script:Disk_profileListView.CheckedItems) {
         $totalBytes += $item.Tag.Size
         $count++
     }
@@ -901,7 +901,7 @@ function Initialize-Module {
     $scanProfilesBtn.Add_Click({
         Start-AppActivity "Scanning user profiles..."
         $script:profileLogBox.Clear()
-        $script:profileListView.Items.Clear()
+        $script:Disk_profileListView.Items.Clear()
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:profileLogBox.AppendText("[$timestamp] Scanning for all non-system user profiles...`r`n")
@@ -953,7 +953,7 @@ function Initialize-Module {
         }
 
         # Populate ListView with ALL profiles
-        $script:profileListView.BeginUpdate()
+        $script:Disk_profileListView.BeginUpdate()
         foreach ($userProfile in $profiles) {
             $item = New-Object System.Windows.Forms.ListViewItem("")
             $item.SubItems.Add($userProfile.Username) | Out-Null
@@ -961,9 +961,9 @@ function Initialize-Module {
             $item.SubItems.Add($userProfile.SizeFormatted) | Out-Null
             $item.SubItems.Add($userProfile.DaysOld.ToString()) | Out-Null
             $item.Tag = $userProfile
-            $script:profileListView.Items.Add($item) | Out-Null
+            $script:Disk_profileListView.Items.Add($item) | Out-Null
         }
-        $script:profileListView.EndUpdate()
+        $script:Disk_profileListView.EndUpdate()
 
         Clear-AppStatus
         & $script:UpdateProfileTotal
@@ -989,7 +989,7 @@ function Initialize-Module {
     $select30Btn.Width = 135
     $select30Btn.Height = 30
     $select30Btn.Add_Click({
-        foreach ($item in $script:profileListView.Items) {
+        foreach ($item in $script:Disk_profileListView.Items) {
             $item.Checked = ($item.Tag.DaysOld -ge 30)
         }
     })
@@ -1000,7 +1000,7 @@ function Initialize-Module {
     $select90Btn.Width = 135
     $select90Btn.Height = 30
     $select90Btn.Add_Click({
-        foreach ($item in $script:profileListView.Items) {
+        foreach ($item in $script:Disk_profileListView.Items) {
             $item.Checked = ($item.Tag.DaysOld -ge 90)
         }
     })
@@ -1011,7 +1011,7 @@ function Initialize-Module {
     $clearAllBtn.Width = 90
     $clearAllBtn.Height = 30
     $clearAllBtn.Add_Click({
-        foreach ($item in $script:profileListView.Items) {
+        foreach ($item in $script:Disk_profileListView.Items) {
             $item.Checked = $false
         }
     })
@@ -1024,26 +1024,26 @@ function Initialize-Module {
     $profileListGroup.Text = "User Profiles"
     $profileListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 
-    $script:profileListView = New-Object System.Windows.Forms.ListView
-    $script:profileListView.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $script:profileListView.View = [System.Windows.Forms.View]::Details
-    $script:profileListView.CheckBoxes = $true
-    $script:profileListView.FullRowSelect = $true
-    $script:profileListView.GridLines = $true
-    $script:profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:Disk_profileListView = New-Object System.Windows.Forms.ListView
+    $script:Disk_profileListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:Disk_profileListView.View = [System.Windows.Forms.View]::Details
+    $script:Disk_profileListView.CheckBoxes = $true
+    $script:Disk_profileListView.FullRowSelect = $true
+    $script:Disk_profileListView.GridLines = $true
+    $script:Disk_profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-    $script:profileListView.Columns.Add("", 30) | Out-Null  # Checkbox column
-    $script:profileListView.Columns.Add("Username", 180) | Out-Null
-    $script:profileListView.Columns.Add("Last Used", 100) | Out-Null
-    $script:profileListView.Columns.Add("Size", 90) | Out-Null
-    $script:profileListView.Columns.Add("Days Old", 80) | Out-Null
+    $script:Disk_profileListView.Columns.Add("", 30) | Out-Null  # Checkbox column
+    $script:Disk_profileListView.Columns.Add("Username", 180) | Out-Null
+    $script:Disk_profileListView.Columns.Add("Last Used", 100) | Out-Null
+    $script:Disk_profileListView.Columns.Add("Size", 90) | Out-Null
+    $script:Disk_profileListView.Columns.Add("Days Old", 80) | Out-Null
 
     # Enable column sorting
-    $script:profileListView.Add_ColumnClick({
+    $script:Disk_profileListView.Add_ColumnClick({
         param($sender, $e)
 
         $col = $e.Column
-        $items = @($script:profileListView.Items)
+        $items = @($script:Disk_profileListView.Items)
 
         # Sort based on column
         switch ($col) {
@@ -1061,19 +1061,19 @@ function Initialize-Module {
             }
         }
 
-        $script:profileListView.BeginUpdate()
-        $script:profileListView.Items.Clear()
+        $script:Disk_profileListView.BeginUpdate()
+        $script:Disk_profileListView.Items.Clear()
         foreach ($item in $sorted) {
-            $script:profileListView.Items.Add($item) | Out-Null
+            $script:Disk_profileListView.Items.Add($item) | Out-Null
         }
-        $script:profileListView.EndUpdate()
+        $script:Disk_profileListView.EndUpdate()
     })
 
-    $script:profileListView.Add_ItemChecked({
+    $script:Disk_profileListView.Add_ItemChecked({
         & $script:UpdateProfileTotal
     })
 
-    $profileListGroup.Controls.Add($script:profileListView)
+    $profileListGroup.Controls.Add($script:Disk_profileListView)
     $profileLayout.Controls.Add($profileListGroup, 0, 1)
 
     # Bottom panel with total and delete button
@@ -1095,7 +1095,7 @@ function Initialize-Module {
     $script:deleteProfilesBtn.Height = 30
     $script:deleteProfilesBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $script:deleteProfilesBtn.Add_Click({
-        $checkedItems = @($script:profileListView.CheckedItems)
+        $checkedItems = @($script:Disk_profileListView.CheckedItems)
 
         if ($checkedItems.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
@@ -1160,7 +1160,7 @@ function Initialize-Module {
             if ($result.Success) {
                 $deleted++
                 $freed += $userProfile.Size
-                $script:profileListView.Items.Remove($item)
+                $script:Disk_profileListView.Items.Remove($item)
 
                 $timestamp = Get-Date -Format "HH:mm:ss"
                 $script:profileLogBox.AppendText("[$timestamp]   SUCCESS: Deleted $($userProfile.Username)`r`n")

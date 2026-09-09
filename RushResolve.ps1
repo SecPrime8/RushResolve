@@ -214,7 +214,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.7.0"  # Welcome tab, lazy loading, per-day logs, installer catalog, printer profile fixes
+$script:AppVersion = "2.8.0"  # Welcome tab, lazy loading, per-day logs, installer catalog, printer profile fixes
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -797,14 +797,11 @@ function Test-ApplicationIntegrity {
     }
 
     # Verify settings.json integrity
-    if ($manifest.settings_hash) {
-        if (Test-Path $script:SettingsFile) {
-            $settingsHash = Get-FileHashSHA256 -FilePath $script:SettingsFile
-            # Note: Settings file hash will change when user modifies settings
-            # We store it to detect unauthorized external modifications
-            # In production, you might skip this check or use a different approach
-        }
-    }
+    # NOTE: settings_hash was written on every manifest update, computed here,
+    # and then never compared against anything - the original comment admitted
+    # as much. It cannot be a useful control either: every tech's settings.json
+    # legitimately differs and changes whenever they touch the Settings dialog.
+    # Removed rather than left as security theatre.
 
     # Verify main script integrity
     $mainScript = Join-Path $script:AppPath "RushResolve.ps1"
@@ -839,7 +836,7 @@ function Update-SecurityManifests {
     # Generate module manifest
     $moduleManifest = @{
         generated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        generated_by = "$env:USERDOMAIN\$env:USERNAME"
+        generated_by = "RushResolve build"  # not the operator identity - this file ships to every tech
         description = "Whitelist of authorized modules with SHA256 hashes"
         modules = @()
     }
@@ -862,10 +859,9 @@ function Update-SecurityManifests {
 
     $integrityManifest = @{
         generated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        generated_by = "$env:USERDOMAIN\$env:USERNAME"
+        generated_by = "RushResolve build"  # not the operator identity - this file ships to every tech
         description = "SHA256 hashes for application integrity verification"
         main_script_hash = $mainHash
-        settings_hash = if (Test-Path $script:SettingsFile) { Get-FileHashSHA256 -FilePath $script:SettingsFile } else { $null }
     }
 
     $integrityManifest | ConvertTo-Json -Depth 5 | Set-Content $script:IntegrityManifestFile -Force
