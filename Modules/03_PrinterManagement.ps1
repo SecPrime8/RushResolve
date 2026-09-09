@@ -34,7 +34,12 @@ $script:ProfileDefaultServerPrefix = "\\RUDWV-PS401.rush.edu"
 #endregion
 
 #region Security Functions
-function Test-PrinterPathAllowed {
+# NOTE: must be a $script: block, not a plain function. The loader dot-sources
+# each module INSIDE a function, so a top-level function is gone by the time a
+# WinForms handler fires. As a plain function this made "Refresh && Install" a
+# silent dead end: it confirmed, then threw CommandNotFoundException into the
+# handler, which WinForms swallowed.
+$script:TestPrinterPathAllowed = {
     <#
     .SYNOPSIS
         Validates that a printer path uses an allowed print server
@@ -905,8 +910,12 @@ function Initialize-Module {
 
                     Write-SessionLog -Message "Printer restore completed: $restored restored, $failed failed" -Category "PrinterManagement"
 
-                    # Refresh installed printer list
-                    $refreshInstalledBtn.PerformClick()
+                    # Refresh installed printer list.
+                    # NOTE: was $refreshInstalledBtn.PerformClick(). That button is a
+                    # local of Initialize-Module and is $null inside this handler, so
+                    # it threw AFTER the success dialog - Restore reported failure
+                    # having actually succeeded.
+                    & $script:RefreshInstalledPrinters
                 }
             }
         }
@@ -1939,7 +1948,7 @@ function Initialize-Module {
 
         foreach ($r in $toInstall) {
             # Validate against allowlist (C5)
-            $check = Test-PrinterPathAllowed -PrinterPath $r.FullPath
+            $check = & $script:TestPrinterPathAllowed -PrinterPath $r.FullPath
             if (-not $check.Allowed) {
                 & $script:PrinterLog "REJECTED $($r.FullPath): $($check.Reason)" "ERROR"
                 $failed++
@@ -2173,6 +2182,15 @@ function Initialize-Module {
 
     # Show compatibility note if PrintManagement module not available
     if (-not $script:HasPrintManagement) {
-        Set-AppStatus "Note: Using Windows 10 compatibility mode (WMI-based printer management)"
+        # NOTE: was Set-AppStatus, which is defined nowhere. As the last statement
+        # of Initialize-Module it threw CommandNotFoundException on every machine
+        # without the PrintManagement feature, and the loader then replaced the
+        # whole Printers tab with a red "Module failed to load" label.
+        $script:compatNote = "Note: Using Windows 10 compatibility mode (WMI-based printer management)"
+        & $script:PrinterLog $script:compatNote "INFO"
+        if ($script:statusLabel) {
+            $script:statusLabel.Text = $script:compatNote
+            $script:statusLabel.ForeColor = [System.Drawing.Color]::Black
+        }
     }
 }
