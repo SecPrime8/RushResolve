@@ -1301,6 +1301,11 @@ function Initialize-Module {
     $outputBox = New-Object System.Windows.Forms.TextBox
     $outputBox.Multiline = $true
     $outputBox.ReadOnly = $true
+    # A multiline TextBox defaults to MaxLength 32767. A full packet with the
+    # raw ipconfig/route appendix and a long traceroute exceeds that, and the
+    # overflow is dropped SILENTLY - the tech would paste a truncated packet
+    # into the ticket with no indication. 0 = no limit.
+    $outputBox.MaxLength = 0
     $outputBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
     $outputBox.WordWrap = $false
     $outputBox.Font = New-Object System.Drawing.Font("Consolas", 9)
@@ -1670,56 +1675,65 @@ function Initialize-Module {
     $tab.Controls.Add($mainPanel)
 
     #-- Handlers -----------------------------------------------------------
-    # Captured by GetNewClosure() below; modules are dot-sourced into the
-    # loader's scope so these locals are the only reliable references.
-    $outputBoxRef    = $outputBox
-    $outputGroupRef  = $outputGroup
-    $ticketFieldsRef = $ticketFields
-    $comboFieldsRef  = $comboFields
-    $checkBoxesRef   = $checkBoxes
-    $targetBoxRef    = $targetBox
-    $notesBoxRef     = $notesBox
-    $lldpCheckRef    = $lldpCheck
-    $traceCheckRef   = $traceCheck
-    $rawCheckRef     = $rawCheck
-    $lookupBoxRef    = $lookupBox
-    $copyBtnRef      = $copyBtn
-    $saveBtnRef      = $saveBtn
-    $collectBtnRef   = $collectBtn
-    $lookupBtnRef    = $lookupBtn
+    # $script:-scoped, NOT captured with .GetNewClosure().
+    #
+    # GetNewClosure() re-binds a scriptblock to a throwaway dynamic module, so
+    # every $script: reference inside it resolves to that module's empty scope
+    # and comes back $null. (Core FUNCTIONS still resolve - only $script:
+    # variables are severed.) Every handler here dereferenced a $script: block,
+    # e.g. "& $script:NE_BuildPacket", so all of them died on:
+    #   "The expression after '&' in a pipeline element produced an object that
+    #    was not valid. It must result in a command name, a script block, or a
+    #    CommandInfo object."
+    # i.e. every button in this tab was dead. Plain handlers see $script: fine.
+    $script:NE_outputBox    = $outputBox
+    $script:NE_outputGroup  = $outputGroup
+    $script:NE_ticketFields = $ticketFields
+    $script:NE_comboFields  = $comboFields
+    $script:NE_checkBoxes   = $checkBoxes
+    $script:NE_targetBox    = $targetBox
+    $script:NE_notesBox     = $notesBox
+    $script:NE_lldpCheck    = $lldpCheck
+    $script:NE_traceCheck   = $traceCheck
+    $script:NE_rawCheck     = $rawCheck
+    $script:NE_lookupBox    = $lookupBox
+    $script:NE_copyBtn      = $copyBtn
+    $script:NE_saveBtn      = $saveBtn
+    $script:NE_collectBtn   = $collectBtn
+    $script:NE_lookupBtn    = $lookupBtn
 
     # Reads the whole form into the hashtable the collector expects.
-    $buildContext = {
+    $script:NE_buildContext = {
         $checked = @()
-        foreach ($checkBox in $checkBoxesRef) {
+        foreach ($checkBox in $script:NE_checkBoxes) {
             if ($checkBox.Checked) { $checked += $checkBox.Text }
         }
 
         return @{
-            Ticket       = $ticketFieldsRef['Ticket'].Text
-            Site         = $ticketFieldsRef['Site'].Text
-            Room         = $ticketFieldsRef['Room'].Text
-            Jack         = $ticketFieldsRef['Jack'].Text
-            Asset        = $ticketFieldsRef['Asset'].Text
-            ReportedBy   = $ticketFieldsRef['ReportedBy'].Text
-            Symptom      = $comboFieldsRef['Symptom'].Text
-            Scope        = $comboFieldsRef['Scope'].Text
-            Onset        = $comboFieldsRef['Onset'].Text
-            LinkLight    = $comboFieldsRef['LinkLight'].Text
-            Notes        = $notesBoxRef.Text
-            TestTarget   = $targetBoxRef.Text
+            Ticket       = $script:NE_ticketFields['Ticket'].Text
+            Site         = $script:NE_ticketFields['Site'].Text
+            Room         = $script:NE_ticketFields['Room'].Text
+            Jack         = $script:NE_ticketFields['Jack'].Text
+            Asset        = $script:NE_ticketFields['Asset'].Text
+            ReportedBy   = $script:NE_ticketFields['ReportedBy'].Text
+            Symptom      = $script:NE_comboFields['Symptom'].Text
+            Scope        = $script:NE_comboFields['Scope'].Text
+            Onset        = $script:NE_comboFields['Onset'].Text
+            LinkLight    = $script:NE_comboFields['LinkLight'].Text
+            Notes        = $script:NE_notesBox.Text
+            TestTarget   = $script:NE_targetBox.Text
             Checked      = $checked
-            IncludeLldp  = $lldpCheckRef.Checked
-            IncludeTrace = $traceCheckRef.Checked
-            IncludeRaw   = $rawCheckRef.Checked
+            IncludeLldp  = $script:NE_lldpCheck.Checked
+            IncludeTrace = $script:NE_traceCheck.Checked
+            IncludeRaw   = $script:NE_rawCheck.Checked
             Credential   = $null
         }
-    }.GetNewClosure()
+    }
 
     $collectBtn.Add_Click({
         param($sender, $e)
 
-        $context = & $buildContext
+        $context = & $script:NE_buildContext
 
         if (-not "$($context.Ticket)".Trim()) {
             $answer = [System.Windows.Forms.MessageBox]::Show(
@@ -1749,29 +1763,29 @@ function Initialize-Module {
             }
         }
 
-        $collectBtnRef.Enabled = $false
-        $collectBtnRef.Text = "Collecting..."
-        $outputBoxRef.Text = ""
+        $script:NE_collectBtn.Enabled = $false
+        $script:NE_collectBtn.Text = "Collecting..."
+        $script:NE_outputBox.Text = ""
         [System.Windows.Forms.Application]::DoEvents()
 
-        $progress = {
+        $script:NE_progress = {
             param($Message)
-            $outputGroupRef.Text = "Escalation Packet - $Message"
+            $script:NE_outputGroup.Text = "Escalation Packet - $Message"
             if (Get-Command -Name Start-AppActivity -ErrorAction SilentlyContinue) {
                 Start-AppActivity -Message $Message
             }
             [System.Windows.Forms.Application]::DoEvents()
-        }.GetNewClosure()
+        }
 
         try {
-            $report = & $script:NE_BuildPacket -Context $context -Progress $progress
+            $report = & $script:NE_BuildPacket -Context $context -Progress $script:NE_progress
             $script:NE_LastReport = $report
-            $outputBoxRef.Text = $report
-            $outputBoxRef.SelectionStart = 0
-            $outputBoxRef.ScrollToCaret()
-            $copyBtnRef.Enabled = $true
-            $saveBtnRef.Enabled = $true
-            $outputGroupRef.Text = "Escalation Packet - ready to paste into the ticket"
+            $script:NE_outputBox.Text = $report
+            $script:NE_outputBox.SelectionStart = 0
+            $script:NE_outputBox.ScrollToCaret()
+            $script:NE_copyBtn.Enabled = $true
+            $script:NE_saveBtn.Enabled = $true
+            $script:NE_outputGroup.Text = "Escalation Packet - ready to paste into the ticket"
 
             if (Get-Command -Name Write-SessionLog -ErrorAction SilentlyContinue) {
                 Write-SessionLog "Network Escalation packet collected (ticket: $(if ("$($context.Ticket)".Trim()) { $context.Ticket } else { 'none' }))"
@@ -1781,34 +1795,37 @@ function Initialize-Module {
             }
         }
         catch {
-            $outputBoxRef.Text = "Collection failed: $($_.Exception.Message)`r`n`r`n$($_.ScriptStackTrace)"
-            $outputGroupRef.Text = "Escalation Packet - collection failed"
+            $script:NE_LastReport = ""
+            $script:NE_outputBox.Text = "Collection failed: $($_.Exception.Message)`r`n`r`n$($_.ScriptStackTrace)"
+            $script:NE_outputGroup.Text = "Escalation Packet - collection failed"
             if (Get-Command -Name Set-AppError -ErrorAction SilentlyContinue) {
                 Set-AppError -Message "Network escalation collection failed"
             }
         }
         finally {
-            $collectBtnRef.Enabled = $true
-            $collectBtnRef.Text = "Collect Escalation Packet"
+            $script:NE_collectBtn.Enabled = $true
+            $script:NE_collectBtn.Text = "Collect Escalation Packet"
         }
-    }.GetNewClosure())
+    })
 
     $copyBtn.Add_Click({
         param($sender, $e)
-        if ($outputBoxRef.Text) {
-            [System.Windows.Forms.Clipboard]::SetText($outputBoxRef.Text)
+        # Prefer the authoritative report over whatever the control is showing.
+        $reportText = if ($script:NE_LastReport) { $script:NE_LastReport } else { $script:NE_outputBox.Text }
+        if ($reportText) {
+            [System.Windows.Forms.Clipboard]::SetText($reportText)
             [System.Windows.Forms.MessageBox]::Show(
                 "Escalation packet copied. Paste it into the ticket before assigning to Networking.",
                 "Copied",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         }
-    }.GetNewClosure())
+    })
 
     $summaryBtn.Add_Click({
         param($sender, $e)
         try {
-            $context = & $buildContext
+            $context = & $script:NE_buildContext
             $summary = & $script:NE_BuildSummary -Context $context
             [System.Windows.Forms.Clipboard]::SetText($summary)
             [System.Windows.Forms.MessageBox]::Show(
@@ -1824,23 +1841,24 @@ function Initialize-Module {
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
-    }.GetNewClosure())
+    })
 
     $saveBtn.Add_Click({
         param($sender, $e)
-        if (-not $outputBoxRef.Text) { return }
+        if (-not $script:NE_outputBox.Text) { return }
 
         try {
             if (-not (Test-Path $script:LogsPath)) {
                 New-Item -Path $script:LogsPath -ItemType Directory -Force | Out-Null
             }
 
-            $ticketPart = ($ticketFieldsRef['Ticket'].Text -replace '[^A-Za-z0-9\-_]', '')
+            $ticketPart = ($script:NE_ticketFields['Ticket'].Text -replace '[^A-Za-z0-9\-_]', '')
             if (-not $ticketPart) { $ticketPart = 'NOTICKET' }
             $fileName = "NETESC-$ticketPart-$env:COMPUTERNAME-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
             $fullPath = Join-Path $script:LogsPath $fileName
 
-            Set-Content -Path $fullPath -Value $outputBoxRef.Text -Encoding ASCII -Force
+            $reportToSave = if ($script:NE_LastReport) { $script:NE_LastReport } else { $script:NE_outputBox.Text }
+            Set-Content -Path $fullPath -Value $reportToSave -Encoding ASCII -Force
 
             if (Get-Command -Name Write-SessionLog -ErrorAction SilentlyContinue) {
                 Write-SessionLog "Network escalation report saved: $fileName"
@@ -1862,7 +1880,7 @@ function Initialize-Module {
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
-    }.GetNewClosure())
+    })
 
     $openLogsBtn.Add_Click({
         param($sender, $e)
@@ -1870,10 +1888,10 @@ function Initialize-Module {
             New-Item -Path $script:LogsPath -ItemType Directory -Force | Out-Null
         }
         Start-Process explorer.exe -ArgumentList $script:LogsPath
-    }.GetNewClosure())
+    })
 
-    $lookupAction = {
-        $target = "$($lookupBoxRef.Text)".Trim()
+    $script:NE_lookupAction = {
+        $target = "$($script:NE_lookupBox.Text)".Trim()
         if (-not $target) {
             [System.Windows.Forms.MessageBox]::Show(
                 "Enter the IP address of the device you are looking for.",
@@ -1883,45 +1901,51 @@ function Initialize-Module {
             return
         }
 
-        $lookupBtnRef.Enabled = $false
-        $lookupBtnRef.Text = "Working..."
-        $outputGroupRef.Text = "Escalation Packet - looking up $target"
+        $script:NE_lookupBtn.Enabled = $false
+        $script:NE_lookupBtn.Text = "Working..."
+        $script:NE_outputGroup.Text = "Escalation Packet - looking up $target"
         [System.Windows.Forms.Application]::DoEvents()
 
         try {
-            $outputBoxRef.Text = & $script:NE_LookupDevice -IpAddress $target
-            $outputBoxRef.SelectionStart = 0
-            $outputBoxRef.ScrollToCaret()
-            $outputGroupRef.Text = "Escalation Packet - device lookup result"
-            $copyBtnRef.Enabled = $true
-            $saveBtnRef.Enabled = $true
+            $lookupResult = & $script:NE_LookupDevice -IpAddress $target
+            # Keep NE_LastReport in step with what is displayed, or Copy/Save
+            # would hand back the previous escalation packet instead of this
+            # lookup result.
+            $script:NE_LastReport = $lookupResult
+            $script:NE_outputBox.Text = $lookupResult
+            $script:NE_outputBox.SelectionStart = 0
+            $script:NE_outputBox.ScrollToCaret()
+            $script:NE_outputGroup.Text = "Escalation Packet - device lookup result"
+            $script:NE_copyBtn.Enabled = $true
+            $script:NE_saveBtn.Enabled = $true
 
             if (Get-Command -Name Write-SessionLog -ErrorAction SilentlyContinue) {
                 Write-SessionLog "Network Escalation device lookup: $target"
             }
         }
         catch {
-            $outputBoxRef.Text = "Lookup failed: $($_.Exception.Message)"
+            $script:NE_LastReport = ""
+            $script:NE_outputBox.Text = "Lookup failed: $($_.Exception.Message)"
         }
         finally {
-            $lookupBtnRef.Enabled = $true
-            $lookupBtnRef.Text = "Look Up"
+            $script:NE_lookupBtn.Enabled = $true
+            $script:NE_lookupBtn.Text = "Look Up"
         }
-    }.GetNewClosure()
+    }
 
     $lookupBtn.Add_Click({
         param($sender, $e)
-        & $lookupAction
-    }.GetNewClosure())
+        & $script:NE_lookupAction
+    })
 
     # Enter in the IP box should just run the lookup.
     $lookupBox.Add_KeyDown({
         param($sender, $e)
         if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
             $e.SuppressKeyPress = $true
-            & $lookupAction
+            & $script:NE_lookupAction
         }
-    }.GetNewClosure())
+    })
 
     $importOuiBtn.Add_Click({
         param($sender, $e)
@@ -1964,7 +1988,7 @@ function Initialize-Module {
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
-    }.GetNewClosure())
+    })
 }
 
 #endregion

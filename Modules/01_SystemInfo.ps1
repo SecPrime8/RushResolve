@@ -258,10 +258,28 @@ function Initialize-Module {
             $itemArgs = $item.Args
             $itemName = $item.Label
             $btn.Add_Click({
+                # The return value used to be discarded on all 15 launcher
+                # buttons. Combined with the empty catch inside
+                # Start-ElevatedProcess, a cancelled prompt, a wrong password or
+                # a missing snap-in produced NOTHING: no dialog, no log line, no
+                # evidence the tech had even pressed the button.
                 if ($itemArgs) {
-                    Start-ElevatedProcess -FilePath $itemExe -ArgumentList $itemArgs -OperationName "launch $itemName"
+                    $launchResult = Start-ElevatedProcess -FilePath $itemExe -ArgumentList $itemArgs -OperationName "launch $itemName"
                 } else {
-                    Start-ElevatedProcess -FilePath $itemExe -OperationName "launch $itemName"
+                    $launchResult = Start-ElevatedProcess -FilePath $itemExe -OperationName "launch $itemName"
+                }
+
+                if ($launchResult -and -not $launchResult.Success) {
+                    $errText = if ($launchResult.Error) { $launchResult.Error } else { "Unknown error" }
+                    try { Write-SessionLog -Message "Launch of $itemName failed: $errText" -Category "System Info" -Level "ERROR" } catch { }
+                    if ($errText -notmatch 'cancel') {
+                        [void][System.Windows.Forms.MessageBox]::Show(
+                            "Could not launch $($itemName).`r`n`r`n$errText",
+                            "Launch Failed",
+                            [System.Windows.Forms.MessageBoxButtons]::OK,
+                            [System.Windows.Forms.MessageBoxIcon]::Warning
+                        )
+                    }
                 }
             }.GetNewClosure())
             $flow.Controls.Add($btn)

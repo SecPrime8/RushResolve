@@ -1,7 +1,6 @@
 {
-    "settings_hash":  "7yY0Ho0Va1A3qbXCY4lc6OvCAq5Hf4I+0juYObU6FAU=",
-    "main_script_hash":  "IOPeZV/OksiwEFzlznEUm7r2gvuAPHRLYXFWgXHefGM=",
-    "description":  "SHA256 hashes for application integrity verification",
-    "generated_by":  "DESKTOP-HT1H56L\\luisa",
-    "generated":  "2026-02-18 08:40:42"
+    "main_script_hash":  "4FySmvrMICOrW3s0x7MMsYDZZ4lqQbbTUGqt/4GHt3Y=",
+    "description":  "SHA256 hash for application integrity verification",
+    "generated_by":  "RushResolve build",
+    "generated":  "2026-09-09 01:35:25"
 }

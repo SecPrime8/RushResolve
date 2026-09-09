@@ -146,6 +146,14 @@ $script:CollectEventErrors = {
     }
     catch {
         if ($Log) { & $Log "  WHEA check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Events" `
+            -Issue "WHEA check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     try {
@@ -168,6 +176,14 @@ $script:CollectEventErrors = {
     }
     catch {
         if ($Log) { & $Log "  Kernel-Power check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Events" `
+            -Issue "Kernel-Power check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     try {
@@ -191,6 +207,14 @@ $script:CollectEventErrors = {
     }
     catch {
         if ($Log) { & $Log "  Disk event check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Events" `
+            -Issue "Disk event check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Win11 specific: LiveKernelEvent (GPU hangs/TDR)
@@ -221,6 +245,14 @@ $script:CollectEventErrors = {
         }
         catch {
             if ($Log) { & $Log "  LiveKernel check failed: $($_.Exception.Message)" }
+            # A failed check must not be silent. Without a finding here the
+            # findings list stays empty, the "no issues" block below fires,
+            # and a machine whose checks are failing is reported as healthy.
+            $findings += & $script:NewFinding -Category "Events" `
+                -Issue "LiveKernel check could not be completed" `
+                -Severity "Warning" `
+                -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+                -Details $_.Exception.Message
         }
     }
 
@@ -243,6 +275,14 @@ $script:CollectEventErrors = {
     }
     catch {
         if ($Log) { & $Log "  BugCheck event check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Events" `
+            -Issue "BugCheck event check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no issues found, add OK finding
@@ -300,6 +340,14 @@ $script:CollectStorageHealth = {
     }
     catch {
         if ($Log) { & $Log "  Disk space check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Storage" `
+            -Issue "Disk space check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Check SMART status
@@ -338,11 +386,27 @@ $script:CollectStorageHealth = {
             }
             catch {
                 if ($Log) { & $Log "    Could not get reliability counters" }
+                # A failed check must not be silent. Without a finding here the
+                # findings list stays empty, the "no issues" block below fires,
+                # and a machine whose checks are failing is reported as healthy.
+                $findings += & $script:NewFinding -Category "Storage" `
+                    -Issue "Disk reliability counters could not be read" `
+                    -Severity "Warning" `
+                    -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+                    -Details $_.Exception.Message
             }
         }
     }
     catch {
         if ($Log) { & $Log "  SMART check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Storage" `
+            -Issue "SMART check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no issues found, add OK finding
@@ -399,6 +463,14 @@ $script:CollectMemoryInfo = {
     }
     catch {
         if ($Log) { & $Log "  Memory check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Memory" `
+            -Issue "Memory check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Check for memory errors in event log
@@ -422,6 +494,14 @@ $script:CollectMemoryInfo = {
     }
     catch {
         if ($Log) { & $Log "  Memory diagnostic event check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Memory" `
+            -Issue "Memory diagnostic event check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no issues found, add OK finding
@@ -469,6 +549,14 @@ $script:CollectDriverIssues = {
     }
     catch {
         if ($Log) { & $Log "  Problem device check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Drivers" `
+            -Issue "Problem device check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Check for recently updated drivers (last 30 days)
@@ -490,6 +578,14 @@ $script:CollectDriverIssues = {
     }
     catch {
         if ($Log) { & $Log "  Recent driver check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Drivers" `
+            -Issue "Recent driver check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no issues found, add OK finding
@@ -533,6 +629,14 @@ $script:CollectThermalData = {
     }
     catch {
         if ($Log) { & $Log "  CPU check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Thermal" `
+            -Issue "CPU check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Try to get temperature (may not be available on all systems)
@@ -571,6 +675,14 @@ $script:CollectThermalData = {
     }
     catch {
         if ($Log) { & $Log "  Temperature check not available" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Thermal" `
+            -Issue "CPU temperature could not be read" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no findings at all, add OK
@@ -615,6 +727,14 @@ $script:CollectSystemStability = {
     }
     catch {
         if ($Log) { & $Log "  Uptime check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Stability" `
+            -Issue "Uptime check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Check for pending reboot
@@ -656,6 +776,14 @@ $script:CollectSystemStability = {
     }
     catch {
         if ($Log) { & $Log "  Pending reboot check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Stability" `
+            -Issue "Pending reboot check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Check for BSOD minidumps
@@ -678,6 +806,14 @@ $script:CollectSystemStability = {
     }
     catch {
         if ($Log) { & $Log "  Minidump check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Stability" `
+            -Issue "Minidump check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # Win11: Check LiveKernelReports folder
@@ -701,6 +837,14 @@ $script:CollectSystemStability = {
         }
         catch {
             if ($Log) { & $Log "  LiveKernelReports check failed: $($_.Exception.Message)" }
+            # A failed check must not be silent. Without a finding here the
+            # findings list stays empty, the "no issues" block below fires,
+            # and a machine whose checks are failing is reported as healthy.
+            $findings += & $script:NewFinding -Category "Stability" `
+                -Issue "LiveKernelReports check could not be completed" `
+                -Severity "Warning" `
+                -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+                -Details $_.Exception.Message
         }
     }
 
@@ -718,6 +862,14 @@ $script:CollectSystemStability = {
     }
     catch {
         if ($Log) { & $Log "  Fast Startup check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Stability" `
+            -Issue "Fast Startup check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no issues, add OK
@@ -790,6 +942,14 @@ $script:CollectResourceUsage = {
     }
     catch {
         if ($Log) { & $Log "  Resource check failed: $($_.Exception.Message)" }
+        # A failed check must not be silent. Without a finding here the
+        # findings list stays empty, the "no issues" block below fires,
+        # and a machine whose checks are failing is reported as healthy.
+        $findings += & $script:NewFinding -Category "Resources" `
+            -Issue "Resource check could not be completed" `
+            -Severity "Warning" `
+            -Recommendation "Result unknown - re-run elevated, or verify manually before treating this machine as healthy." `
+            -Details $_.Exception.Message
     }
 
     # If no issues, add OK
@@ -1174,19 +1334,41 @@ function Initialize-Module {
         $confirm = [System.Windows.Forms.MessageBox]::Show($msg, "Schedule Check Disk", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
             $ts = Get-Date -Format "HH:mm:ss"
-            $script:diagLogBox.AppendText("[$ts] Scheduling chkdsk /f /r for C: on next reboot...`r`n")
-            Write-SessionLog -Message "Scheduled chkdsk /f /r via Diagnostics Quick Tools" -Category "Diagnostics"
-            # Schedule chkdsk - requires elevation
+            # NOTE: the log line and Write-SessionLog used to fire HERE, before the
+            # credential prompt and before chkdsk ran, so the session log - the
+            # audit trail - recorded disk checks that were never scheduled. Both
+            # if-blocks also had no else, so a cancelled prompt or a failed
+            # elevation produced no dialog, no log line, and no clue.
+            $script:diagLogBox.AppendText("[$ts] Requesting elevation to schedule chkdsk /f /r for C:...`r`n")
+
             $cred = Get-ElevatedCredential -Message "Enter admin credentials to schedule Check Disk"
-            if ($cred) {
-                $result = Invoke-Elevated -ScriptBlock {
-                    # Schedule chkdsk on next boot
-                    $output = & cmd /c "echo Y | chkdsk C: /f /r" 2>&1
-                    return $output
-                } -Credential $cred -OperationName "schedule Check Disk"
-                if ($result.Success) {
-                    [System.Windows.Forms.MessageBox]::Show("Check Disk scheduled.`nReboot to run the disk check.", "Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            if (-not $cred) {
+                $script:diagLogBox.AppendText("[$ts] Cancelled - Check Disk was NOT scheduled.`r`n")
+                Write-SessionLog -Message "Check Disk scheduling cancelled at credential prompt" -Category "Diagnostics"
+                return
+            }
+
+            $result = Invoke-Elevated -ScriptBlock {
+                # Schedule chkdsk on next boot
+                $output = & cmd /c "echo Y | chkdsk C: /f /r" 2>&1
+                return $output
+            } -Credential $cred -OperationName "schedule Check Disk"
+
+            if ($result.Success) {
+                $script:diagLogBox.AppendText("[$ts] Check Disk scheduled for next reboot.`r`n")
+                if ($result.Output) {
+                    foreach ($line in (($result.Output | Out-String) -split "`r?`n")) {
+                        if ($line.Trim()) { $script:diagLogBox.AppendText("[$ts]   $($line.Trim())`r`n") }
+                    }
                 }
+                Write-SessionLog -Message "Scheduled chkdsk /f /r via Diagnostics Quick Tools" -Category "Diagnostics" -Result "Success"
+                [System.Windows.Forms.MessageBox]::Show("Check Disk scheduled.`nReboot to run the disk check.", "Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            }
+            else {
+                $errText = if ($result.Error) { $result.Error } else { "Unknown error" }
+                $script:diagLogBox.AppendText("[$ts] FAILED to schedule Check Disk: $errText`r`n")
+                Write-SessionLog -Message "Check Disk scheduling FAILED: $errText" -Category "Diagnostics" -Level "ERROR"
+                [System.Windows.Forms.MessageBox]::Show("Check Disk was NOT scheduled.`r`n`r`n$errText", "Not Scheduled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
             }
         }
     })
@@ -1199,8 +1381,13 @@ function Initialize-Module {
             [string]$OpName
         )
 
-        $logFile = "C:\Temp\RushResolve_elevated_output.log"
-        $wrapperFile = "C:\Temp\RushResolve_elevated_wrapper.cmd"
+        # SECURITY: these were fixed paths under C:\Temp and the wrapper is run
+        # with -Verb RunAs. Also, C:\Temp is not a default Windows folder, so on
+        # a clean clinical image the WriteAllLines below threw
+        # DirectoryNotFoundException outside any try/catch - SFC just died.
+        # Get-RushTempPath creates its root on first use.
+        $logFile = Get-RushTempPath -Name "elevated_output.log"
+        $wrapperFile = Get-RushTempPath -Name "elevated_wrapper.cmd"
 
         # Clean previous log
         if (Test-Path $logFile) { Remove-Item $logFile -Force -ErrorAction SilentlyContinue }

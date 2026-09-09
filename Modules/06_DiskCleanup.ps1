@@ -122,6 +122,28 @@ $script:CleanupCategories = @(
 
 #region Helper Functions
 
+# Invoke-Elevated returns its payload via ConvertTo-Json | ConvertFrom-Json, so
+# .Output is a PSCustomObject - which has no .ContainsKey() and no string indexer.
+# Calling .ContainsKey() on it threw and broke BOTH scan buttons whenever the tech
+# actually supplied credentials (cancelling the prompt left the @{} literal in
+# place, so the buttons only "worked" when you declined to authenticate).
+# These helpers accept either shape.
+$script:MapHasKey = {
+    param($Map, [string]$Key)
+    if ($null -eq $Map) { return $false }
+    if ($Map -is [System.Collections.IDictionary]) { return $Map.Contains($Key) }
+    return ($null -ne $Map.PSObject.Properties[$Key])
+}
+
+$script:MapGet = {
+    param($Map, [string]$Key)
+    if ($null -eq $Map) { return $null }
+    if ($Map -is [System.Collections.IDictionary]) { return $Map[$Key] }
+    $prop = $Map.PSObject.Properties[$Key]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
 $script:FormatFileSize = {
     param([long]$Bytes)
 
@@ -380,14 +402,14 @@ $script:GetAllProfiles = {
             $_.LocalPath -notmatch "\\$currentUser$"
         }
 
-        foreach ($profile in $profiles) {
+        foreach ($userProfile in $profiles) {
             # Skip loaded profiles (user has active session)
-            if ($profile.Loaded) { continue }
+            if ($userProfile.Loaded) { continue }
 
             # Determine last use: prefer LastUseTime, fallback to folder modification date
-            $lastUsed = $profile.LastUseTime
-            if (-not $lastUsed -and $profile.LocalPath -and (Test-Path $profile.LocalPath)) {
-                $lastUsed = (Get-Item $profile.LocalPath -Force).LastWriteTime
+            $lastUsed = $userProfile.LastUseTime
+            if (-not $lastUsed -and $userProfile.LocalPath -and (Test-Path $userProfile.LocalPath)) {
+                $lastUsed = (Get-Item $userProfile.LocalPath -Force).LastWriteTime
             }
 
             # If we still can't determine, use a very old date
@@ -395,13 +417,13 @@ $script:GetAllProfiles = {
                 $lastUsed = [datetime]::MinValue
             }
 
-            $username = Split-Path $profile.LocalPath -Leaf
+            $username = Split-Path $userProfile.LocalPath -Leaf
             $daysOld = if ($lastUsed -eq [datetime]::MinValue) { 9999 } else { [math]::Floor(((Get-Date) - $lastUsed).TotalDays) }
 
             $results += [PSCustomObject]@{
                 Username = $username
-                Path = $profile.LocalPath
-                SID = $profile.SID
+                Path = $userProfile.LocalPath
+                SID = $userProfile.SID
                 LastUsed = $lastUsed
                 Size = [long]0
                 SizeFormatted = "..."
@@ -430,9 +452,9 @@ $script:RemoveUserProfile = {
     try {
         $deleteResult = Invoke-Elevated -ScriptBlock {
             param($sid)
-            $profile = Get-CimInstance -ClassName Win32_UserProfile | Where-Object { $_.SID -eq $sid }
-            if ($profile) {
-                Remove-CimInstance -InputObject $profile -ErrorAction Stop
+            $userProfile = Get-CimInstance -ClassName Win32_UserProfile | Where-Object { $_.SID -eq $sid }
+            if ($userProfile) {
+                Remove-CimInstance -InputObject $userProfile -ErrorAction Stop
                 return $true
             }
             return $false
@@ -470,7 +492,7 @@ $script:UpdateProfileTotal = {
     $totalBytes = 0
     $count = 0
 
-    foreach ($item in $script:profileListView.CheckedItems) {
+    foreach ($item in $script:Disk_profileListView.CheckedItems) {
         $totalBytes += $item.Tag.Size
         $count++
     }
@@ -678,10 +700,11 @@ function Initialize-Module {
             [System.Windows.Forms.Application]::DoEvents()
 
             # Use elevated results for elevated categories, local scan for others
-            if ($cat.RequiresElevation -and -not $cat.IsRecycleBin -and $elevatedSizes.ContainsKey($cat.Name)) {
+            if ($cat.RequiresElevation -and -not $cat.IsRecycleBin -and (& $script:MapHasKey $elevatedSizes $cat.Name)) {
+                $elevEntry = & $script:MapGet $elevatedSizes $cat.Name
                 $sizeInfo = @{
-                    TotalBytes = $elevatedSizes[$cat.Name].TotalBytes
-                    FileCount = $elevatedSizes[$cat.Name].FileCount
+                    TotalBytes = $elevEntry.TotalBytes
+                    FileCount = $elevEntry.FileCount
                     AccessDenied = $false
                     DebugInfo = "  Scanned with elevation"
                 }
@@ -878,7 +901,7 @@ function Initialize-Module {
     $scanProfilesBtn.Add_Click({
         Start-AppActivity "Scanning user profiles..."
         $script:profileLogBox.Clear()
-        $script:profileListView.Items.Clear()
+        $script:Disk_profileListView.Items.Clear()
 
         $timestamp = Get-Date -Format "HH:mm:ss"
         $script:profileLogBox.AppendText("[$timestamp] Scanning for all non-system user profiles...`r`n")
@@ -917,10 +940,10 @@ function Initialize-Module {
             # Apply sizes back to profile objects
             if ($sizeResult.Success -and $sizeResult.Output) {
                 $sizeMap = $sizeResult.Output
-                foreach ($profile in $profiles) {
-                    if ($sizeMap.ContainsKey($profile.Path)) {
-                        $profile.Size = [long]$sizeMap[$profile.Path]
-                        $profile.SizeFormatted = & $script:FormatFileSize -Bytes $profile.Size
+                foreach ($userProfile in $profiles) {
+                    if (& $script:MapHasKey $sizeMap $userProfile.Path) {
+                        $userProfile.Size = [long](& $script:MapGet $sizeMap $userProfile.Path)
+                        $userProfile.SizeFormatted = & $script:FormatFileSize -Bytes $userProfile.Size
                     }
                 }
             } else {
@@ -930,17 +953,17 @@ function Initialize-Module {
         }
 
         # Populate ListView with ALL profiles
-        $script:profileListView.BeginUpdate()
-        foreach ($profile in $profiles) {
+        $script:Disk_profileListView.BeginUpdate()
+        foreach ($userProfile in $profiles) {
             $item = New-Object System.Windows.Forms.ListViewItem("")
-            $item.SubItems.Add($profile.Username) | Out-Null
-            $item.SubItems.Add($profile.LastUsed.ToString("yyyy-MM-dd")) | Out-Null
-            $item.SubItems.Add($profile.SizeFormatted) | Out-Null
-            $item.SubItems.Add($profile.DaysOld.ToString()) | Out-Null
-            $item.Tag = $profile
-            $script:profileListView.Items.Add($item) | Out-Null
+            $item.SubItems.Add($userProfile.Username) | Out-Null
+            $item.SubItems.Add($userProfile.LastUsed.ToString("yyyy-MM-dd")) | Out-Null
+            $item.SubItems.Add($userProfile.SizeFormatted) | Out-Null
+            $item.SubItems.Add($userProfile.DaysOld.ToString()) | Out-Null
+            $item.Tag = $userProfile
+            $script:Disk_profileListView.Items.Add($item) | Out-Null
         }
-        $script:profileListView.EndUpdate()
+        $script:Disk_profileListView.EndUpdate()
 
         Clear-AppStatus
         & $script:UpdateProfileTotal
@@ -966,7 +989,7 @@ function Initialize-Module {
     $select30Btn.Width = 135
     $select30Btn.Height = 30
     $select30Btn.Add_Click({
-        foreach ($item in $script:profileListView.Items) {
+        foreach ($item in $script:Disk_profileListView.Items) {
             $item.Checked = ($item.Tag.DaysOld -ge 30)
         }
     })
@@ -977,7 +1000,7 @@ function Initialize-Module {
     $select90Btn.Width = 135
     $select90Btn.Height = 30
     $select90Btn.Add_Click({
-        foreach ($item in $script:profileListView.Items) {
+        foreach ($item in $script:Disk_profileListView.Items) {
             $item.Checked = ($item.Tag.DaysOld -ge 90)
         }
     })
@@ -988,7 +1011,7 @@ function Initialize-Module {
     $clearAllBtn.Width = 90
     $clearAllBtn.Height = 30
     $clearAllBtn.Add_Click({
-        foreach ($item in $script:profileListView.Items) {
+        foreach ($item in $script:Disk_profileListView.Items) {
             $item.Checked = $false
         }
     })
@@ -1001,26 +1024,26 @@ function Initialize-Module {
     $profileListGroup.Text = "User Profiles"
     $profileListGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 
-    $script:profileListView = New-Object System.Windows.Forms.ListView
-    $script:profileListView.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $script:profileListView.View = [System.Windows.Forms.View]::Details
-    $script:profileListView.CheckBoxes = $true
-    $script:profileListView.FullRowSelect = $true
-    $script:profileListView.GridLines = $true
-    $script:profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:Disk_profileListView = New-Object System.Windows.Forms.ListView
+    $script:Disk_profileListView.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $script:Disk_profileListView.View = [System.Windows.Forms.View]::Details
+    $script:Disk_profileListView.CheckBoxes = $true
+    $script:Disk_profileListView.FullRowSelect = $true
+    $script:Disk_profileListView.GridLines = $true
+    $script:Disk_profileListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-    $script:profileListView.Columns.Add("", 30) | Out-Null  # Checkbox column
-    $script:profileListView.Columns.Add("Username", 180) | Out-Null
-    $script:profileListView.Columns.Add("Last Used", 100) | Out-Null
-    $script:profileListView.Columns.Add("Size", 90) | Out-Null
-    $script:profileListView.Columns.Add("Days Old", 80) | Out-Null
+    $script:Disk_profileListView.Columns.Add("", 30) | Out-Null  # Checkbox column
+    $script:Disk_profileListView.Columns.Add("Username", 180) | Out-Null
+    $script:Disk_profileListView.Columns.Add("Last Used", 100) | Out-Null
+    $script:Disk_profileListView.Columns.Add("Size", 90) | Out-Null
+    $script:Disk_profileListView.Columns.Add("Days Old", 80) | Out-Null
 
     # Enable column sorting
-    $script:profileListView.Add_ColumnClick({
+    $script:Disk_profileListView.Add_ColumnClick({
         param($sender, $e)
 
         $col = $e.Column
-        $items = @($script:profileListView.Items)
+        $items = @($script:Disk_profileListView.Items)
 
         # Sort based on column
         switch ($col) {
@@ -1038,19 +1061,19 @@ function Initialize-Module {
             }
         }
 
-        $script:profileListView.BeginUpdate()
-        $script:profileListView.Items.Clear()
+        $script:Disk_profileListView.BeginUpdate()
+        $script:Disk_profileListView.Items.Clear()
         foreach ($item in $sorted) {
-            $script:profileListView.Items.Add($item) | Out-Null
+            $script:Disk_profileListView.Items.Add($item) | Out-Null
         }
-        $script:profileListView.EndUpdate()
+        $script:Disk_profileListView.EndUpdate()
     })
 
-    $script:profileListView.Add_ItemChecked({
+    $script:Disk_profileListView.Add_ItemChecked({
         & $script:UpdateProfileTotal
     })
 
-    $profileListGroup.Controls.Add($script:profileListView)
+    $profileListGroup.Controls.Add($script:Disk_profileListView)
     $profileLayout.Controls.Add($profileListGroup, 0, 1)
 
     # Bottom panel with total and delete button
@@ -1072,7 +1095,7 @@ function Initialize-Module {
     $script:deleteProfilesBtn.Height = 30
     $script:deleteProfilesBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 230, 230)
     $script:deleteProfilesBtn.Add_Click({
-        $checkedItems = @($script:profileListView.CheckedItems)
+        $checkedItems = @($script:Disk_profileListView.CheckedItems)
 
         if ($checkedItems.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
@@ -1126,26 +1149,26 @@ function Initialize-Module {
         $errors = @()
 
         foreach ($item in $checkedItems) {
-            $profile = $item.Tag
+            $userProfile = $item.Tag
 
             $timestamp = Get-Date -Format "HH:mm:ss"
-            $script:profileLogBox.AppendText("[$timestamp] Deleting profile: $($profile.Username)...`r`n")
+            $script:profileLogBox.AppendText("[$timestamp] Deleting profile: $($userProfile.Username)...`r`n")
             [System.Windows.Forms.Application]::DoEvents()
 
-            $result = & $script:RemoveUserProfile -SID $profile.SID -Credential $cred
+            $result = & $script:RemoveUserProfile -SID $userProfile.SID -Credential $cred
 
             if ($result.Success) {
                 $deleted++
-                $freed += $profile.Size
-                $script:profileListView.Items.Remove($item)
+                $freed += $userProfile.Size
+                $script:Disk_profileListView.Items.Remove($item)
 
                 $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:profileLogBox.AppendText("[$timestamp]   SUCCESS: Deleted $($profile.Username)`r`n")
+                $script:profileLogBox.AppendText("[$timestamp]   SUCCESS: Deleted $($userProfile.Username)`r`n")
             }
             else {
-                $errors += $profile.Username
+                $errors += $userProfile.Username
                 $timestamp = Get-Date -Format "HH:mm:ss"
-                $script:profileLogBox.AppendText("[$timestamp]   ERROR: $($profile.Username) - $($result.Error)`r`n")
+                $script:profileLogBox.AppendText("[$timestamp]   ERROR: $($userProfile.Username) - $($result.Error)`r`n")
             }
         }
 

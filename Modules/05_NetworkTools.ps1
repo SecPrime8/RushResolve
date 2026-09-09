@@ -174,10 +174,34 @@ $script:ReleaseRenewIP = {
         } else {
             $output = ipconfig /renew "$AdapterName" 2>&1
         }
-        $LogBox.AppendText("[$timestamp] $Action complete.`r`n")
+        $exitCode = $LASTEXITCODE
+
+        # ipconfig /release and /renew require local admin. Without it ipconfig
+        # prints "The requested operation requires elevation." and STILL EXITS 0,
+        # so neither the catch nor the exit code fires. $output used to be
+        # captured and thrown away while the log said "$Action complete." - the
+        # tech was told the IP had been released when nothing had happened.
+        $outputText = ($output | Out-String).Trim()
+        if ($outputText) {
+            foreach ($line in ($outputText -split "`r?`n")) {
+                if ($line.Trim()) { $LogBox.AppendText("[$timestamp]   $($line.Trim())`r`n") }
+            }
+        }
+
+        $failed = ($exitCode -ne 0) -or
+                  ($outputText -match 'requires elevation|Access is denied|The requested operation requires')
+        if ($failed) {
+            $LogBox.AppendText("[$timestamp] $Action FAILED - this needs local admin rights.`r`n")
+            try { Set-AppError -Message "$Action failed - requires elevation" } catch { }
+            try { Write-SessionLog -Message "$Action failed for $($AdapterName): $outputText" -Category "Network Tools" -Level "ERROR" } catch { }
+        } else {
+            $LogBox.AppendText("[$timestamp] $Action complete.`r`n")
+            try { Write-SessionLog -Message "$Action succeeded for $AdapterName" -Category "Network Tools" } catch { }
+        }
     }
     catch {
         $LogBox.AppendText("[$timestamp] ERROR: $_`r`n")
+        try { Write-SessionLog -Message "$Action threw for $($AdapterName): $_" -Category "Network Tools" -Level "ERROR" } catch { }
     }
     $LogBox.ScrollToCaret()
 }
@@ -479,26 +503,14 @@ function Initialize-Module {
     )
 
     # Store references for script blocks
-    $getAdaptersRef = $script:GetAdapters
-    $runPingRef = $script:RunPing
-    $runTracerouteRef = $script:RunTraceroute
-    $runNslookupRef = $script:RunNslookup
-    $flushDnsRef = $script:FlushDns
-    $releaseRenewRef = $script:ReleaseRenewIP
-    $setupLldpRef = $script:SetupLldp
-    $getLldpRef = $script:GetLldpInfo
-    $getWirelessRef = $script:GetWirelessInfo
-    $scanNetworksRef = $script:ScanNetworks
-    $reconnectWifiRef = $script:ReconnectWifi
 
     # Create diag log FIRST so all buttons can reference it
-    $script:diagLogBox = New-Object System.Windows.Forms.TextBox
-    $script:diagLogBox.Multiline = $true
-    $script:diagLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-    $script:diagLogBox.ReadOnly = $true
-    $script:diagLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $script:diagLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $diagLogBoxRef = $script:diagLogBox
+    $script:Net_diagLogBox = New-Object System.Windows.Forms.TextBox
+    $script:Net_diagLogBox.Multiline = $true
+    $script:Net_diagLogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $script:Net_diagLogBox.ReadOnly = $true
+    $script:Net_diagLogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:Net_diagLogBox.Dock = [System.Windows.Forms.DockStyle]::Fill
 
     # Main layout - split into sections
     $mainPanel = New-Object System.Windows.Forms.TableLayoutPanel
@@ -537,14 +549,13 @@ function Initialize-Module {
     $adapterBtnPanel.Height = 35
     $adapterBtnPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
 
-    $adapterListViewRef = $script:adapterListView
 
     $refreshAdaptersBtn = New-Object System.Windows.Forms.Button
     $refreshAdaptersBtn.Text = "Refresh"
     $refreshAdaptersBtn.Width = 70
     $refreshAdaptersBtn.Add_Click({
-        $adapterListViewRef.Items.Clear()
-        $adapters = & $getAdaptersRef
+        $script:adapterListView.Items.Clear()
+        $adapters = & $script:GetAdapters
         foreach ($adapter in $adapters) {
             $item = New-Object System.Windows.Forms.ListViewItem($adapter.Name)
             $item.SubItems.Add($adapter.Status) | Out-Null
@@ -552,39 +563,39 @@ function Initialize-Module {
             $item.SubItems.Add($adapter.MAC) | Out-Null
             $item.SubItems.Add($adapter.Gateway) | Out-Null
             $item.Tag = $adapter
-            $adapterListViewRef.Items.Add($item) | Out-Null
+            $script:adapterListView.Items.Add($item) | Out-Null
         }
-    }.GetNewClosure())
+    })
     $adapterBtnPanel.Controls.Add($refreshAdaptersBtn)
 
     $releaseBtn = New-Object System.Windows.Forms.Button
     $releaseBtn.Text = "IP Release"
     $releaseBtn.Width = 100
     $releaseBtn.Add_Click({
-        if ($adapterListViewRef.SelectedItems.Count -gt 0) {
-            $adapter = $adapterListViewRef.SelectedItems[0].Tag
-            & $releaseRenewRef -AdapterName $adapter.Name -Action "Release" -LogBox $diagLogBoxRef
+        if ($script:adapterListView.SelectedItems.Count -gt 0) {
+            $adapter = $script:adapterListView.SelectedItems[0].Tag
+            & $script:ReleaseRenewIP -AdapterName $adapter.Name -Action "Release" -LogBox $script:Net_diagLogBox
         }
-    }.GetNewClosure())
+    })
     $adapterBtnPanel.Controls.Add($releaseBtn)
 
     $renewBtn = New-Object System.Windows.Forms.Button
     $renewBtn.Text = "IP Renew"
     $renewBtn.Width = 80
     $renewBtn.Add_Click({
-        if ($adapterListViewRef.SelectedItems.Count -gt 0) {
-            $adapter = $adapterListViewRef.SelectedItems[0].Tag
-            & $releaseRenewRef -AdapterName $adapter.Name -Action "Renew" -LogBox $diagLogBoxRef
+        if ($script:adapterListView.SelectedItems.Count -gt 0) {
+            $adapter = $script:adapterListView.SelectedItems[0].Tag
+            & $script:ReleaseRenewIP -AdapterName $adapter.Name -Action "Renew" -LogBox $script:Net_diagLogBox
         }
-    }.GetNewClosure())
+    })
     $adapterBtnPanel.Controls.Add($renewBtn)
 
     $dnsFlushBtn = New-Object System.Windows.Forms.Button
     $dnsFlushBtn.Text = "DNS Flush"
     $dnsFlushBtn.Width = 85
     $dnsFlushBtn.Add_Click({
-        & $flushDnsRef -LogBox $diagLogBoxRef
-    }.GetNewClosure())
+        & $script:FlushDns -LogBox $script:Net_diagLogBox
+    })
     $adapterBtnPanel.Controls.Add($dnsFlushBtn)
 
     $copyAdaptersBtn = New-Object System.Windows.Forms.Button
@@ -594,7 +605,7 @@ function Initialize-Module {
         $text = [System.Text.StringBuilder]::new()
         [void]$text.AppendLine("Network Adapters - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
         [void]$text.AppendLine("=" * 60)
-        foreach ($item in $adapterListViewRef.Items) {
+        foreach ($item in $script:adapterListView.Items) {
             $adapter = $item.Tag
             [void]$text.AppendLine("")
             [void]$text.AppendLine("Adapter: $($adapter.Name)")
@@ -606,7 +617,7 @@ function Initialize-Module {
         }
         [System.Windows.Forms.Clipboard]::SetText($text.ToString())
         [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
-    }.GetNewClosure())
+    })
     $adapterBtnPanel.Controls.Add($copyAdaptersBtn)
 
     $adapterPanel.Controls.Add($script:adapterListView)
@@ -647,52 +658,51 @@ function Initialize-Module {
     $script:targetTextBox.Text = "8.8.8.8"
     $targetPanel.Controls.Add($script:targetTextBox)
 
-    $targetTextBoxRef = $script:targetTextBox
 
     $pingBtn = New-Object System.Windows.Forms.Button
     $pingBtn.Text = "Ping"
     $pingBtn.Width = 50
     $pingBtn.Add_Click({
-        $target = $targetTextBoxRef.Text.Trim()
+        $target = $script:targetTextBox.Text.Trim()
         if ($target) {
-            & $runPingRef -Target $target -Count 4 -LogBox $diagLogBoxRef
+            & $script:RunPing -Target $target -Count 4 -LogBox $script:Net_diagLogBox
         }
-    }.GetNewClosure())
+    })
     $targetPanel.Controls.Add($pingBtn)
 
     $traceBtn = New-Object System.Windows.Forms.Button
     $traceBtn.Text = "Trace"
     $traceBtn.Width = 50
     $traceBtn.Add_Click({
-        $target = $targetTextBoxRef.Text.Trim()
+        $target = $script:targetTextBox.Text.Trim()
         if ($target) {
-            & $runTracerouteRef -Target $target -LogBox $diagLogBoxRef
+            & $script:RunTraceroute -Target $target -LogBox $script:Net_diagLogBox
         }
-    }.GetNewClosure())
+    })
     $targetPanel.Controls.Add($traceBtn)
 
     $nslookupBtn = New-Object System.Windows.Forms.Button
     $nslookupBtn.Text = "NSLookup"
     $nslookupBtn.Width = 70
     $nslookupBtn.Add_Click({
-        $target = $targetTextBoxRef.Text.Trim()
+        $target = $script:targetTextBox.Text.Trim()
         if ($target) {
-            & $runNslookupRef -Target $target -LogBox $diagLogBoxRef
+            & $script:RunNslookup -Target $target -LogBox $script:Net_diagLogBox
         }
-    }.GetNewClosure())
+    })
     $targetPanel.Controls.Add($nslookupBtn)
 
     $allBtn = New-Object System.Windows.Forms.Button
     $allBtn.Text = "All"
     $allBtn.Width = 40
     $allBtn.Add_Click({
-        $target = $targetTextBoxRef.Text.Trim()
+        $target = $script:targetTextBox.Text.Trim()
         if ($target) {
-            & $runPingRef -Target $target -Count 4 -LogBox $diagLogBoxRef
-            & $runTracerouteRef -Target $target -LogBox $diagLogBoxRef
-            & $runNslookupRef -Target $target -LogBox $diagLogBoxRef
+            & $script:RunPing -Target $target -Count 4 -LogBox $script:Net_diagLogBox
+            & $script:RunTraceroute -Target $target -LogBox $script:Net_diagLogBox
+            & $script:RunNslookup -Target $target -LogBox $script:Net_diagLogBox
         }
-    }.GetNewClosure())
+    })
     $targetPanel.Controls.Add($allBtn)
 
     # Copy results button
@@ -704,22 +714,22 @@ function Initialize-Module {
     $copyResultsBtn.Text = "Copy Results"
     $copyResultsBtn.Width = 100
     $copyResultsBtn.Add_Click({
-        if ($diagLogBoxRef.Text) {
-            [System.Windows.Forms.Clipboard]::SetText($diagLogBoxRef.Text)
+        if ($script:Net_diagLogBox.Text) {
+            [System.Windows.Forms.Clipboard]::SetText($script:Net_diagLogBox.Text)
             [System.Windows.Forms.MessageBox]::Show("Copied to clipboard!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
         }
-    }.GetNewClosure())
+    })
     $diagBtnPanel.Controls.Add($copyResultsBtn)
 
     $clearLogBtn = New-Object System.Windows.Forms.Button
     $clearLogBtn.Text = "Clear"
     $clearLogBtn.Width = 50
     $clearLogBtn.Add_Click({
-        $diagLogBoxRef.Clear()
-    }.GetNewClosure())
+        $script:Net_diagLogBox.Clear()
+    })
     $diagBtnPanel.Controls.Add($clearLogBtn)
 
-    $diagPanel.Controls.Add($script:diagLogBox)
+    $diagPanel.Controls.Add($script:Net_diagLogBox)
     $diagPanel.Controls.Add($targetPanel)
     $diagPanel.Controls.Add($diagBtnPanel)
     $diagGroup.Controls.Add($diagPanel)
@@ -743,29 +753,38 @@ function Initialize-Module {
     $lldpTopBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $lldpTopBtnPanel.WrapContents = $false
 
-    $lldpInfoLabelRef = $script:lldpInfoLabel
+    # NOTE: the label MUST be created before it is captured. It used to be created
+    # 38 lines below this point, so $script:lldpInfoLabel captured $null and
+    # .GetNewClosure() froze that $null permanently - "Get Switch Info" and the
+    # LLDP "Copy" button threw on their first line and had never worked.
+    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
+    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
+    $script:lldpInfoLabel.AutoSize = $true
+    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
+    $script:lldpInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Top
+
 
     $getLldpBtn = New-Object System.Windows.Forms.Button
     $getLldpBtn.Text = "Get Switch Info"
     $getLldpBtn.Width = 135
     $getLldpBtn.Height = 30
     $getLldpBtn.Add_Click({
-        if ($adapterListViewRef.SelectedItems.Count -gt 0) {
-            $adapter = $adapterListViewRef.SelectedItems[0].Tag
-            $lldpInfoLabelRef.Text = "Querying LLDP..."
+        if ($script:adapterListView.SelectedItems.Count -gt 0) {
+            $adapter = $script:adapterListView.SelectedItems[0].Tag
+            $script:lldpInfoLabel.Text = "Querying LLDP..."
             [System.Windows.Forms.Application]::DoEvents()
 
-            $info = & $getLldpRef -AdapterName $adapter.Name
+            $info = & $script:GetLldpInfo -AdapterName $adapter.Name
 
             if ($info.Available) {
-                $lldpInfoLabelRef.Text = "Switch Port: $($info.Port)`nPort Desc: $($info.PortDesc)`nVLAN: $($info.VLAN)`nSwitch IP: $($info.SwitchIP)`nSwitch Name: $($info.SwitchName)"
+                $script:lldpInfoLabel.Text = "Switch Port: $($info.Port)`nPort Desc: $($info.PortDesc)`nVLAN: $($info.VLAN)`nSwitch IP: $($info.SwitchIP)`nSwitch Name: $($info.SwitchName)"
             } else {
-                $lldpInfoLabelRef.Text = "LLDP Info:`n`n$($info.Error)"
+                $script:lldpInfoLabel.Text = "LLDP Info:`n`n$($info.Error)"
             }
         } else {
             [System.Windows.Forms.MessageBox]::Show("Select an adapter first", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
         }
-    }.GetNewClosure())
+    })
     $lldpTopBtnPanel.Controls.Add($getLldpBtn)
 
     $copyLldpBtn = New-Object System.Windows.Forms.Button
@@ -773,19 +792,14 @@ function Initialize-Module {
     $copyLldpBtn.Width = 50
     $copyLldpBtn.Height = 30
     $copyLldpBtn.Add_Click({
-        [System.Windows.Forms.Clipboard]::SetText($lldpInfoLabelRef.Text)
+        [System.Windows.Forms.Clipboard]::SetText($script:lldpInfoLabel.Text)
         [System.Windows.Forms.MessageBox]::Show("Copied!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
-    }.GetNewClosure())
+    })
     $lldpTopBtnPanel.Controls.Add($copyLldpBtn)
 
     $lldpTablePanel.Controls.Add($lldpTopBtnPanel, 0, 0)
 
-    # Info label
-    $script:lldpInfoLabel = New-Object System.Windows.Forms.Label
-    $script:lldpInfoLabel.Text = "Switch Port: N/A`nVLAN: N/A`nSwitch IP: N/A`nSwitch Name: N/A"
-    $script:lldpInfoLabel.AutoSize = $true
-    $script:lldpInfoLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
-    $script:lldpInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Top
+    # Info label (created above, before the handlers captured it)
     $lldpTablePanel.Controls.Add($script:lldpInfoLabel, 0, 1)
 
     # Bottom setup panel
@@ -799,8 +813,8 @@ function Initialize-Module {
     $setupLldpBtn.Height = 30
     $setupLldpBtn.BackColor = [System.Drawing.Color]::FromArgb(230, 240, 255)
     $setupLldpBtn.Add_Click({
-        & $setupLldpRef -LogBox $diagLogBoxRef
-    }.GetNewClosure())
+        & $script:SetupLldp -LogBox $script:Net_diagLogBox
+    })
     $lldpSetupPanel.Controls.Add($setupLldpBtn)
 
     $lldpHelpLabel = New-Object System.Windows.Forms.Label
@@ -848,7 +862,6 @@ function Initialize-Module {
     $script:wifiInfoLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
     $wifiInfoPanel.Controls.Add($script:wifiInfoLabel, 0, 0)
 
-    $wifiInfoLabelRef = $script:wifiInfoLabel
 
     # Signal bar
     $script:signalBar = New-Object System.Windows.Forms.ProgressBar
@@ -857,7 +870,6 @@ function Initialize-Module {
     $script:signalBar.Maximum = 100
     $wifiInfoPanel.Controls.Add($script:signalBar, 0, 1)
 
-    $signalBarRef = $script:signalBar
 
     # WiFi buttons
     $wifiBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -868,33 +880,33 @@ function Initialize-Module {
     $refreshWifiBtn.Text = "Refresh"
     $refreshWifiBtn.Width = 65
     $refreshWifiBtn.Add_Click({
-        $info = & $getWirelessRef
-        $signalBarRef.Value = $info.Signal
+        $info = & $script:GetWirelessInfo
+        $script:signalBar.Value = $info.Signal
 
         $text = "SSID: $($info.SSID)`n"
         $text += "Signal: $($info.Signal)%`n"
         $text += "Channel: $($info.Channel) ($($info.Band))`n"
         $text += "BSSID: $($info.BSSID)`n"
         $text += "Auth: $($info.Auth)"
-        $wifiInfoLabelRef.Text = $text
-    }.GetNewClosure())
+        $script:wifiInfoLabel.Text = $text
+    })
     $wifiBtnPanel.Controls.Add($refreshWifiBtn)
 
     $reconnectBtn = New-Object System.Windows.Forms.Button
     $reconnectBtn.Text = "Reconnect"
     $reconnectBtn.Width = 85
     $reconnectBtn.Add_Click({
-        & $reconnectWifiRef -LogBox $diagLogBoxRef
-    }.GetNewClosure())
+        & $script:ReconnectWifi -LogBox $script:Net_diagLogBox
+    })
     $wifiBtnPanel.Controls.Add($reconnectBtn)
 
     $copyWifiBtn = New-Object System.Windows.Forms.Button
     $copyWifiBtn.Text = "Copy"
     $copyWifiBtn.Width = 50
     $copyWifiBtn.Add_Click({
-        [System.Windows.Forms.Clipboard]::SetText($wifiInfoLabelRef.Text)
+        [System.Windows.Forms.Clipboard]::SetText($script:wifiInfoLabel.Text)
         [System.Windows.Forms.MessageBox]::Show("Copied!", "Info", [System.Windows.Forms.MessageBoxButtons]::OK)
-    }.GetNewClosure())
+    })
     $wifiBtnPanel.Controls.Add($copyWifiBtn)
 
     $script:wlanReportBtn = New-Object System.Windows.Forms.Button
@@ -902,8 +914,8 @@ function Initialize-Module {
     $script:wlanReportBtn.AutoSize = $true
     $script:wlanReportBtn.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowOnly
     $script:wlanReportBtn.Add_Click({
-        $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Generating WLAN report (requires elevation)...`r`n")
-        $script:diagLogBox.ScrollToCaret()
+        $script:Net_diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] Generating WLAN report (requires elevation)...`r`n")
+        $script:Net_diagLogBox.ScrollToCaret()
         [System.Windows.Forms.Application]::DoEvents()
 
         $result = Invoke-Elevated -ScriptBlock {
@@ -921,16 +933,16 @@ function Initialize-Module {
                 $destPath = Join-Path $logsDir $destName
                 Copy-Item -Path $sourcePath -Destination $destPath -Force
                 Write-SessionLog -Message "WLAN report saved to Logs/$destName" -Category "Network Tools"
-                $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WLAN report saved: $destName`r`n")
-                $script:diagLogBox.ScrollToCaret()
+                $script:Net_diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] WLAN report saved: $destName`r`n")
+                $script:Net_diagLogBox.ScrollToCaret()
                 Start-Process $destPath
             } else {
-                $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: Report file not found at $sourcePath`r`n")
-                $script:diagLogBox.ScrollToCaret()
+                $script:Net_diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: Report file not found at $sourcePath`r`n")
+                $script:Net_diagLogBox.ScrollToCaret()
             }
         } else {
-            $script:diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: $($result.Error)`r`n")
-            $script:diagLogBox.ScrollToCaret()
+            $script:Net_diagLogBox.AppendText("[$(Get-Date -Format 'HH:mm:ss')] ERROR: $($result.Error)`r`n")
+            $script:Net_diagLogBox.ScrollToCaret()
         }
     })
     $wifiBtnPanel.Controls.Add($script:wlanReportBtn)
@@ -954,7 +966,6 @@ function Initialize-Module {
     $script:networksListView.Columns.Add("Ch", 40) | Out-Null
     $script:networksListView.Columns.Add("Security", 100) | Out-Null
 
-    $networksListViewRef = $script:networksListView
 
     $networksBtnPanel = New-Object System.Windows.Forms.FlowLayoutPanel
     $networksBtnPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
@@ -964,16 +975,16 @@ function Initialize-Module {
     $scanBtn.Text = "Scan Networks"
     $scanBtn.Width = 130
     $scanBtn.Add_Click({
-        $networksListViewRef.Items.Clear()
-        $networks = & $scanNetworksRef
+        $script:networksListView.Items.Clear()
+        $networks = & $script:ScanNetworks
         foreach ($net in $networks) {
             $item = New-Object System.Windows.Forms.ListViewItem($net.SSID)
             $item.SubItems.Add("$($net.Signal)%") | Out-Null
             $item.SubItems.Add($net.Channel.ToString()) | Out-Null
             $item.SubItems.Add($net.Security) | Out-Null
-            $networksListViewRef.Items.Add($item) | Out-Null
+            $script:networksListView.Items.Add($item) | Out-Null
         }
-    }.GetNewClosure())
+    })
     $networksBtnPanel.Controls.Add($scanBtn)
 
     # Copy button for network scan results
@@ -982,9 +993,9 @@ function Initialize-Module {
     $copyNetworksBtn.Width = 75
     $copyNetworksBtn.Location = New-Object System.Drawing.Point(($scanBtn.Location.X + $scanBtn.Width + 5), 3)
     $copyNetworksBtn.Add_Click({
-        # $networksListViewRef is captured by GetNewClosure - do NOT re-read from
+        # $script:networksListView is captured by GetNewClosure - do NOT re-read from
         # $script: here ($script: vars resolve to $null inside closure modules)
-        if ($networksListViewRef.Items.Count -eq 0) {
+        if ($script:networksListView.Items.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show(
                 "No networks to copy. Click 'Scan Networks' first.",
                 "No Data",
@@ -1000,7 +1011,7 @@ function Initialize-Module {
         $output += "{0,-30} {1,-8} {2,-8} {3}" -f "SSID", "Signal", "Channel", "Security"
         $output += "`n" + ("-" * 60) + "`n"
 
-        foreach ($item in $networksListViewRef.Items) {
+        foreach ($item in $script:networksListView.Items) {
             $ssid = $item.Text
             $signal = $item.SubItems[1].Text
             $channel = $item.SubItems[2].Text
@@ -1015,7 +1026,7 @@ function Initialize-Module {
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
-    }.GetNewClosure())
+    })
     $networksBtnPanel.Controls.Add($copyNetworksBtn)
 
     $networksPanel.Controls.Add($script:networksListView)

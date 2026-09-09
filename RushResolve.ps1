@@ -214,7 +214,7 @@ function Close-SplashScreen {
 
 #region Script Variables
 $script:AppName = "Rush Resolve"
-$script:AppVersion = "2.7.0"  # Welcome tab, lazy loading, per-day logs, installer catalog, printer profile fixes
+$script:AppVersion = "2.8.0"  # Welcome tab, lazy loading, per-day logs, installer catalog, printer profile fixes
 $script:AppPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:ModulesPath = Join-Path $script:AppPath "Modules"
 $script:ConfigPath = Join-Path $script:AppPath "Config"
@@ -231,6 +231,10 @@ $script:CredentialPINHash = $null         # SHA256 hash of PIN
 $script:PINLastVerified = $null           # DateTime of last successful PIN entry
 $script:PINTimeout = 15                   # Minutes before PIN re-required
 $script:PINFailCount = 0                  # Track failed PIN attempts
+$script:PINMaxAttempts = 3                # Attempts before the session locks out
+$script:RushTempRoot = $null              # Per-session scratch dir (see Get-RushTempRoot)
+$script:ClipboardClearTimer = $null       # UI-thread timer for clipboard auto-clear
+$script:ClipboardExpectedText = ""        # Only clear if the clipboard still holds this
 $script:CredentialFile = Join-Path $script:ConfigPath "credential.dat"
 $script:PINFile = Join-Path $script:ConfigPath "credential.pin"
 $script:ConnectedSharePath = $null       # UNC root of active net use session
@@ -366,12 +370,34 @@ function Initialize-SessionLog {
 
             if ($older) {
                 $olderLabel = if ($older.Name -match '(\d{4}-\d{2}-\d{2})') { $matches[1] } else { $older.Name }
-                $choice = [System.Windows.Forms.MessageBox]::Show(
-                    "A previous session log exists for $computerName (from $olderLabel).`n`nYes = append to that log`nNo = start a new log for today",
-                    "Session Log",
-                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                    [System.Windows.Forms.MessageBoxIcon]::Question
-                )
+
+                # This dialog is the FIRST thing shown on the first launch of any
+                # new day, and it used to be raised with no owner while the splash
+                # screen is TopMost - so it rendered BEHIND the splash. The app
+                # looked hung at "Loading..." with an invisible modal waiting for a
+                # click. Reproduced: 20+ seconds, no window, no session log.
+                # Owning it to the splash forces it in front; if the splash has
+                # gone, fall back to an unowned dialog.
+                $splashOwner = $null
+                if ($script:SplashForm -and -not $script:SplashForm.IsDisposed -and $script:SplashForm.Visible) {
+                    $splashOwner = $script:SplashForm
+                }
+
+                $prompt = "A previous session log exists for $computerName (from $olderLabel).`n`nYes = append to that log`nNo = start a new log for today"
+                if ($splashOwner) {
+                    $choice = [System.Windows.Forms.MessageBox]::Show(
+                        $splashOwner, $prompt, "Session Log",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Question
+                    )
+                }
+                else {
+                    $choice = [System.Windows.Forms.MessageBox]::Show(
+                        $prompt, "Session Log",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Question
+                    )
+                }
                 if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
                     $script:SessionLogFile = $older.FullName
                 }
@@ -793,14 +819,11 @@ function Test-ApplicationIntegrity {
     }
 
     # Verify settings.json integrity
-    if ($manifest.settings_hash) {
-        if (Test-Path $script:SettingsFile) {
-            $settingsHash = Get-FileHashSHA256 -FilePath $script:SettingsFile
-            # Note: Settings file hash will change when user modifies settings
-            # We store it to detect unauthorized external modifications
-            # In production, you might skip this check or use a different approach
-        }
-    }
+    # NOTE: settings_hash was written on every manifest update, computed here,
+    # and then never compared against anything - the original comment admitted
+    # as much. It cannot be a useful control either: every tech's settings.json
+    # legitimately differs and changes whenever they touch the Settings dialog.
+    # Removed rather than left as security theatre.
 
     # Verify main script integrity
     $mainScript = Join-Path $script:AppPath "RushResolve.ps1"
@@ -835,7 +858,7 @@ function Update-SecurityManifests {
     # Generate module manifest
     $moduleManifest = @{
         generated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        generated_by = "$env:USERDOMAIN\$env:USERNAME"
+        generated_by = "RushResolve build"  # not the operator identity - this file ships to every tech
         description = "Whitelist of authorized modules with SHA256 hashes"
         modules = @()
     }
@@ -858,10 +881,9 @@ function Update-SecurityManifests {
 
     $integrityManifest = @{
         generated = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        generated_by = "$env:USERDOMAIN\$env:USERNAME"
+        generated_by = "RushResolve build"  # not the operator identity - this file ships to every tech
         description = "SHA256 hashes for application integrity verification"
         main_script_hash = $mainHash
-        settings_hash = if (Test-Path $script:SettingsFile) { Get-FileHashSHA256 -FilePath $script:SettingsFile } else { $null }
     }
 
     $integrityManifest | ConvertTo-Json -Depth 5 | Set-Content $script:IntegrityManifestFile -Force
@@ -1109,6 +1131,39 @@ function Remove-EncryptedCredential {
     Update-CredentialStatusIndicator
 }
 
+function Test-PINLockedOut {
+    <#
+    .SYNOPSIS
+        Returns $true when the session has burned its PIN attempts.
+    .DESCRIPTION
+        $script:PINFailCount is only reset on a SUCCESSFUL unlock, so it
+        persists across calls for the whole session - that is the intended
+        lockout. Three callers used to compute "3 - PINFailCount" and then run
+        "while ($attemptsLeft -gt 0)", which meant that once the count hit 3 the
+        loop body never executed: Copy-Password and the QR authenticator became
+        permanently dead buttons that returned silently, and
+        Get-ElevatedCredential fell through to Get-Credential, BYPASSING the PIN
+        entirely and overwriting the stored credential. The failure counter made
+        access easier instead of harder.
+    #>
+    return ($script:PINFailCount -ge $script:PINMaxAttempts)
+}
+
+function Show-PINLockoutMessage {
+    <#
+    .SYNOPSIS
+        Tells the tech why nothing is happening, instead of failing silently.
+    #>
+    param([string]$Action = "this action")
+    [void][System.Windows.Forms.MessageBox]::Show(
+        "Too many incorrect PIN attempts this session, so $Action is locked.`r`n`r`nUse Tools > Credential Options > Clear Cached Credentials to set a new PIN, or restart RushResolve.",
+        "PIN Locked",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    try { Write-SessionLog -Message "PIN lockout reached; $Action refused" -Category "Credentials" -Level "WARN" } catch { }
+}
+
 function Test-PINTimeout {
     <#
     .SYNOPSIS
@@ -1322,8 +1377,32 @@ function Copy-PasswordToClipboard {
     if ($script:CachedCredential -is [PSCredential] -and -not (Test-PINTimeout)) {
         # Already unlocked - copy directly
         $password = $script:CachedCredential.GetNetworkCredential().Password
-        [System.Windows.Forms.Clipboard]::SetText($password)
+
+        # Clipboard::SetText throws when another app holds the clipboard, which
+        # is routine under RDP/Citrix redirection on hospital workstations. It
+        # used to be unguarded, so the failure escaped to the global handler as
+        # a generic "An unexpected error occurred" box.
+        try {
+            [System.Windows.Forms.Clipboard]::SetText($password)
+        }
+        catch {
+            $password = $null
+            Write-SessionLog -Message "Clipboard copy FAILED: $($_.Exception.Message)" -Category "Credentials" -Level "ERROR"
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "Could not write to the clipboard - another application is holding it.`r`n`r`nThis is common over RDP or Citrix. Try again, or read the password from the QR authenticator.",
+                "Clipboard Unavailable",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            return $false
+        }
+
         Write-SessionLog -Message "Password copied to clipboard (already unlocked)" -Category "Credentials"
+
+        # Start the countdown BEFORE promising it in the dialog, so the promise
+        # is only made once the timer is actually running.
+        Start-ClipboardClearTimer -ExpectedText $password
+        $password = $null
 
         [void][System.Windows.Forms.MessageBox]::Show(
             "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
@@ -1331,14 +1410,15 @@ function Copy-PasswordToClipboard {
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
-
-        # Schedule clipboard clear after 30 seconds
-        Start-ClipboardClearTimer
         return $true
     }
 
     # Need to prompt for PIN
-    $attemptsLeft = 3 - $script:PINFailCount
+    if (Test-PINLockedOut) {
+        Show-PINLockoutMessage -Action "copying the password"
+        return $false
+    }
+    $attemptsLeft = $script:PINMaxAttempts - $script:PINFailCount
 
     while ($attemptsLeft -gt 0) {
         $pin = Show-PINEntryDialog -Title "Enter PIN to copy password ($attemptsLeft attempts left)"
@@ -1363,9 +1443,26 @@ function Copy-PasswordToClipboard {
                 # SECURITY NOTE: Plaintext password required for clipboard API
                 # Minimize exposure window by clearing immediately after use
                 $password = $decrypted.GetNetworkCredential().Password
-                [System.Windows.Forms.Clipboard]::SetText($password)
-                $password = $null  # Clear plaintext from memory
+
+                try {
+                    [System.Windows.Forms.Clipboard]::SetText($password)
+                }
+                catch {
+                    $password = $null
+                    Write-SessionLog -Message "Clipboard copy FAILED: $($_.Exception.Message)" -Category "Credentials" -Level "ERROR"
+                    [void][System.Windows.Forms.MessageBox]::Show(
+                        "Could not write to the clipboard - another application is holding it.`r`n`r`nThis is common over RDP or Citrix. Try again, or read the password from the QR authenticator.",
+                        "Clipboard Unavailable",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                    return $false
+                }
+
                 Write-SessionLog -Message "Credentials unlocked with PIN, password copied to clipboard" -Category "Credentials"
+
+                Start-ClipboardClearTimer -ExpectedText $password
+                $password = $null  # Clear plaintext from memory
 
                 [void][System.Windows.Forms.MessageBox]::Show(
                     "Password copied to clipboard.`n`nClipboard will be cleared in 30 seconds for security.",
@@ -1373,9 +1470,6 @@ function Copy-PasswordToClipboard {
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
-
-                # Schedule clipboard clear after 30 seconds
-                Start-ClipboardClearTimer
                 return $true
             }
             else {
@@ -1426,15 +1520,75 @@ function Copy-PasswordToClipboard {
 function Start-ClipboardClearTimer {
     <#
     .SYNOPSIS
-        Starts a background job to clear clipboard after 30 seconds.
+        Clears the clipboard 30 seconds after a password was copied.
+    .DESCRIPTION
+        This used to be Start-Job + Clipboard::Clear(). PowerShell background
+        jobs run in an MTA runspace and System.Windows.Forms.Clipboard requires
+        STA, so the call threw inside the job, the exception was swallowed, and
+        the job handle was discarded with $null = so nothing ever checked.
+        Closing the app inside 30s killed it too.
+
+        The result: the clipboard was NEVER cleared, while the dialog told the
+        tech "Clipboard will be cleared in 30 seconds for security." A domain
+        admin password sat on a clinical workstation's clipboard indefinitely.
+
+        A WinForms timer ticks on the UI thread, which is already STA.
+    .PARAMETER ExpectedText
+        Only clear if the clipboard still holds this value, so a tech who copies
+        something else in the meantime does not lose it.
     #>
-    # Use a simple approach with Start-Job for clipboard clearing
-    # Note: This runs in background and clears clipboard after delay
-    $null = Start-Job -ScriptBlock {
-        Start-Sleep -Seconds 30
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.Clipboard]::Clear()
+    param([string]$ExpectedText = "")
+
+    # Restart cleanly if a previous countdown is still running
+    if ($script:ClipboardClearTimer) {
+        try {
+            $script:ClipboardClearTimer.Stop()
+            $script:ClipboardClearTimer.Dispose()
+        } catch { }
+        $script:ClipboardClearTimer = $null
     }
+
+    $script:ClipboardExpectedText = $ExpectedText
+    $script:ClipboardClearTimer = New-Object System.Windows.Forms.Timer
+    $script:ClipboardClearTimer.Interval = 30000
+    $script:ClipboardClearTimer.Add_Tick({
+        try {
+            $script:ClipboardClearTimer.Stop()
+        } catch { }
+
+        $cleared = $false
+        try {
+            $current = ""
+            try { $current = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+
+            if (-not $script:ClipboardExpectedText -or $current -eq $script:ClipboardExpectedText) {
+                [System.Windows.Forms.Clipboard]::Clear()
+                $cleared = $true
+            }
+            else {
+                # Tech copied something else; theirs is not ours to destroy.
+                $cleared = $true
+            }
+        }
+        catch {
+            # Clipboard can be locked by another app (RDP/Citrix redirection,
+            # clipboard managers). Say so rather than leaving a password behind
+            # while having promised otherwise.
+            try { Write-SessionLog -Message "Clipboard auto-clear FAILED: $($_.Exception.Message)" -Category "Credentials" -Level "ERROR" } catch { }
+            try { Set-AppError -Message "Clipboard could not be cleared automatically - clear it manually" } catch { }
+        }
+
+        if ($cleared) {
+            try { Write-SessionLog -Message "Clipboard auto-cleared after password copy" -Category "Credentials" } catch { }
+        }
+
+        $script:ClipboardExpectedText = ""
+        try {
+            $script:ClipboardClearTimer.Dispose()
+        } catch { }
+        $script:ClipboardClearTimer = $null
+    })
+    $script:ClipboardClearTimer.Start()
 }
 
 function Show-QRCodeAuthenticator {
@@ -1482,7 +1636,11 @@ function Show-QRCodeAuthenticator {
     }
     else {
         # Need to prompt for PIN
-        $attemptsLeft = 3 - $script:PINFailCount
+        if (Test-PINLockedOut) {
+            Show-PINLockoutMessage -Action "the QR authenticator"
+            return
+        }
+        $attemptsLeft = $script:PINMaxAttempts - $script:PINFailCount
 
         while ($attemptsLeft -gt 0 -and -not $credential) {
             $pin = Show-PINEntryDialog -Title "Enter PIN for QR Code ($attemptsLeft attempts left)"
@@ -1639,6 +1797,58 @@ function Show-QRCodeAuthenticator {
 #region Credential Elevation Helpers
 
 # Check if currently running as administrator
+function Get-RushTempRoot {
+    <#
+    .SYNOPSIS
+        Per-session scratch directory under the current user's own profile.
+    .DESCRIPTION
+        SECURITY: scratch files used to live at fixed, predictable paths under
+        C:\Temp - e.g. C:\Temp\RushResolve_wrapper.cmd - which the app itself
+        created with New-Item -Force, i.e. with default ACLs that let ANY
+        authenticated user write there. Those files are then executed with
+        -Verb RunAs / under ENT credentials.
+
+        That is a time-of-check/time-of-use local privilege escalation: on a
+        shared clinical workstation another standard user can pre-create or
+        swap the file between our write and the elevated launch, and their code
+        runs as admin. Fixed names made it trivial.
+
+        GetTempPath() resolves to %LOCALAPPDATA%\Temp, whose ACL grants the
+        owning user, SYSTEM and Administrators - so other standard users cannot
+        plant anything, while the ENT account (a local admin) can still read
+        what we write. The random per-session segment removes the predictable
+        name.
+    #>
+    if (-not $script:RushTempRoot -or -not (Test-Path $script:RushTempRoot)) {
+        $base = [System.IO.Path]::GetTempPath()
+        $leaf = "RushResolve_" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 12))
+        $script:RushTempRoot = Join-Path $base $leaf
+        New-Item -Path $script:RushTempRoot -ItemType Directory -Force | Out-Null
+    }
+    return $script:RushTempRoot
+}
+
+function Get-RushTempPath {
+    <#
+    .SYNOPSIS
+        Path to a named file or folder inside the per-session scratch directory.
+    #>
+    param([string]$Name)
+    return (Join-Path (Get-RushTempRoot) $Name)
+}
+
+function Remove-RushTempRoot {
+    <#
+    .SYNOPSIS
+        Deletes the per-session scratch directory. Called on exit.
+    #>
+    if ($script:RushTempRoot -and (Test-Path $script:RushTempRoot)) {
+        try { Remove-Item -Path $script:RushTempRoot -Recurse -Force -ErrorAction Stop }
+        catch { }
+    }
+    $script:RushTempRoot = $null
+}
+
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -1694,8 +1904,32 @@ function Get-ElevatedCredential {
     # Try to load from disk if not in memory
     $savedCred = Load-EncryptedCredential
     if ($savedCred) {
-        # We have saved credentials - need PIN to unlock
-        $attemptsLeft = 3 - $script:PINFailCount
+        # We have saved credentials - need PIN to unlock.
+        # $credentialsCleared tracks whether the tech EXPLICITLY chose to discard
+        # them. Falling out of this block any other way must NOT reach the
+        # Get-Credential path below, or a locked-out session silently bypasses
+        # the PIN and overwrites the stored credential.
+        $credentialsCleared = $false
+
+        if (Test-PINLockedOut) {
+            $reset = [System.Windows.Forms.MessageBox]::Show(
+                "Too many incorrect PIN attempts this session.`r`n`r`nClear the saved credentials and enter new ones?",
+                "PIN Locked",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Remove-EncryptedCredential
+                $script:PINFailCount = 0
+                $credentialsCleared = $true
+            }
+            else {
+                try { Write-SessionLog -Message "PIN lockout reached; elevation refused" -Category "Credentials" -Level "WARN" } catch { }
+                return $null
+            }
+        }
+
+        $attemptsLeft = $script:PINMaxAttempts - $script:PINFailCount
 
         while ($attemptsLeft -gt 0) {
             $pin = Show-PINEntryDialog -Title "Unlock Credentials ($attemptsLeft attempts left)"
@@ -1709,6 +1943,8 @@ function Get-ElevatedCredential {
                 )
                 if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
                     Remove-EncryptedCredential
+                    $script:PINFailCount = 0
+                    $credentialsCleared = $true
                     break
                 }
                 return $null
@@ -1736,6 +1972,8 @@ function Get-ElevatedCredential {
                         [System.Windows.Forms.MessageBoxIcon]::Error
                     )
                     Remove-EncryptedCredential
+                    $script:PINFailCount = 0
+                    $credentialsCleared = $true
                     break
                 }
             }
@@ -1768,6 +2006,8 @@ function Get-ElevatedCredential {
                     )
                     if ($reset -eq [System.Windows.Forms.DialogResult]::Yes) {
                         Remove-EncryptedCredential
+                        $script:PINFailCount = 0
+                        $credentialsCleared = $true
                     }
                     else {
                         return $null
@@ -1775,9 +2015,16 @@ function Get-ElevatedCredential {
                 }
             }
         }
+
+        # Guard the fall-through. Reaching Get-Credential below without having
+        # explicitly cleared the saved credential means the PIN was bypassed.
+        if (-not $credentialsCleared) {
+            try { Write-SessionLog -Message "PIN not verified; elevation refused" -Category "Credentials" -Level "WARN" } catch { }
+            return $null
+        }
     }
 
-    # No saved credential (or was cleared) - prompt for new one
+    # No saved credential (or was cleared on purpose) - prompt for new one
     try {
         $cred = Get-Credential -Message $Message
         if (-not $cred) { return $null }
@@ -1870,7 +2117,7 @@ function Invoke-Elevated {
     $tempArgsFile = $null
     try {
         # Create temp folder if it doesn't exist
-        $tempFolder = "C:\Temp\RushResolve_Install"
+        $tempFolder = Get-RushTempPath -Name "Install"
         if (-not (Test-Path $tempFolder)) {
             New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
         }
@@ -2202,20 +2449,45 @@ function Start-AsENTElevated {
             $escapedArgs = $ArgumentList.Replace("'", "''")
             $innerCommand += " -ArgumentList '$escapedArgs'"
         }
-        $innerCommand += " -Verb RunAs"
+        $innerCommand += " -Verb RunAs -ErrorAction Stop"
+
+        # Wrap hop 2 so its outcome is OBSERVABLE. Previously hop 2 ran blind
+        # and Success was set to $true the moment hop 1's logon worked, so the
+        # session log recorded "Launched as ENT (elevated)" for launches that
+        # never happened - a denied UAC prompt, an ENT account that is not a
+        # local admin, or a target ENT cannot reach all looked identical to
+        # success. Exit 3 = hop 2 failed.
+        $innerCommand = "try { $innerCommand; exit 0 } catch { exit 3 }"
 
         # Encode to survive quoting across the process boundary
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
 
         # Hop 1: PowerShell as ENT (working dir must be accessible to ENT)
-        Start-Process -FilePath "powershell.exe" `
+        $hop1 = Start-Process -FilePath "powershell.exe" `
             -ArgumentList "-NoProfile -WindowStyle Hidden -EncodedCommand $encoded" `
             -Credential $Credential `
             -WorkingDirectory "C:\Windows\System32" `
-            -ErrorAction Stop | Out-Null
+            -PassThru `
+            -ErrorAction Stop
 
-        Write-SessionLog -Message "Launched as ENT (elevated): $FilePath $ArgumentList" -Category "Elevation"
-        $result.Success = $true
+        # Hop 1 exits as soon as it has handed off to hop 2, so this is short.
+        # If it has not exited in time, treat it as launched - the UAC prompt
+        # may simply still be on screen waiting for the tech.
+        $exited = $false
+        if ($hop1) { $exited = $hop1.WaitForExit(15000) }
+
+        if ($exited -and $hop1.ExitCode -eq 3) {
+            $result.Error = "Elevation was refused. The UAC prompt may have been denied, or the ENT account may not be a local administrator on this machine."
+            Write-SessionLog -Message "ENT elevated launch REFUSED at hop 2: $FilePath" -Category "Elevation" -Level "ERROR"
+        }
+        elseif ($exited -and $hop1.ExitCode -ne 0) {
+            $result.Error = "ENT launch failed (exit code $($hop1.ExitCode))."
+            Write-SessionLog -Message "ENT elevated launch failed at hop 1: $FilePath (exit $($hop1.ExitCode))" -Category "Elevation" -Level "ERROR"
+        }
+        else {
+            Write-SessionLog -Message "Launched as ENT (elevated): $FilePath $ArgumentList" -Category "Elevation"
+            $result.Success = $true
+        }
     }
     catch {
         $result.Error = "ENT elevated launch failed: $($_.Exception.Message)"
@@ -2338,10 +2610,38 @@ function Connect-NetworkShare {
     # Attempt connection
     try {
         Write-SessionLog -Message "Connecting to $shareRoot as $username..." -Category "NetworkShare"
-        $output = net use $shareRoot /user:$username $password 2>&1
+
+        # SECURITY: this used to be
+        #     net use $shareRoot /user:$username $password
+        # which puts the plaintext domain admin password on a process command
+        # line. In a hospital running Sysmon/EDR that writes the password into
+        # process-creation telemetry, where it is retained, indexed and readable
+        # by anyone with access to the security pipeline.
+        #
+        # New-SmbMapping passes the credential through an API instead, so it
+        # never appears in a command line. net use remains only as a fallback
+        # for images where the SmbShare module is unavailable.
+        $connected = $false
+        $output = ""
+
+        if (Get-Command -Name New-SmbMapping -ErrorAction SilentlyContinue) {
+            try {
+                New-SmbMapping -RemotePath $shareRoot -UserName $username -Password $password -Persistent $false -ErrorAction Stop | Out-Null
+                $connected = $true
+            }
+            catch {
+                $output = $_.Exception.Message
+            }
+        }
+        else {
+            Write-SessionLog -Message "SmbShare module unavailable; falling back to net use" -Category "NetworkShare" -Level "WARN"
+            $output = net use $shareRoot /user:$username $password 2>&1
+            $connected = ($LASTEXITCODE -eq 0)
+        }
+
         $password = $null  # Clear immediately
 
-        if ($LASTEXITCODE -eq 0) {
+        if ($connected) {
             Write-SessionLog -Message "Successfully connected to $shareRoot" -Category "NetworkShare"
             $result.Success = $true
             $script:ConnectedSharePath = $shareRoot
@@ -2349,7 +2649,7 @@ function Connect-NetworkShare {
             return $result
         }
         else {
-            $result.Error = "net use failed: $($output -join ' ')"
+            $result.Error = "Share connection failed: $($output -join ' ')"
         }
     }
     catch {
@@ -2722,7 +3022,7 @@ function Invoke-CheckForUpdates {
             return
         }
 
-        Write-SessionLog "Update available: v$($script:AppVersion) → $($release.tag_name)" -Category "Update"
+        Write-SessionLog "Update available: v$($script:AppVersion) -> $($release.tag_name)" -Category "Update"
 
         # Show update dialog with release notes
         Show-UpdateDialog -Release $release
@@ -2799,7 +3099,7 @@ function Test-NewVersionAvailable {
     )
 
     try {
-        # Normalize versions: "2.3" → "2.3.0", "v2.4.0" → "2.4.0"
+        # Normalize versions: "2.3" -> "2.3.0", "v2.4.0" -> "2.4.0"
         $currentVer = [version]($Current + ".0")
         $githubVer = [version]($GitHub -replace "^v", "")
 
@@ -3745,7 +4045,7 @@ function Show-MainWindow {
         $failureMsg += ($integrityResult.Failures -join "`n")
         $failureMsg += "`n`nThe application will not start to protect your system.`n`n"
         $failureMsg += "If you made legitimate changes, use:`n"
-        $failureMsg += "Tools → Security Options → Update Security Manifests"
+        $failureMsg += "Tools -> Security Options -> Update Security Manifests"
 
         [void][System.Windows.Forms.MessageBox]::Show(
             $failureMsg,
@@ -4102,14 +4402,46 @@ function Initialize-Module {
 
     # Save window size on close
     $form.Add_FormClosing({
-        $script:Settings.global.windowWidth = $form.Width
-        $script:Settings.global.windowHeight = $form.Height
-        if ($tabControl.SelectedTab) {
-            $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
-        }
-        Disconnect-NetworkShare
-        Save-Settings
-        Close-SessionLog
+        # Every step is individually guarded. This handler had no try/catch, and
+        # Disconnect-NetworkShare shells "net use /delete" against a possibly
+        # dead server - a throw here reaches the ThreadException handler, which
+        # shows a box and CANCELS the close, making the app unclosable.
+
+        # Security first: if a password copy is still counting down, the timer
+        # will never fire once we exit. Clear it now rather than leaving a
+        # domain admin password on a clinical workstation's clipboard.
+        try {
+            if ($script:ClipboardClearTimer) {
+                $script:ClipboardClearTimer.Stop()
+                $current = ""
+                try { $current = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+                if (-not $script:ClipboardExpectedText -or $current -eq $script:ClipboardExpectedText) {
+                    [System.Windows.Forms.Clipboard]::Clear()
+                }
+                $script:ClipboardClearTimer.Dispose()
+                $script:ClipboardClearTimer = $null
+                $script:ClipboardExpectedText = ""
+            }
+        } catch { }
+
+        try { if ($script:PreloadTimer) { $script:PreloadTimer.Stop(); $script:PreloadTimer.Dispose() } } catch { }
+
+        try {
+            # Only persist geometry from a normal window; saving maximized
+            # bounds reopens oversized on a smaller workstation screen.
+            if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Normal) {
+                $script:Settings.global.windowWidth = $form.Width
+                $script:Settings.global.windowHeight = $form.Height
+            }
+            if ($tabControl.SelectedTab) {
+                $script:Settings.global.lastTab = $tabControl.SelectedTab.Text
+            }
+        } catch { }
+
+        try { Remove-RushTempRoot } catch { }
+        try { Disconnect-NetworkShare } catch { }
+        try { Save-Settings } catch { }
+        try { Close-SessionLog } catch { }
     })
 
     # Load ONLY the first tab now (00_Welcome sorts first) so the app is
