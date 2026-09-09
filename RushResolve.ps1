@@ -2592,10 +2592,38 @@ function Connect-NetworkShare {
     # Attempt connection
     try {
         Write-SessionLog -Message "Connecting to $shareRoot as $username..." -Category "NetworkShare"
-        $output = net use $shareRoot /user:$username $password 2>&1
+
+        # SECURITY: this used to be
+        #     net use $shareRoot /user:$username $password
+        # which puts the plaintext domain admin password on a process command
+        # line. In a hospital running Sysmon/EDR that writes the password into
+        # process-creation telemetry, where it is retained, indexed and readable
+        # by anyone with access to the security pipeline.
+        #
+        # New-SmbMapping passes the credential through an API instead, so it
+        # never appears in a command line. net use remains only as a fallback
+        # for images where the SmbShare module is unavailable.
+        $connected = $false
+        $output = ""
+
+        if (Get-Command -Name New-SmbMapping -ErrorAction SilentlyContinue) {
+            try {
+                New-SmbMapping -RemotePath $shareRoot -UserName $username -Password $password -Persistent $false -ErrorAction Stop | Out-Null
+                $connected = $true
+            }
+            catch {
+                $output = $_.Exception.Message
+            }
+        }
+        else {
+            Write-SessionLog -Message "SmbShare module unavailable; falling back to net use" -Category "NetworkShare" -Level "WARN"
+            $output = net use $shareRoot /user:$username $password 2>&1
+            $connected = ($LASTEXITCODE -eq 0)
+        }
+
         $password = $null  # Clear immediately
 
-        if ($LASTEXITCODE -eq 0) {
+        if ($connected) {
             Write-SessionLog -Message "Successfully connected to $shareRoot" -Category "NetworkShare"
             $result.Success = $true
             $script:ConnectedSharePath = $shareRoot
@@ -2603,7 +2631,7 @@ function Connect-NetworkShare {
             return $result
         }
         else {
-            $result.Error = "net use failed: $($output -join ' ')"
+            $result.Error = "Share connection failed: $($output -join ' ')"
         }
     }
     catch {
